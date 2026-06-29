@@ -1,0 +1,35 @@
+[project]
+name = "template-lm-training-codebase"
+version = "0.1.0"
+description = "Hydra-based template for systematic LM training and evaluation experiments"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "accelerate>=1.0.0",
+    "hydra-core>=1.3.2",
+    "hydra-joblib-launcher>=1.2.0",
+    "ipykernel>=6.0.0",
+    "matplotlib>=3.8.0",
+    "numpy>=1.26.0",
+    "pandas>=2.0.0",
+    "pyprojroot>=0.3.0",
+    "python-dotenv>=1.0.0",
+    "torch>=2.4.0",
+    "tqdm>=4.66.0",
+    "transformers>=4.44.0",
+    "wandb>=0.17.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+# importlib mode keeps `src/` off sys.path, so the `src/code/` package doesn't
+# shadow the stdlib `code` module.
+addopts = "--import-mode=importlib"
+testpaths = ["src/tests"]
+markers = [
+    "slow: integration tests that load real models / run forward passes (deselect with `-m 'not slow'`)",
+]

@@ -1,0 +1,15 @@
+# @package _global_
+# Train a small LM from scratch. Checkpoints + per-checkpoint metrics land
+# under ${run_dir}/checkpoints/{step}/.
+#
+#   python -m src.code.train runner=train_small_lm
+#   python -m src.code.train -m runner=train_small_lm model_kwargs.model_config.hidden_size=64,128,256
+
+defaults:
+  - override /setting: balls_and_urns
+  - override /model: small_lm
+  - override /train: default
+  - _self_
+
+name: small-lm
+output_dir: ${run_dir}/checkpoints

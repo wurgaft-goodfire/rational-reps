@@ -1,0 +1,27 @@
+# @package _global_
+
+training_kwargs:
+  train_steps: 50000
+  batch_size: 64
+  learning_rate: 0.0005
+  context_length: 128
+  warmup_steps: 0
+  lr_scheduler_type: constant
+  lr_scheduler_kwargs: {}
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  weight_decay: 0.0
+  optimizer: adamw_torch
+  save_online_eval: false # if true, save online-eval metrics to disk each eval step
+  logging_steps: 100
+  eval_steps: 100
+  pre_batch_data_collator: true # if batching data in the dataset's __getitem__ - usually much faster
+  save_steps_method: end_only # end_only | every_eval | linear_schedule | sqrt_schedule | specific_steps
+  num_save_checkpoints: 10 # used by linear_schedule / sqrt_schedule
+  save_steps: null # used by specific_steps; a list e.g. [1000, 5000, 50000]
+  compile: false # torch.compile the model (speedup for small models; requires Python <= 3.13)
+  compile_mode: default # default | reduce-overhead | max-autotune
+
+eval_kwargs:
+  num_eval_batches: 10 # number of fixed batches pre-sampled once for evaluation
+  output_hidden_states: false # extract + save hidden states (for representational analysis)

@@ -1,0 +1,14 @@
+# @package _global_
+# Evaluate a pretrained LLM on the task (single run, no training).
+#
+#   python -m src.code.eval runner=eval_llm
+#   python -m src.code.eval -m runner=eval_llm model_kwargs.model_path=google/gemma-2-2b,meta-llama/Llama-3.1-8B
+
+defaults:
+  - override /setting: balls_and_urns
+  - override /model: llm
+  - override /train: default
+  - _self_
+
+name: llm-eval
+output_dir: ${run_dir}

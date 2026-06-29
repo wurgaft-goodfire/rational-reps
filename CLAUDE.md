@@ -1,246 +1,59 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with code in this repository.
 
-## Overview
+# Research code philosophy
 
-This is a machine learning research project focused on normative scaling experiments studying in-context learning with structured regression tasks. The project uses **Hydra** for configuration management and experiment orchestration.
+This is research code. Correctness, succinctness, and clarity take priority over robustness.
 
-## Essential Commands
+- **Fail loudly.** No try/except to paper over errors, no fallbacks, no default values that hide missing inputs. Let exceptions propagate — a crash with a clear traceback is more useful than silent misbehavior.
+- **Minimize code.** Prefer principled abstractions over bloated ones. A clean abstraction that reduces duplication is good; a speculative one added for hypothetical future use is not.
+- **No defensive validation** at internal boundaries. Trust that callers pass correct inputs; only validate at the outermost entry point (CLI args, config files).
+- **Integration tests may load real models.** A test that runs an actual forward pass is more trustworthy than one that mocks the model.
 
-### Running Experiments
+# Development approach
 
-```bash
-# Basic training run with default configuration
-python -m src.code.train
+Follow BDD dual-loop TDD. Every feature increment starts from a failing integration test and is driven inward through unit-level red-green-refactor cycles.
 
-# Run with specific experiment template
-python -m src.code.train +experiment=default
+## Outer loop (integration)
 
-# Parameter sweeps with multirun
-python -m src.code.train -m model_kwargs.hidden_size=128,256,512,1024,2048
+1. **Red (integration)** — Write one integration/acceptance test describing the next observable behavior from the outside in. Run it. Confirm it fails for the reason you expect.
+2. **Inner loop (unit)** — Repeat until the integration test can pass:
+   - **Red** — Write the smallest unit test that expresses the next missing piece.
+   - **Green** — Write the minimum production code to make that unit test pass. No speculative code.
+   - **Refactor** — Clean up while all unit tests stay green.
+3. **Green (integration)** — Re-run the integration test; drop back into the inner loop if it still fails.
+4. **Refactor (integration)** — With everything green, refactor across module boundaries if needed.
 
-# Override specific parameters
-python -m src.code.train model_kwargs.hidden_size=128 training_kwargs.learning_rate=0.001
+## Discipline rules
 
-# Custom experiment with name
-python -m src.code.train name=my_experiment model_kwargs.hidden_size=128
-```
+- Never skip the red step. If you cannot articulate why a test fails, you do not yet understand the requirement.
+- One logical change per cycle.
+- Run only the relevant test after each green step, then the full suite before each checkpoint.
+- If a refactor breaks a test, revert the refactor — do not fix forward.
 
-### Running Evaluation
+# Environment
 
-```bash
-# Evaluate trained model checkpoints (iterates through all checkpoints)
-python -m src.code.eval experiment=my_experiment
+`uv`-managed. Use `uv run python -m ...` so commands resolve the project venv. Fast tests:
+`uv run python -m pytest -m "not slow"`; full suite: `uv run python -m pytest`.
 
-# Evaluate pretrained LLM on the task
-python -m src.code.eval experiment=llm_eval model_kwargs.model_path=meta-llama/Llama-3.1-8B
+# Architecture
 
-# Multirun evaluation across models
-python -m src.code.eval -m experiment=llm_eval model_kwargs.model_path=meta-llama/Llama-3.1-8B,meta-llama/Llama-3.1-70B
+Hydra composes config from `conf/` and runs one **runner** (a top-level job: train or eval).
 
-# Override evaluation settings
-python -m src.code.eval experiment=my_experiment eval_kwargs.num_eval_batches=100
+- `conf/config.yaml` — base defaults (setting + model + train + runner), wandb toggle, Hydra run-dir layout.
+- `conf/{setting,model,train,runner}/` — composable groups. `runner/` files fully specify a job (which setting/model/train to use + any sweep params).
+- `src/code/config.py` — `Config` wraps the resolved `DictConfig`; seeds all RNGs; turns `save_steps_method` into a concrete checkpoint schedule.
+- `src/code/data.py` — `init_dataset` + dataset classes. Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
+- `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM / Bayesian baseline); all return logits via `.output_key`.
+- `src/code/train.py` — Hydra entry point. Sizes the model from the dataset, runs the HF `Trainer` with custom callbacks.
+- `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval → wandb), `CustomSaveCallback`.
+- `src/code/eval.py` — `EvalComponents` (fixed eval batches, built once, deterministic) + `Evaluator` (build once; `evaluate(model) -> (metrics, extras)` per checkpoint/step). `Evaluator.from_cache` reuses a prior run's batches so online and standalone eval score identically.
+- `src/code/analysis_utils.py` — `load_eval_results(..., source="local"|"wandb")` loads metrics into a tidy DataFrame from disk (offline, default) or from wandb; same schema either way. wandb is never assumed.
 
-# Force overwrite existing evaluation results
-python -m src.code.eval experiment=my_experiment overwrite=true
-```
+## Key design patterns
 
-### Environment Setup
-
-```bash
-# Set required environment variables
-export CACHE_DIR="/path/to/cache/directory"
-export WANDB_API_KEY="your_wandb_key"  # Optional for experiment tracking
-
-# Install dependencies (no requirements.txt - install manually)
-pip install torch hydra-core omegaconf wandb numpy pyprojroot python-dotenv safetensors transformers mup
-```
-
-### Debug and Development
-
-```bash
-# Run with Hydra debug info
-python -m src.code.train hydra.verbose=true
-
-# Resume training (set overwrite=false)
-python -m src.code.train name=my_experiment overwrite=false
-```
-
-## Architecture Overview
-
-### Core Components
-
-1. **Hydra Configuration System** (`conf/`): Hierarchical, composable configurations
-
-   - `config.yaml`: Main config with defaults
-   - `setting/`: Problem types
-   - `model/`: Neural network architectures
-   - `training/`: Optimization parameters
-   - `experiment/`: Pre-defined experiment templates
-
-2. **Training Pipeline** (`src/code/train.py`):
-
-   - Hydra-decorated main function using HuggingFace Transformers
-   - Automatic directory management and experiment tracking
-   - Wandb integration for metrics logging
-
-3. **Configuration Management** (`src/code/config.py`):
-
-   - `Config` class wraps Hydra DictConfig
-   - Handles checkpoint scheduling (sqrt_schedule, linear_schedule, end_only)
-   - Automatic directory creation and path resolution
-
-4. **Data Generation** (`src/code/dgp.py`):
-
-   - Task priors (uniform, power_law, constant_freq)
-   - MixtureDataset
-
-5. **Model Implementation** (`src/code/models.py`):
-
-   - MLP architecture
-   - Transformer architecture
-
-6. **Evaluation Pipeline** (`src/code/eval.py`):
-
-   - `ModelEvaluator` class: Reusable evaluation with configurable metrics and modes
-   - Evaluation modes: "standard" (mixed tasks) and "single_task" (per-task evaluation)
-   - `run_evaluation()`: Hydra-decorated main function for standalone evaluation
-   - Supports checkpoint-based evaluation for trained models and single-run evaluation for pretrained LLMs
-   - Returns metrics, predictions, labels, and optionally hidden states
-
-7. **Analysis Tools** (`src/code/analysis_utils.py`):
-
-   - `load_eval_results()`: Load evaluation metrics and configs from completed experiments
-   - Returns DataFrame with columns: 'config', 'metrics', 'checkpoint', and sweep parameters
-
-8. **Plotting** (`src/code/plotting_utils.py`):
-
-   - Plotting helpers
-
-### Data Flow
-
-1. **Experiment Launch**: Hydra manages configuration composition and multirun orchestration
-2. **Directory Structure**: Automatic organization in `${CACHE_DIR}/experiments/${setting}/${name}/`
-3. **Training**: HuggingFace Trainer with custom callbacks for checkpointing and metrics
-4. **Analysis**: Load experiment results using `make_results_dfs_from_experiment_dirs()`
-
-### Key Design Patterns
-
-- **Hydra Integration**: All configuration via hierarchical YAML files, no hardcoded parameters
-- **Automatic Path Management**: Hydra handles output directories, no manual path construction
-- **Config-Driven Analysis**: Analysis functions work directly with Hydra experiment outputs
-
-## Important Implementation Details
-
-### Configuration System
-
-- Uses Hydra's `@package` directives for hierarchical composition
-- `Config` class processes save_steps into checkpoint schedules automatically
-- Environment variable interpolation via `${oc.env:VARIABLE_NAME}`
-- Multirun creates separate directories per parameter combination
-
-### Training Architecture
-
-- Uses HuggingFace Transformers framework with custom callbacks
-- `CustomSaveCallback`: Handles model checkpointing at specified steps
-- `StepMetricsCallback`: Computes and logs per-task metrics during training
-- `PreBatchedDataCollator`: Manages pre-batched data efficiently
-
-### Analysis Workflow
-
-- **Post-experiment analysis**: Load completed experiments using `load_eval_results(setting, experiment_name)`
-- **Automatic config loading**: Directly reads configs from `config_resolved.yaml` files
-- **Checkpoint handling**: For small_lm, creates one DataFrame row per checkpoint; for LLM/Bayes, one row per config
-- **Sweep parameter parsing**: Automatically extracts parameter values from directory names
-
-### Data Generation
-
-- Datasets cached in `${CACHE_DIR}/experiments/${setting}/${name}/data/`
-- `MixtureDataset` base class with task prior sampling
-
-### Evaluation System
-
-- **ModelEvaluator class**: Handles batch-by-batch evaluation and metric aggregation
-- **Evaluation modes**:
-  - `standard`: Evaluate on mixed-task batches (default training distribution)
-  - `single_task`: Evaluate performance on individual tasks separately
-- **Checkpoint handling**: For trained models (`small_lm`), automatically iterates through all checkpoints
-- **LLM evaluation**: For pretrained models, runs single evaluation and saves metrics to `metrics.pt`
-- **Hidden states**: Can optionally extract and save hidden states for representational analysis
-- **Metrics saved to**: `{checkpoint_dir}/metrics.pt` for trained models, `{output_dir}/metrics.pt` for LLMs
-
-## Common Patterns
-
-### Adding New Experiments
-
-1. Create experiment template in `conf/experiment/my_experiment.yaml`
-2. Use `@package _global_` to override base config
-3. Define sweep parameters under `hydra.sweeper.params`
-
-### Running Standalone Evaluation
-
-```bash
-# Evaluate trained model checkpoints
-python -m src.code.eval experiment=my_experiment
-
-# Evaluate pretrained LLM (single run)
-python -m src.code.eval experiment=llm_eval
-
-# Multirun evaluation across multiple LLMs
-python -m src.code.eval -m experiment=llm_eval model_kwargs.model_path=meta-llama/Llama-3.1-8B,meta-llama/Llama-3.1-70B
-
-# Override evaluation parameters
-python -m src.code.eval experiment=my_experiment eval_kwargs.num_eval_batches=100 eval_kwargs.return_all=true
-
-# Force re-evaluation (overwrite existing metrics)
-python -m src.code.eval experiment=my_experiment overwrite=true
-```
-
-### Analysis After Training
-
-```python
-from src.code.analysis_utils import load_eval_results
-
-# Load experiment results (automatically loads configs and metrics)
-df = load_eval_results(
-    setting="balls_and_urns",
-    experiment_name="my_experiment"
-)
-
-# Access results
-# df['config'] - Config objects for each run
-# df['metrics'] - Metrics dict for each checkpoint/config
-# df['checkpoint'] - Training step (None for LLM/Bayes)
-# Additional columns for any sweep parameters
-```
-
-### Custom Model Architectures
-
-- Add model class to `src/code/models.py`
-- Create config in `conf/model/my_model.yaml`
-- Register in `init_model()` function
-
-## File Organization
-
-- `conf/`: Hydra configuration hierarchy
-- `src/code/`: Core implementation (training, models, data, analysis)
-- `src/notebooks/`: Jupyter notebooks for analysis and visualization
-- `figures/`: Generated plots and visualizations
-- `.env`: Environment variables (CACHE_DIR, WANDB_API_KEY)
-
-## Key Dependencies
-
-- **Hydra**: Configuration management and multirun orchestration
-- **HuggingFace Transformers**: Training loop and model management
-- **PyTorch**: Neural network implementation and training
-- **Wandb**: Experiment tracking and metrics logging
-- **OmegaConf**: Configuration object manipulation
-
-This codebase prioritizes reproducible research through systematic configuration management and automated experiment organization.
-
-## Code Style Preferences
-
-- **Write succinct, readable code** with comments only where needed for clarity
-- **Avoid try-catch blocks** unless explicitly requested - let functions fail fast with clear error messages
-- **Prefer explicit failures** over silent error handling - errors should surface immediately to aid debugging
+- **Build-once, evaluate-as-a-pure-function.** Eval setup (fixed batches) happens once; `evaluate(model)` is then a pure function of the model — reproducible across checkpoints.
+- **Config-driven, no hardcoding.** All knobs live in `conf/`. Model I/O dims are derived from the dataset, not hardcoded.
+- **wandb is optional.** `wandb.enabled=false` disables all logging (init + online metrics) for quick/debug runs.
+- **Reproducible artifacts.** Each run writes `config_resolved.yaml`; eval writes `metrics.pt` (+ `eval_batches.pt` for the cache loop).

@@ -1,0 +1,13 @@
+# @package _global_
+# Evaluate the Bayesian baseline model on the task (single run, no training).
+#
+#   python -m src.code.eval runner=eval_bayes
+
+defaults:
+  - override /setting: balls_and_urns
+  - override /model: bayesian_model
+  - override /train: default
+  - _self_
+
+name: bayes-eval
+output_dir: ${run_dir}

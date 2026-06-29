@@ -24,7 +24,6 @@ class MixtureDataset(Dataset):
         self.num_dims = config.num_dims
         self.num_tasks = config.num_tasks
         self.infinite_task_diversity = config.num_tasks == "inf"
-        self.single_task_eval = False
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.rng = torch.Generator(device=self.device)
         self.rng.manual_seed(self.config.random_seed)
@@ -55,42 +54,14 @@ class MixtureDataset(Dataset):
         else:
             raise ValueError("Unsupported prior type. Use 'uniform' or 'power_law'.")
 
-    def set_single_task_eval(self, task_idx=None, enable=True):
-        """
-        Set the single task evaluation mode.
-        """
-        self.single_task_eval = enable
-        if enable:
-            if self.infinite_task_diversity:
-                self.tasks = self.make_dataset(1, save=False)
-                self.task_idx_eval = 0
-                self.num_tasks = 1
-            else:
-                if task_idx != None:
-                    self.task_idx_eval = task_idx
-                else:
-                    # choose task idx at random
-                    self.task_idx_eval = torch.randint(0, self.num_tasks, (1,), device=self.device, generator=self.rng).squeeze().item()
-        else:
-            if self.infinite_task_diversity:
-                self.num_tasks = "inf"
-                self.tasks = None
-            else:
-                self.task_idx_eval = None
-
     def __gettask__(self, batch_size):
         """
         Returns a batch of tasks from the dataset.
         """
-        if self.infinite_task_diversity and not self.single_task_eval:
-            tasks = self.make_dataset(batch_size, save=False) 
-            return tasks, None
-        else:
-            if self.single_task_eval:
-                task_idx = torch.tensor([self.task_idx_eval] * batch_size, dtype=torch.long, device=self.device)
-            else:
-                task_idx = torch.multinomial(self.task_prior, batch_size, replacement=True, generator=self.rng)
-            return self.tasks[task_idx].to(self.device), task_idx
+        if self.infinite_task_diversity:
+            return self.make_dataset(batch_size, save=False), None
+        task_idx = torch.multinomial(self.task_prior, batch_size, replacement=True, generator=self.rng)
+        return self.tasks[task_idx].to(self.device), task_idx
 
     def make_dataset(self, num_tasks=None, save=True):
         """
@@ -116,6 +87,16 @@ class BallsAndUrnsDataset(MixtureDataset):
         else:
             self.item_tokens = torch.arange(0, config.num_dims)
             self.start_token = torch.tensor(len(self.item_tokens)).long()
+
+    @property
+    def vocab_size(self):
+        """Number of token ids the model must span: item tokens + start token."""
+        return int(self.start_token.item()) + 1
+
+    @property
+    def seq_len(self):
+        """Sequence length the model sees: context length + start token."""
+        return self.config.training_kwargs["context_length"] + 1
 
     def make_dataset(self, num_tasks, save=False):
         """Generate balls and urns dataset"""

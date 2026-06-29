@@ -1,30 +1,21 @@
 import logging
 import torch
-import numpy as np
 import transformers
+
+from .config import set_seed
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-##### General init function ##### 
+##### General init function #####
 def init_model(config):
-    """
-    Initializes a neural network with a custom configuration.
-
-    Returns:
-        model: The initialized neural network.
-        model_type (str): The type of model.
-    """
-    # set seed for reproducibility
-    torch.manual_seed(config.random_seed)
-    np.random.seed(config.random_seed)
+    """Initialize a model from config (trained from scratch); returns the model."""
+    # Re-seed right before init so weight initialization is reproducible.
+    set_seed(config.random_seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(config.random_seed)
-        torch.cuda.manual_seed_all(config.random_seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-
 
     model_config = transformers.GPTNeoXConfig(**config.model_kwargs["model_config"])
     model = transformers.AutoModelForCausalLM.from_config(model_config)

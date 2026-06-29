@@ -2,66 +2,68 @@ import os
 import torch
 from transformers import TrainerCallback
 import wandb
-from .eval import ModelEvaluator
+
+from .eval import Evaluator
+
+# Keys returned by the dataset that are for evaluation only and must not be
+# forwarded to the model (they are not valid forward() arguments).
+EVAL_ONLY_KEYS = {"eval_labels"}
+
 
 #########################
 # helpers for training
 #########################
 
 class PreBatchedDataCollator:
-    """
-    Data collator for datasets that already return batched data from __getitem__.
-    Simply extracts the batch from the single-item list returned by DataLoader.
-    """
-    
+    """Datasets here already return a full batch from __getitem__, so the
+    DataLoader hands us a single-element list. Unwrap it and drop eval-only keys
+    that would otherwise be passed to model.forward()."""
+
     def __call__(self, features):
-        return features[0]
+        return {k: v for k, v in features[0].items() if k not in EVAL_ONLY_KEYS}
+
 
 #########################
-# helpers for saving 
+# Step metrics callback
 #########################
-
 
 class StepMetricsCallback(TrainerCallback):
+    """Runs evaluation every `step_interval` training steps and logs to wandb."""
+
     def __init__(self, step_interval, trainer, config):
         self.trainer = trainer
         self.config = config
-        self.step_interval = step_interval  # Interval at which to execute
+        self.step_interval = step_interval
+        self.use_wandb = config.cfg.wandb.enabled
+        # Build the evaluator once (fixed batches), reusing a cached eval if configured.
+        cache_dir = config.get("eval_cache_dir")
+        if cache_dir:
+            self.evaluator = Evaluator.from_cache(config, trainer.train_dataset, cache_dir)
+        else:
+            self.evaluator = Evaluator(config, trainer.train_dataset)
+            # Persist the fixed batches so a later standalone eval (eval_cache_dir)
+            # can score checkpoints on the exact same batches.
+            self.evaluator.c.save(os.path.join(config.run_dir, "eval_batches.pt"))
 
     def on_step_end(self, args, state, control, **kwargs):
-        """
-        Called at the end of each training step. Triggers metric computation
-        every `step_interval` steps.
-        """
-        # Check if it's time to execute based on step interval
-        if (
-            state.global_step % self.step_interval == 0
-            and self.trainer.compute_metrics is not None
-        ):
-            trainer = self.trainer
+        if state.global_step % self.step_interval != 0:
+            return
+        metrics, extras = self.evaluator.evaluate(self.trainer.model)
+        if self.use_wandb:
+            wandb.log({f"eval/{k}": v for k, v in metrics.items()}, step=state.global_step)
 
-            trainer.model.eval()  # Set model to evaluation mode
+        if self.config.training_kwargs.save_online_eval:
+            checkpoint_save_dir = os.path.join(self.config.output_dir, str(state.global_step))
+            os.makedirs(checkpoint_save_dir, exist_ok=True)
+            torch.save({"metrics": metrics, "extras": extras, "step": state.global_step},
+                       os.path.join(checkpoint_save_dir, "metrics.pt"))
 
-            # Use helper function for consistent evaluation
-            evaluator = ModelEvaluator(trainer.model, trainer.train_dataset, self.config)
-            metrics = evaluator.evaluate()
-            
-            # Prepare all wandb metrics at once
-            wandb_metrics = {}
-            # Add metrics except for all_*
-            wandb_metrics.update({f"eval/{k}": v for k, v in metrics.items() if "all" not in k})
-            
-            # Log everything at once
-            wandb.log(wandb_metrics, step=state.global_step)            
-            metrics["step"] = state.global_step
+        self.trainer.model.train()
 
-            if self.config.training_kwargs.save_online_eval:
-                checkpoint_save_dir = f"{self.config.output_dir}/{state.global_step}"
-                os.makedirs(checkpoint_save_dir, exist_ok=True)
-                torch.save(metrics, os.path.join(checkpoint_save_dir, "metrics.pt"))
 
-            trainer.model.train()  # Return model to training mode
-
+#########################
+# Checkpoint saving callback
+#########################
 
 class CustomSaveCallback(TrainerCallback):
     def __init__(self, steps_to_save, trainer):
@@ -69,15 +71,12 @@ class CustomSaveCallback(TrainerCallback):
         self.trainer = trainer
 
     def on_step_end(self, args, state, control, **kwargs):
-        """
-        Save the model at specific intervals without saving unnecessary files.
-        """
-        trainer = self.trainer
-        model = trainer.model
+        """Save the model at the configured steps (and at the final step, if any
+        steps are scheduled at all)."""
         if (
             state.global_step in self.steps_to_save
-            or state.global_step == args.max_steps
+            or (self.steps_to_save and state.global_step == args.max_steps)
         ):
             checkpoint_save_dir = f"{args.output_dir}/{state.global_step}"
             os.makedirs(checkpoint_save_dir, exist_ok=True)
-            model.save_pretrained(os.path.join(checkpoint_save_dir, "model"))
+            self.trainer.model.save_pretrained(os.path.join(checkpoint_save_dir, "model"))

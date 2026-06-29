@@ -1,18 +1,23 @@
 defaults:
   - setting: balls_and_urns
-  - model: llm
-  - training: default
-  - experiment: small_lm
-  - eval: small_lm_eval
+  - model: small_lm
+  - train: default
   - _self_
+  - runner: train_small_lm
 
 # Experiment metadata
-name: ??? # Must be set by experiment config
+name: ??? # Must be set by the runner config
 random_seed: 42
-overwrite: false # Flag for overwriting existing checkpoints
+overwrite: false # Flag for overwriting existing checkpoints / metrics
+
+# Weights & Biases logging. Set `wandb.enabled=false` to disable all wandb logging
+# (no init, no online metric logging) — useful for quick / debug runs.
+wandb:
+  enabled: true
+  entity: null # null -> use the WANDB_ENTITY env var / your default entity
+  project: template-lm-training
 
 # Hydra configuration - automatic directory naming
-# Hydra multirun configuration
 hydra:
   mode: MULTIRUN
   run:
@@ -21,17 +26,23 @@ hydra:
     dir: ${cache_dir}/${setting}/${name}
     subdir: ${hydra.job.override_dirname}
   job:
-    chdir: true
+    chdir: false
     config:
       override_dirname:
-        exclude_keys: ["experiment", "overwrite"]
+        exclude_keys: ["runner", "overwrite"]
   sweeper:
     _target_: hydra._internal.core_plugins.basic_sweeper.BasicSweeper
     max_batch_size: null
 
-# Environment variable for cache directory
-cache_dir: ${oc.env:CACHE_DIR}
+# Environment variable for cache directory (falls back to ./outputs if unset)
+cache_dir: ${oc.env:CACHE_DIR,./outputs}
+
+# Optional path to a prior eval run's output dir (single run or sweep root). When
+# set, evaluation reuses its cached fixed batches via Evaluator.from_cache so that
+# training-time online eval and standalone eval score on identical batches.
+eval_cache_dir: null
 
 # Common paths computed from cache_dir
+output_dir: ${run_dir} # overridden by runners that checkpoint (e.g. ${run_dir}/checkpoints)
 data_path: ${cache_dir}/${setting}/${name}/data.pt
 run_dir: ${hydra:runtime.output_dir}

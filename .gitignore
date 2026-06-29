@@ -195,6 +195,9 @@ src/scripts/
 *.out
 *.err
 
+# Default local cache_dir (used when CACHE_DIR is unset)
+outputs/
+
 # bash scripts
 *.bash
 

@@ -1,277 +1,133 @@
-# Template ML Codebase
+# Template LM Training Codebase
 
-A machine learning research template for running systematic experiments with Hydra-based configuration management. This template is designed for reproducible ML research with clean experiment organization and tracking.
+A Hydra-based template for systematic language-model training and evaluation experiments. Designed for reproducible research: composable configs, deterministic evaluation, automatic run-directory management, and optional Weights & Biases tracking.
 
-## Features
+## Setup
 
-- **Hydra Configuration System**: Hierarchical, composable configurations for experiments
-- **Flexible Training Pipeline**: Support for custom models and training configurations
-- **Automated Experiment Tracking**: Integration with Weights & Biases (wandb)
-- **Evaluation Framework**: Standalone evaluation with multiple metrics and modes
-- **Reproducible Research**: Automatic directory management and config versioning
-
-## Installation
-
-### Prerequisites
-
-- Python 3.8+
-- PyTorch
-- CUDA (optional, for GPU support)
-
-### Setup
-
-1. Clone the repository:
-```bash
-git clone git@github.com:DanielWurgaft/template-ml-codebase.git
-cd template-ml-codebase
-```
-
-2. Install dependencies:
-```bash
-pip install torch hydra-core omegaconf wandb numpy pyprojroot python-dotenv safetensors transformers mup
-```
-
-3. Create a `.env` file in the root directory with the required environment variables (see [Environment Variables](#environment-variables) below).
-
-## Environment Variables
-
-Create a `.env` file in the project root with the following variables:
+The project is managed by [`uv`](https://docs.astral.sh/uv/). All dependencies are declared in `pyproject.toml` (locked in `uv.lock`).
 
 ```bash
-# Required: Cache directory for experiments and data
-CACHE_DIR=/path/to/your/cache/directory
-
-# Optional: Weights & Biases configuration
-WANDB_API_KEY=your_wandb_api_key_here
-WANDB_DIR=/path/to/wandb/logs
-WANDB_CACHE_DIR=/path/to/wandb/cache
-
-# Optional: HuggingFace configuration (for pretrained models)
-HF_TOKEN=your_huggingface_token_here
-HF_HOME=~/.cache/huggingface
+uv sync                              # create / update .venv from uv.lock
+export CACHE_DIR=/path/to/cache      # optional: where outputs land (defaults to ./outputs)
+export WANDB_API_KEY=...             # optional: only if logging to wandb
 ```
 
-**Note**:
-- `CACHE_DIR` is required for storing experiment outputs and datasets
-- Weights & Biases variables are optional but recommended for experiment tracking
-- HuggingFace token is only needed if you're using gated models (e.g., Llama)
-
-## Repository Structure
-
-```
-template-ml-codebase/
-├── conf/                          # Hydra configuration files
-│   ├── config.yaml               # Main configuration
-│   ├── experiment/               # Experiment templates
-│   │   ├── llm_exp.yaml         # LLM evaluation experiments
-│   │   ├── small_lm_exp.yaml    # Small model training experiments
-│   │   └── bayes_eval.yaml      # Bayesian baseline experiments
-│   ├── model/                    # Model architectures
-│   │   ├── small_lm.yaml        # Small transformer config
-│   │   ├── llm.yaml             # Pretrained LLM config
-│   │   └── bayesian_model.yaml  # Bayesian baseline config
-│   ├── setting/                  # Task/dataset configurations
-│   │   └── balls_and_urns.yaml  # Example task setting
-│   ├── training/                 # Training configurations
-│   │   └── default.yaml         # Default training params
-│   └── eval/                     # Evaluation configurations
-│       └── small_lm_eval.yaml   # Evaluation settings
-├── src/
-│   ├── code/                     # Core implementation
-│   │   ├── train.py             # Training pipeline
-│   │   ├── eval.py              # Evaluation pipeline
-│   │   ├── models.py            # Model architectures
-│   │   ├── data.py              # Dataset classes
-│   │   ├── config.py            # Configuration management
-│   │   ├── analysis_utils.py    # Analysis tools
-│   │   ├── plot_utils.py        # Plotting utilities
-│   │   └── train_utils.py       # Training helpers
-│   ├── notebooks/                # Jupyter notebooks for analysis
-│   ├── scripts/                  # Utility scripts
-│   └── tests/                    # Unit tests
-├── .env                          # Environment variables (create this)
-├── .gitignore                    # Git ignore rules
-├── CLAUDE.md                     # Guidance for Claude Code
-├── LICENSE                       # License file
-└── README.md                     # This file
-```
-
-### Generated Directory Structure
-
-When you run experiments, Hydra will automatically create organized output directories:
-
-```
-$CACHE_DIR/experiments/
-└── {setting}/                    # e.g., balls_and_urns
-    └── {experiment_name}/        # e.g., my_experiment
-        ├── .hydra/              # Hydra config snapshots
-        ├── data/                # Generated datasets (cached)
-        ├── outputs/             # Model checkpoints and outputs
-        │   └── {checkpoint}/    # e.g., 1000, 5000, 10000
-        │       ├── model/       # Saved model weights
-        │       └── metrics.pt   # Evaluation metrics
-        └── wandb/               # W&B logs (if enabled)
-```
+Run everything as `uv run python -m ...` so it uses the project venv.
 
 ## Usage
 
-### Training
+The base config composes a **runner** (a top-level job). Pick one with `runner=...`.
+
+### Train a small LM
 
 ```bash
-# Basic training with default configuration
-python -m src.code.train
+# Single run
+uv run python -m src.code.train runner=train_small_lm name=my_run
 
-# Run specific experiment template
-python -m src.code.train experiment=small_lm_exp
+# Disable wandb (no tracking) — handy for quick / debug runs
+uv run python -m src.code.train runner=train_small_lm wandb.enabled=false
 
-# Override parameters
-python -m src.code.train model_kwargs.hidden_size=256 training_kwargs.learning_rate=1e-4
-
-# Custom experiment name
-python -m src.code.train name=my_experiment
-
-# Parameter sweep with multirun
-python -m src.code.train -m model_kwargs.hidden_size=128,256,512
+# Parameter sweep (multirun)
+uv run python -m src.code.train -m runner=train_small_lm model_kwargs.model_config.hidden_size=64,128,256
 ```
 
-### Evaluation
+### Evaluate
 
 ```bash
-# Evaluate trained model (evaluates all checkpoints)
-python -m src.code.eval experiment=small_lm_exp name=my_experiment
+# Evaluate every checkpoint of a trained run (same name/overrides as training)
+uv run python -m src.code.eval runner=train_small_lm name=my_run
 
-# Evaluate pretrained LLM
-python -m src.code.eval experiment=llm_exp model_kwargs.model_path=meta-llama/Llama-3.1-8B
+# Evaluate a pretrained LLM (single run)
+uv run python -m src.code.eval runner=eval_llm model_kwargs.model_path=google/gemma-2-2b
 
-# Multirun evaluation across models
-python -m src.code.eval -m experiment=llm_exp model_kwargs.model_path=model1,model2,model3
+# Evaluate the Bayesian baseline
+uv run python -m src.code.eval runner=eval_bayes
 
-# Override evaluation settings
-python -m src.code.eval experiment=my_experiment eval_kwargs.num_eval_batches=100
-
-# Force overwrite existing results
-python -m src.code.eval experiment=my_experiment overwrite=true
+# Re-evaluate, overwriting existing metrics
+uv run python -m src.code.eval runner=eval_llm overwrite=true
 ```
 
-### Analysis
+Evaluation is **deterministic**: a fixed set of eval batches is sampled once (seeded), so every checkpoint and every training step is scored on the same batches. Pass `eval_cache_dir=<a prior run dir>` to reuse another run's exact batches.
 
-After training and evaluation, analyze results in Python:
+## Weights & Biases
+
+wandb is fully optional and controlled from config:
+
+```yaml
+wandb:
+  enabled: true          # set false to disable all wandb logging
+  entity: null           # null -> WANDB_ENTITY env / default entity
+  project: template-lm-training
+```
+
+`wandb.enabled=false` skips `wandb.init` and all online metric logging, and sets the HF Trainer `report_to="none"`.
+
+## Repository structure
+
+```
+conf/
+  config.yaml              # base defaults, wandb toggle, Hydra run-dir layout
+  setting/balls_and_urns.yaml   # task / dataset config
+  model/{small_lm,llm,bayesian_model}.yaml
+  train/default.yaml       # training_kwargs + eval_kwargs
+  runner/                  # top-level jobs (fully specify a run)
+    train_small_lm.yaml    # train a small LM from scratch
+    eval_llm.yaml          # evaluate a pretrained LLM
+    eval_bayes.yaml        # evaluate the Bayesian baseline
+src/
+  code/
+    config.py              # Config wrapper: RNG seeding, checkpoint scheduling
+    data.py                # init_dataset + dataset classes (return batched dicts)
+    models.py              # init_model / load_model (small LM, LLM, Bayesian)
+    train.py               # training entry point (HF Trainer + callbacks)
+    train_utils.py         # data collator + online-eval / checkpoint callbacks
+    eval.py                # EvalComponents + Evaluator + standalone eval entry
+    analysis_utils.py      # load_eval_results -> DataFrame
+    plot_utils.py          # plotting helpers
+  notebooks/               # analysis notebooks
+  tests/                   # pytest suite (-m slow for the end-to-end test)
+```
+
+## Output structure
+
+```
+$CACHE_DIR/{setting}/{name}/{override_dirname}/
+  config_resolved.yaml     # full resolved config (reproducibility + eval cache match)
+  eval_batches.pt          # fixed eval batches (for the eval cache loop)
+  checkpoints/             # training runs only
+    {step}/
+      model/               # saved weights
+      metrics.pt           # {metrics, extras, step}
+```
+
+## Adding components
+
+- **New dataset**: add a class in `src/code/data.py` (return `input_ids` / `labels` / `eval_labels`, expose `compute_metrics`, `vocab_size`, `seq_len`); register it in `init_dataset`; add `conf/setting/<name>.yaml`.
+- **New model**: add to `src/code/models.py` (init + load), register in `init_model`/`load_model`; add `conf/model/<name>.yaml`.
+- **New runner**: add `conf/runner/<name>.yaml` selecting setting/model/train + any sweep params.
+
+## Testing
+
+```bash
+uv run python -m pytest -m "not slow"   # fast unit tests
+uv run python -m pytest                 # full suite (includes the end-to-end smoke test)
+```
+
+## Analysis
+
+wandb is optional, so analysis works from disk or from wandb — neither is the
+hardwired path. `load_eval_results` returns the same wide schema either way: one
+row per (run, step), a `config` column, and one column per flat metric.
 
 ```python
 from src.code.analysis_utils import load_eval_results
 
-# Load experiment results
-df = load_eval_results(
-    setting="balls_and_urns",
-    experiment_name="my_experiment"
-)
+# Offline (default): reads metrics.pt from $CACHE_DIR — no wandb needed.
+df = load_eval_results(setting="balls-and-urns", experiment_name="my_run")
 
-# Access metrics and configs
-# df contains columns: 'config', 'metrics', 'checkpoint', and any sweep parameters
-# For small_lm: one row per checkpoint
-# For llm/bayes: one row per model configuration
+# Or pull the same shape from wandb.
+df = load_eval_results("balls-and-urns", "my_run", source="wandb",
+                       entity="my_entity", project="template-lm-training")
+
+# columns: sweep params + 'step' + 'config' + flat metric columns (e.g. 'loss')
 ```
-
-## Configuration System
-
-This template uses [Hydra](https://hydra.cc/) for hierarchical configuration management.
-
-### Key Concepts
-
-1. **Base Configuration** (`conf/config.yaml`): Default settings for all experiments
-2. **Experiment Templates** (`conf/experiment/`): Predefined experiment configurations
-3. **Composable Configs**: Mix and match model, training, and setting configs
-4. **Parameter Overrides**: Override any parameter from the command line
-
-### Creating New Experiments
-
-1. Create a new experiment config in `conf/experiment/my_experiment.yaml`:
-
-```yaml
-# @package _global_
-
-name: my_experiment
-
-defaults:
-  - /model: small_lm
-  - /training: default
-  - /setting: balls_and_urns
-
-model_kwargs:
-  hidden_size: 256
-  num_layers: 4
-
-training_kwargs:
-  learning_rate: 1e-4
-  num_train_steps: 10000
-```
-
-2. Run the experiment:
-
-```bash
-python -m src.code.train experiment=my_experiment
-```
-
-## Adding Custom Components
-
-### Custom Model
-
-1. Add model class to `src/code/models.py`
-2. Create config in `conf/model/my_model.yaml`
-3. Register in the model loading function
-
-### Custom Dataset
-
-1. Add dataset class to `src/code/data.py`
-2. Create config in `conf/setting/my_setting.yaml`
-3. Register in the dataset initialization function
-
-## Best Practices
-
-- **Use experiment templates** for reproducible experiments
-- **Version your configs** by checking them into git
-- **Name your experiments** meaningfully for easy identification
-- **Use multirun** for parameter sweeps instead of manual loops
-- **Check W&B** for real-time experiment tracking
-- **Save configs** with experiments for full reproducibility
-
-## Troubleshooting
-
-### Common Issues
-
-1. **CACHE_DIR not set**: Make sure `.env` file exists with `CACHE_DIR` defined
-2. **Permission errors**: Ensure you have write access to `CACHE_DIR`
-3. **Import errors**: Run commands as modules: `python -m src.code.train` (not `python src/code/train.py`)
-4. **GPU out of memory**: Reduce `batch_size` in training config
-
-## Contributing
-
-When contributing, please:
-- Follow the existing code style (see `CLAUDE.md` for style preferences)
-- Add appropriate configs for new models/datasets
-- Update documentation for new features
-- Write clear commit messages
-
-## License
-
-See [LICENSE](LICENSE) file for details.
-
-## Citation
-
-If you use this template in your research, please cite:
-
-```bibtex
-@software{template_ml_codebase,
-  author = {Wurgaft, Daniel},
-  title = {Template ML Codebase},
-  year = {2025},
-  url = {https://github.com/DanielWurgaft/template-ml-codebase}
-}
-```
-
-## Resources
-
-- [Hydra Documentation](https://hydra.cc/)
-- [Weights & Biases Documentation](https://docs.wandb.ai/)
-- [PyTorch Documentation](https://pytorch.org/docs/)
-- [See CLAUDE.md for detailed implementation notes](CLAUDE.md)
