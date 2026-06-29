@@ -7,13 +7,10 @@ import os
 
 ##### Init dataset #####
 def init_dataset(config, overwrite_data: bool = False):
-    """
-    Initialize a dataset from a given config.
-    """
+    """Initialize a dataset from the config's `setting`."""
     if config.setting == "balls-and-urns":
         return BallsAndUrnsDataset(config, overwrite_data=overwrite_data)
-    else:
-        raise ValueError(f"Unsupported setting: {config.setting}. Only 'balls-and-urns' and 'graph-random-walk' settings are supported.")
+    raise ValueError(f"Unsupported setting: {config.setting}")
 
 ##### Dataset class #####
 class MixtureDataset(Dataset):
@@ -30,10 +27,9 @@ class MixtureDataset(Dataset):
 
         if not self.infinite_task_diversity:
             if not os.path.exists(self.config.data_path) or overwrite_data:
-                self.dataset_dict = self.make_dataset(num_tasks=self.num_tasks, save=True)
+                self.tasks = self.make_dataset(num_tasks=self.num_tasks, save=True)
             else:
-                self.dataset_dict = torch.load(self.config.data_path)
-            self.tasks = self.dataset_dict["tasks"].to(self.device)
+                self.tasks = torch.load(self.config.data_path)["tasks"].to(self.device)
             self.num_tasks = len(self.tasks)
             self._process_task_prior()
         else:
@@ -99,18 +95,15 @@ class BallsAndUrnsDataset(MixtureDataset):
         return self.config.training_kwargs["context_length"] + 1
 
     def make_dataset(self, num_tasks, save=False):
-        """Generate balls and urns dataset"""
+        """Sample `num_tasks` flat-Dirichlet categorical distributions (the "urns")."""
         def dirichlet_flat(n, d, generator):
-            # Draw Exp(1) as -log(U), then normalize rows
-            # Clamp to prevent log(0) which causes inf values
+            # Draw Exp(1) as -log(U) (clamped off 0), then normalize rows.
             x = -torch.log(torch.rand((n, d), generator=generator, device=generator.device).clamp(min=1e-10))
             return x / x.sum(dim=-1, keepdim=True)
-        # Generate adjacency matrices for each task
-        task_distributions = dirichlet_flat(num_tasks, self.config.num_dims, generator=self.rng) # (num_tasks, num_dims)
+        tasks = dirichlet_flat(num_tasks, self.config.num_dims, generator=self.rng)  # (num_tasks, num_dims)
         if save:
-            torch.save({"tasks": task_distributions.cpu()}, self.config.data_path)
-        else:
-            return task_distributions.to(self.device)
+            torch.save({"tasks": tasks.cpu()}, self.config.data_path)
+        return tasks.to(self.device)
 
     def __getitem__(self, i=None):
         tasks, _ = self.__gettask__(self.config.training_kwargs["batch_size"])

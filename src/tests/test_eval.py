@@ -60,6 +60,15 @@ def test_fixed_batches_make_evaluate_deterministic():
     assert first == second
 
 
+def test_finite_task_dataset_builds_and_caches(tmp_path):
+    cfg = _config().cfg
+    cfg.num_tasks = 5
+    cfg.data_path = str(tmp_path / "data.pt")
+    dataset = BallsAndUrnsDataset(Config(cfg))
+    assert dataset.num_tasks == 5
+    assert dataset.__getitem__()["input_ids"].shape[0] == cfg.training_kwargs.batch_size
+
+
 def test_collator_drops_eval_only_keys():
     batch = {"input_ids": torch.zeros(2, 3), "labels": torch.zeros(2, 3),
              "eval_labels": torch.zeros(2, 3, 3)}

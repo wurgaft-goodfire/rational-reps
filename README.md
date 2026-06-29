@@ -83,7 +83,6 @@ src/
     train_utils.py         # data collator + online-eval / checkpoint callbacks
     eval.py                # EvalComponents + Evaluator + standalone eval entry
     analysis_utils.py      # load_eval_results -> DataFrame
-    plot_utils.py          # plotting helpers
   notebooks/               # analysis notebooks
   tests/                   # pytest suite (-m slow for the end-to-end test)
 ```
