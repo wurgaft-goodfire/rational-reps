@@ -59,6 +59,37 @@ def test_stack_of_two_rings_is_two_circles():
         assert r.std() / r.mean() < 0.1
 
 
+def test_tree_includes_inner_nodes_and_supports_unbalanced():
+    # leaves-only by default: balanced depth-2 branch-3 -> 9 leaves
+    assert build_conditional({"structure": "tree", "n": 2, "k": 3}).shape == (9, 9)
+    # opt into inner-node items (Park et al.): 1 + 3 + 9 = 13 nodes
+    assert build_conditional({"structure": "tree", "n": 2, "k": 3, "leaves_only": False}).shape == (13, 13)
+    # unbalanced via an explicit parent structure (the Park Organism->...->Dog example)
+    L = build_conditional({"structure": "tree", "parents": [-1, 0, 0, 1, 1, 1, 1, 5, 5, 5], "leaves_only": False})
+    assert L.shape == (10, 10)
+
+
+def test_tree_is_orthogonal_direct_sum_of_simplices():
+    # Park et al.: hierarchically related concepts occupy orthogonal subspaces, each a simplex.
+    # nodes (DFS pre-order): 0=root; each level-1 node is followed by its 3 leaves,
+    # so the level-1 inner nodes are [1, 5, 9] and their leaves [2,3,4]/[6,7,8]/[10,11,12].
+    E = predicted_geometry(build_conditional({"structure": "tree", "n": 2, "k": 3, "leaves_only": False}))
+    E = E - E.mean(0)
+
+    def edge_cv(P):
+        D = np.sqrt(((P[:, None] - P[None]) ** 2).sum(-1)); iu = np.triu_indices(len(P), 1)
+        return D[iu].std() / D[iu].mean()
+
+    def dirs(M):
+        Mc = M - M.mean(0); U, S, Vt = np.linalg.svd(Mc, full_matrices=False)
+        return Vt[S > 1e-6 * S[0]]
+
+    top = E[[1, 5, 9]]                                      # top split over the inner-node reps
+    within = np.vstack([E[g] - E[g].mean(0) for g in ([2, 3, 4], [6, 7, 8], [10, 11, 12])])
+    assert edge_cv(top) < 0.05                              # regular simplex at the top split
+    assert np.abs(dirs(top) @ dirs(within).T).max() < 0.05  # orthogonal direct sum
+
+
 def test_log_line_compresses_large_magnitudes():
     E = predicted_geometry(build_conditional({"structure": "log_line", "n": 30}))
     gaps = np.abs(np.diff(E[:, 0]))

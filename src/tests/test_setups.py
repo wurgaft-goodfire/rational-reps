@@ -48,6 +48,41 @@ def test_stacking_plot_renders():
 
 # ── per-structure draw layouts ────────────────────────────────────────────────
 
+def test_tree_triptych_default_is_ultrametric_dendrogram():
+    from src.code import plot_utils
+    spec = {"structure": "tree", "n": 2, "k": 2}
+    L = graph_conditional(spec)
+    fig = plot_utils.plot_predicted_geometry(spec, L, predicted_geometry(L))
+    assert len(fig.axes) == 3                                   # structure + conditional + dendrogram
+
+
+def test_tree_triptych_simplex_view_draws_one_panel_per_split():
+    from src.code import plot_utils
+    # unbalanced Park example: splits at node 0 (segment), node 1 (tetrahedron/3-D), node 5 (triangle)
+    spec = {"structure": "tree", "parents": [-1, 0, 0, 1, 1, 1, 1, 5, 5, 5]}
+    L = graph_conditional(spec)
+    fig = plot_utils.plot_predicted_geometry(spec, L, predicted_geometry(L), tree_view="simplex")
+    assert len(fig.axes) == 2 + 3                               # structure + conditional + one per split
+
+
+def test_tree_leaves_only_drops_inner_nodes_from_conditional_and_code():
+    from src.code import plot_utils
+    full = graph_conditional({"structure": "tree", "n": 2, "k": 2, "leaves_only": False})
+    leaves = graph_conditional({"structure": "tree", "n": 2, "k": 2})   # leaves-only by default
+    assert full.shape[0] == 7 and leaves.shape[0] == 4         # 7 nodes vs 4 leaves
+    fig = plot_utils.plot_predicted_geometry({"structure": "tree", "n": 2, "k": 2},
+                                             leaves, predicted_geometry(leaves))
+    assert len(fig.axes) == 3                                   # dendrogram over the 4 leaves
+
+
+def test_nontree_triptych_keeps_the_embedding_panel():
+    from src.code import plot_utils
+    spec = {"structure": "ring", "n": 12}
+    L = graph_conditional(spec)
+    fig = plot_utils.plot_predicted_geometry(spec, L, predicted_geometry(L))
+    assert len(fig.axes) == 3                                   # structure + conditional + embedding
+
+
 def test_structure_graph_layouts_for_all_structures():
     from src.code import plot_utils
     specs = [

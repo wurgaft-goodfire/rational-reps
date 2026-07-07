@@ -59,7 +59,7 @@ class ReadoutConfig(transformers.PretrainedConfig):
     model_type = "readout"
 
     def __init__(self, vocab_size=2, num_classes=2, embed_dim=16, arity=1,
-                 hidden_size=64, num_layers=2, init_scale=0.3, **kwargs):
+                 hidden_size=64, num_layers=2, init_scale=0.02, **kwargs):
         super().__init__(**kwargs)
         self.vocab_size = vocab_size
         self.num_classes = num_classes

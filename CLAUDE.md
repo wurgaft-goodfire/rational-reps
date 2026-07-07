@@ -38,6 +38,11 @@ Follow BDD dual-loop TDD. Every feature increment starts from a failing integrat
 `uv`-managed. Use `uv run python -m ...` so commands resolve the project venv. Fast tests:
 `uv run python -m pytest -m "not slow"`; full suite: `uv run python -m pytest`.
 
+**Notebooks:** after editing a notebook (or code it exercises), execute it end-to-end and leave the
+outputs saved, so the user never has to re-run it themselves:
+`uv run jupyter nbconvert --to notebook --execute --inplace <path.ipynb>`. Confirm it ran clean
+before finishing.
+
 # Architecture
 
 Hydra composes config from `conf/` and runs one **runner** (a top-level job: train or eval).

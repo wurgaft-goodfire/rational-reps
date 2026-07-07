@@ -5,4 +5,4 @@
 model_type: klinear
 model_config:
   embed_dim: 16
-  init_scale: 0.3
+  init_scale: 0.02

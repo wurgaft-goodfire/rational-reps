@@ -35,10 +35,20 @@ def cka(X, Y):
 
 
 def _rankdata(a):
-    """Ordinal ranks of a 1-D array (ties broken by position; fine for continuous distances)."""
-    order = a.argsort()
+    """Average ranks of a 1-D array (tied values share their mean rank). Values within a small
+    relative tolerance are treated as tied. This matters for *ultrametric* RDMs (e.g. trees), whose
+    pairwise distances are exactly tied up to float noise: ordinal tie-breaking would rank those
+    ties arbitrarily and deflate RSA even between identical geometries."""
+    a = np.round(np.asarray(a, np.float64) / (np.abs(a).max() + 1e-12), 6)   # merge ties; bands differ far more
+    order = a.argsort(); sv = a[order]
     ranks = np.empty(len(a), dtype=np.float64)
-    ranks[order] = np.arange(len(a))
+    i = 0
+    while i < len(a):
+        j = i
+        while j + 1 < len(a) and sv[j + 1] == sv[i]:
+            j += 1
+        ranks[order[i:j + 1]] = 0.5 * (i + j)             # mean rank of the tied block
+        i = j + 1
     return ranks
 
 

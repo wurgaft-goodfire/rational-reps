@@ -37,10 +37,14 @@ class FigureGenerator:
             'xtick.labelsize': self.font_sizes['tick'], 'ytick.labelsize': self.font_sizes['tick'],
             'legend.fontsize': self.font_sizes['legend'],
         })
-        avenir = [f for f in fm.findSystemFonts(fontext='ttc') if 'Avenir' in f]
-        if avenir:
-            fm.fontManager.addfont(avenir[0])
-            plt.rcParams['font.family'] = fm.FontProperties(fname=avenir[0]).get_name()
+        # findSystemFonts is unsorted and returns several Avenir faces (Avenir / Next / Condensed /
+        # Light) with distinct family names — pick Avenir Light deterministically, not [0].
+        avenir = sorted(f for f in fm.findSystemFonts(fontext='ttc') if 'avenir' in f.lower())
+        for f in avenir:
+            fm.fontManager.addfont(f)
+        pick = next((f for f in avenir if f.lower().endswith('avenirlight.ttf')), avenir[0] if avenir else None)
+        if pick:
+            plt.rcParams['font.family'] = fm.FontProperties(fname=pick).get_name()
             plt.rcParams['axes.labelweight'] = 'regular'
         else:
             plt.rcParams['font.family'] = 'sans-serif'
@@ -119,31 +123,57 @@ def _shape_positions(name, p):
     raise ValueError(f"No layout for shape {name!r}")
 
 
-def _tree_graph(n, k):
-    """Full depth-n, branching-k tree (internal nodes + leaves) with a hierarchical layout:
-    leaves along the bottom, each internal node above the mean of its children."""
-    nodes = [t for L in range(n + 1) for t in itertools.product(range(k), repeat=L)]
-    idx = {nd: i for i, nd in enumerate(nodes)}
-    A = np.zeros((len(nodes), len(nodes)))
-    for nd in nodes:
-        if nd:
-            A[idx[nd], idx[nd[:-1]]] = A[idx[nd[:-1]], idx[nd]] = 1.0
-    leaf_x = {nd: i for i, nd in enumerate(nd for nd in nodes if len(nd) == n)}
-    def x(nd):
-        return leaf_x[nd] if len(nd) == n else float(np.mean([x(nd + (c,)) for c in range(k)]))
-    pos = np.array([[x(nd), -len(nd)] for nd in nodes], float)
-    return A, pos
+# tree / ultrametric vis are drawn tall: vertical extent ~ this multiple of the horizontal
+TREE_ASPECT = 1.6
+
+
+def _elongate(pos):
+    """Stretch a 2-D layout vertically so it reads as a tall tree (height ~ TREE_ASPECT * width)."""
+    pos = np.asarray(pos, float); xr, yr = np.ptp(pos[:, 0]), np.ptp(pos[:, 1])
+    if yr > 0 and xr > 0:
+        pos = pos.copy(); pos[:, 1] *= TREE_ASPECT * xr / yr
+    return pos
+
+
+def _tree_graph(parents):
+    """(adjacency, hierarchical positions) for a tree given a parent-index list (root = -1):
+    leaves along the bottom, each internal node above the mean of its children, stretched tall."""
+    from .data import tree_adjacency
+    N = len(parents)
+    children = {i: [] for i in range(N)}; root = 0
+    for c, p in enumerate(parents):
+        if p is None or p < 0:
+            root = c
+        else:
+            children[p].append(c)
+    depth = [0] * N
+    def set_depth(u, d):
+        depth[u] = d
+        for ch in children[u]:
+            set_depth(ch, d + 1)
+    set_depth(root, 0)
+    xpos, nxt = {}, [0]
+    def set_x(u):
+        if not children[u]:
+            xpos[u] = float(nxt[0]); nxt[0] += 1
+        else:
+            for ch in children[u]:
+                set_x(ch)
+            xpos[u] = float(np.mean([xpos[ch] for ch in children[u]]))
+    set_x(root)
+    pos = np.array([[xpos[i], -depth[i]] for i in range(N)], float)
+    return tree_adjacency(parents), _elongate(pos)
 
 
 def _structure_graph(spec):
     """(adjacency, node positions) for drawing any structure's latent graph (2-D or 3-D)."""
-    from .data import structure_adjacency, chain
+    from .data import structure_adjacency, chain, tree_parents
     name = spec["structure"]; p = {k: v for k, v in spec.items() if k != "structure"}
     if name == "log_line":
         n = p.get("n", 30)
         return chain(n), np.c_[np.log1p(np.arange(n)), np.zeros(n)]
     if name == "tree":
-        return _tree_graph(p.get("n", 3), p.get("k", 2))
+        return _tree_graph(tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents")))
     if name in ("product", "stack"):
         subs = [_structure_graph(f) for f in p["factors"]]
         A = structure_adjacency(spec)
@@ -161,34 +191,48 @@ def _structure_graph(spec):
     return structure_adjacency(spec), _shape_positions(name, p)
 
 
-def draw_structure(ax, A, pos, title="structure"):
-    """Draw a latent graph: light edges + index-colored nodes at `pos` (2-D or 3-D)."""
-    A, pos = np.asarray(A), np.asarray(pos); c = np.arange(len(pos))
+def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None):
+    """Draw a latent graph: light edges + nodes at `pos` (2-D or 3-D). Nodes in `item_ids` are
+    colored by item index (via `cmap`, default the house cyclic map); others (e.g. inner tree nodes
+    in leaves-only mode) are gray."""
+    cmap = cmap or FIG.cyclic_cmap
+    A, pos = np.asarray(A), np.asarray(pos); N = len(pos)
+    item_ids = list(range(N)) if item_ids is None else list(item_ids)
+    cidx = np.full(N, -1)
+    for k, i in enumerate(item_ids):
+        cidx[i] = k
+    it = cidx >= 0; vmax = max(len(item_ids) - 1, 1)
     ii, jj = np.where(np.triu(A, 1) > 0)
     if pos.shape[1] == 2:
         ax.add_collection(LineCollection([[pos[a], pos[b]] for a, b in zip(ii, jj)],
                                          colors="0.85", linewidths=0.5, zorder=0))
-        ax.scatter(pos[:, 0], pos[:, 1], c=c, cmap=FIG.cyclic_cmap, s=40, zorder=2)
+        if (~it).any():
+            ax.scatter(pos[~it, 0], pos[~it, 1], c="0.8", s=28, zorder=1)
+        ax.scatter(pos[it, 0], pos[it, 1], c=cidx[it], cmap=cmap,
+                   vmin=0, vmax=vmax, s=40, zorder=2)
         d0, d1 = np.ptp(pos[:, 0]), np.ptp(pos[:, 1])
         if min(d0, d1) < 0.1 * max(d0, d1):               # ~1-D (chain / log line): fill, don't squash
             pad = 0.25 * max(d0, d1)
-            ax.set_ylim(pos[:, 1].min() - pad, pos[:, 1].max() + pad)
+            ax.set_ylim(pos[:, 1].min() - pad, pos[:, 1].max() + pad); ax.margins(x=0.05)
         else:
-            ax.set_aspect("equal")
+            ax.set_aspect("equal"); ax.margins(0.12)      # pad so edge nodes aren't clipped
         FIG.clean(ax); ax.set_anchor("N")
     else:
         for a, b in zip(ii, jj):
             ax.plot(*zip(pos[a], pos[b]), color="0.85", lw=0.25, zorder=0)
-        ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c=c, cmap=FIG.cyclic_cmap, s=25)
+        if (~it).any():
+            ax.scatter(pos[~it, 0], pos[~it, 1], pos[~it, 2], c="0.8", s=16)
+        ax.scatter(pos[it, 0], pos[it, 1], pos[it, 2], c=cidx[it], cmap=cmap,
+                   vmin=0, vmax=vmax, s=25)
         ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
     ax.set_title(title)
 
 
-def scatter_geometry(ax, XY, title):
+def scatter_geometry(ax, XY, title, cmap=None):
     """Embedding scatter colored by item index (borderless manifold panel)."""
     XY = np.asarray(XY)
-    ax.scatter(XY[:, 0], XY[:, 1], c=np.arange(len(XY)), cmap=FIG.cyclic_cmap, s=45)
-    ax.set_title(title); ax.set_aspect("equal"); FIG.clean(ax); ax.set_anchor("N")
+    ax.scatter(XY[:, 0], XY[:, 1], c=np.arange(len(XY)), cmap=cmap or FIG.cyclic_cmap, s=45)
+    ax.set_title(title); ax.set_aspect("equal"); ax.margins(0.15); FIG.clean(ax); ax.set_anchor("N")
 
 
 def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", ylabel=r"item  $\theta$"):
@@ -201,21 +245,42 @@ def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", 
     ax.set(title=title, xlabel=xlabel, ylabel=ylabel)     # keep just the axis labels
 
 
-def plot_predicted_geometry(spec, L, E):
-    """The demo triptych: latent structure -> conditional -> the closed-form embedding it encodes."""
+def plot_predicted_geometry(spec, L, E, tree_view="ultrametric", cmap=None):
+    """The demo triptych: latent structure -> conditional -> the geometry it encodes. A tree's raw
+    2-D code is a confusing blob, so ``tree_view`` picks its third panel: ``"ultrametric"`` (a
+    dendrogram of the code, the default), ``"pca"`` (the raw scatter), or ``"simplex"`` (the
+    simplex-of-simplices grid, Park et al.). ``spec`` may set ``leaves_only`` to make only leaves
+    items — inner nodes then show as gray junctions and drop out of the conditional/code. ``cmap``
+    overrides the house cyclic colormap for item coloring."""
     A, pos = _structure_graph(spec)
     is3d = pos.shape[1] == 3
-    fig = plt.figure(figsize=(13, 3.9))
-    axA = fig.add_subplot(1, 3, 1, projection="3d" if is3d else None)
-    axB, axC = fig.add_subplot(1, 3, 2), fig.add_subplot(1, 3, 3)
-    draw_structure(axA, A, pos)
-    conditional_heatmap(axB, L)
-    scatter_geometry(axC, E[:, :2], "embedding")
-    fig.tight_layout(w_pad=5)
-    # place the arrows in the gaps between panels (from the laid-out axes), so they never overlap
-    for left, right in [(axA, axB), (axB, axC)]:
-        pl, pr = left.get_position(), right.get_position()
-        fig.text((pl.x1 + pr.x0) / 2, (pl.y0 + pl.y1) / 2, r"$\rightarrow$",
+    is_tree = spec["structure"] == "tree"
+    parents = items = None
+    H = 3.9
+    if is_tree:
+        parents, items = _tree_items(spec, len(E))
+        if tree_view == "simplex":
+            n = sum(len(v) >= 2 for v in _tree_children(parents).values())
+            H = max(3.9, 2.2 * int(np.ceil(n / np.ceil(np.sqrt(n)))))
+    fig = plt.figure(figsize=(13, H))
+    gs = fig.add_gridspec(1, 3, wspace=0.45)
+    item_ids = items if is_tree and len(items) != len(A) else None
+    draw_structure(fig.add_subplot(gs[0, 0], projection="3d" if is3d else None), A, pos,
+                   item_ids=item_ids, cmap=cmap)
+    axB = fig.add_subplot(gs[0, 1]); conditional_heatmap(axB, L)
+    if is_tree and tree_view == "ultrametric":
+        rows, cmax = _tree_leaf_rows(parents, items)
+        _draw_ultrametric(fig.add_subplot(gs[0, 2]), E[rows], np.array(rows), cmax, cmap)
+    elif is_tree and tree_view == "simplex":
+        _draw_simplex_of_simplices(fig, gs[0, 2], parents, items, E, cmap)
+    else:
+        scatter_geometry(fig.add_subplot(gs[0, 2]), E[:, :2], "embedding", cmap)
+    # arrows in the column gaps, aligned to the conditional panel's vertical center (never overlap)
+    fig.canvas.draw()
+    yc = np.mean([axB.get_position().y0, axB.get_position().y1])
+    for lc, rc in [(gs[0, 0], gs[0, 1]), (gs[0, 1], gs[0, 2])]:
+        bl, br = lc.get_position(fig), rc.get_position(fig)
+        fig.text((bl.x1 + br.x0) / 2, yc, r"$\rightarrow$",
                  fontsize=22, ha="center", va="center", color="0.4")
     return fig
 
@@ -319,21 +384,161 @@ def rdm_heatmap(ax, reps, title="RDM"):
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
 
 
-def plot_embedding_panels(E_pred, embeddings, L):
-    """Two rows. Top: predicted code beside each model's representation (pre-decode activations,
-    PCA'd to 2-D). Bottom: the predicted log-conditional beside each model's RDM. `embeddings`:
-    {name: reps}."""
+def plot_embedding_panels(E_pred, embeddings, L, spec=None, tree_view="ultrametric", cmap=None):
+    """Two rows. Top: predicted code beside each model's representation (pre-decode activations).
+    Bottom: the predicted log-conditional beside each model's RDM. For a tree ``spec`` the top row
+    follows ``tree_view`` (``"ultrametric"`` | ``"pca"`` | ``"simplex"``), matching
+    ``plot_predicted_geometry``; otherwise it is the 2-D PCA scatter. ``embeddings``: {name: reps}."""
     names = ["predicted"] + list(embeddings)
     reps = [E_pred] + list(embeddings.values())
-    fig, axes = plt.subplots(2, len(names), figsize=(2.7 * len(names), 5.6))
+    is_tree = spec is not None and spec["structure"] == "tree"
+    if is_tree:
+        parents, items = _tree_items(spec, len(E_pred))
+        leaf_rows, cmax = _tree_leaf_rows(parents, items)
+    fig = plt.figure(figsize=(2.7 * len(names), 5.9))
+    gs = fig.add_gridspec(2, len(names), hspace=0.25, wspace=0.3)
+    headers = []
     for j, (name, r) in enumerate(zip(names, reps)):
-        scatter_geometry(axes[0, j], _pca2(r), name)
-        if j == 0:
-            conditional_heatmap(axes[1, j], L, title="log-conditional")
+        if is_tree and tree_view == "ultrametric":
+            ax = fig.add_subplot(gs[0, j])
+            _draw_ultrametric(ax, r[leaf_rows], np.array(leaf_rows), cmax, cmap); ax.set_title(name)
+        elif is_tree and tree_view == "simplex":
+            _draw_simplex_of_simplices(fig, gs[0, j], parents, items, r, cmap, titles=False)
+            headers.append((j, name))
         else:
-            rdm_heatmap(axes[1, j], r)
-    fig.tight_layout()
+            scatter_geometry(fig.add_subplot(gs[0, j]), _pca2(r), name, cmap)
+        axb = fig.add_subplot(gs[1, j])
+        conditional_heatmap(axb, L, title="log-conditional") if j == 0 else rdm_heatmap(axb, r)
+    if headers:                                          # column names for the simplex sub-grids
+        fig.canvas.draw()
+        for j, name in headers:
+            bb = gs[0, j].get_position(fig)
+            fig.text((bb.x0 + bb.x1) / 2, bb.y1 + 0.01, name, ha="center", va="bottom",
+                     fontsize=FIG.font_sizes["axis_label"])
     return fig
+
+
+def _tree_children(parents):
+    """{node -> list of children} from a parent-index list (root parent = -1)."""
+    ch = {}
+    for c, par in enumerate(parents):
+        if par is not None and par >= 0:
+            ch.setdefault(par, []).append(c)
+    return ch
+
+
+def _tree_items(spec, n_items):
+    """(parents, item node-ids), inferred from the code's row count ``n_items``: the leaves if it
+    matches the leaf count, else every node (Park et al.). Reads what the conditional actually
+    holds rather than assuming ``tree_conditional``'s default."""
+    from .data import tree_parents
+    p = {k: v for k, v in spec.items() if k != "structure"}
+    parents = tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents"))
+    ch = _tree_children(parents)
+    leaves = [u for u in range(len(parents)) if u not in ch]
+    return parents, (leaves if n_items == len(leaves) else list(range(len(parents))))
+
+
+def _tree_leaf_rows(parents, items):
+    """Row indices of ``items`` that are leaves, and the color range. The dendrogram clusters leaves
+    only — inner-node items are subtree centroids and would tangle it."""
+    ch = _tree_children(parents)
+    leafset = {u for u in range(len(parents)) if u not in ch}
+    rows = [i for i, node in enumerate(items) if node in leafset]
+    return rows, len(items)
+
+
+def _node_reps(parents, items, E):
+    """Per-node (rep, color): its own code + item index if a node is an item, else the centroid and
+    mean color of its subtree's leaves (so leaves-only trees still resolve each split)."""
+    E = np.asarray(E, float); pos = {nd: i for i, nd in enumerate(items)}
+    ch = _tree_children(parents); reps, col = {}, {}
+    def visit(u):
+        if u in ch:
+            for c in ch[u]:
+                if c not in reps:
+                    visit(c)
+            reps[u] = E[pos[u]] if u in pos else np.mean([reps[c] for c in ch[u]], 0)
+            col[u] = pos[u] if u in pos else float(np.mean([col[c] for c in ch[u]]))
+        else:
+            reps[u], col[u] = E[pos[u]], pos[u]
+    for u in range(len(parents)):
+        if u not in reps:
+            visit(u)
+    return (np.array([reps[u] for u in range(len(parents))]),
+            np.array([col[u] for u in range(len(parents))], float))
+
+
+def _draw_ultrametric(ax, leaf_E, colors, cmax, cmap=None):
+    """Ultrametric recovered from the leaf codes by average-linkage clustering, drawn in the tree
+    style (straight light edges, index-colored leaf circles, gray merge nodes). ``colors`` is each
+    leaf's item index, ``cmax`` the color range. Default tree view."""
+    from scipy.cluster.hierarchy import linkage
+    from scipy.spatial.distance import pdist
+    cmap = cmap or FIG.cyclic_cmap
+    n = len(leaf_E)
+    Z = linkage(pdist(np.asarray(leaf_E, float)), method="average")   # scipy clusters
+    # custom layout off Z (straight edges, leaves pinned to item order for cross-panel alignment)
+    pos = np.zeros((n + len(Z), 2)); pos[:n] = np.c_[np.arange(n, dtype=float), np.zeros(n)]
+    edges = []
+    for i, (a, b, h, _) in enumerate(Z):
+        a, b, c = int(a), int(b), n + i
+        pos[c] = [0.5 * (pos[a, 0] + pos[b, 0]), h]
+        edges += [(c, a), (c, b)]
+    pos = _elongate(pos)
+    ax.add_collection(LineCollection([[pos[a], pos[b]] for a, b in edges],
+                                     colors="0.85", linewidths=0.5, zorder=0))
+    ax.scatter(pos[n:, 0], pos[n:, 1], c="0.8", s=24, zorder=1)                  # merge nodes
+    ax.scatter(pos[:n, 0], pos[:n, 1], c=colors, cmap=cmap,
+               vmin=0, vmax=cmax, s=70, zorder=2, clip_on=False)                 # leaves
+    ax.set_title("ultrametric"); ax.set_aspect("equal"); ax.margins(0.12)
+    FIG.clean(ax); ax.set_anchor("N")
+
+
+def _draw_simplex_of_simplices(fig, subspec, parents, items, E, cmap=None, titles=True):
+    """Park et al.'s "simplex of simplices": each split's child points (a child's rep, or its
+    subtree-leaf centroid in leaves-only mode), minus their centroid and projected to the split's
+    intrinsic dimension (segment / triangle / tetrahedron), laid out in a compact grid with ⊕.
+    ``titles=False`` drops per-node labels (for dense multi-column panels)."""
+    cmap = cmap or FIG.cyclic_cmap
+    R, C = _node_reps(parents, items, E); R = R - R.mean(0)
+    ch = _tree_children(parents)
+    splits = [u for u in sorted(ch) if len(ch[u]) >= 2]
+    names = {2: "segment", 3: "triangle", 4: "tetrahedron"}
+    ncols = int(np.ceil(np.sqrt(len(splits)))); nrows = int(np.ceil(len(splits) / ncols))
+    inner = subspec.subgridspec(nrows, ncols, hspace=0.55, wspace=0.35)
+    axes = {}
+    for idx, u in enumerate(splits):
+        r0, c0 = divmod(idx, ncols)
+        kids = np.array(ch[u]); m = len(kids); d = min(m - 1, 3)
+        Pc = R[kids] - R[kids].mean(0)
+        U, S, _ = np.linalg.svd(Pc, full_matrices=False); P = U[:, :d] * S[:d]
+        if d == 1:
+            P = np.c_[P[:, 0], np.zeros(m)]
+        ax = fig.add_subplot(inner[r0, c0], projection="3d" if d == 3 else None)
+        cargs = dict(c=C[kids], cmap=cmap, vmin=0, vmax=len(items) - 1, s=55, zorder=2)
+        if d == 3:
+            for a, b in zip(*np.triu_indices(m, 1)):
+                ax.plot(*zip(P[a], P[b]), color="0.7", lw=1.0, zorder=1)
+            ax.scatter(P[:, 0], P[:, 1], P[:, 2], **cargs)
+            ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+        else:
+            ax.add_collection(LineCollection([[P[a], P[b]] for a in range(m) for b in range(a + 1, m)],
+                                             colors="0.7", linewidths=1.0, zorder=1))
+            ax.scatter(P[:, 0], P[:, 1], **cargs); ax.set_aspect("equal"); ax.margins(0.2); FIG.clean(ax)
+        if titles:
+            ax.set_title(f"node {u}: {names.get(m, f'{m}-simplex')}", fontsize=FIG.font_sizes["tick"])
+        axes[(r0, c0)] = ax
+    fig.canvas.draw()
+    for (r0, c0), ax in axes.items():
+        if (r0, c0 + 1) in axes:
+            p0, p1 = ax.get_position(), axes[(r0, c0 + 1)].get_position()
+            fig.text((p0.x1 + p1.x0) / 2, (p0.y0 + p0.y1) / 2, r"$\oplus$",
+                     fontsize=18, ha="center", va="center", color="0.4")
+
+
+# vivid, distinguishable series palette (Dark2) for curves/bars
+SERIES = ["#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", "#E6AB02"]
 
 
 def plot_rsa_curves(histories):
@@ -350,10 +555,13 @@ def plot_rsa_curves(histories):
 def plot_convergence_bars(scores):
     """CKA/RSA to predicted per model. `scores`: {name: {"cka": .., "rsa": ..}}."""
     names = list(scores); x = np.arange(len(names)); w = 0.38
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.bar(x - w / 2, [scores[n]["cka"] for n in names], w, color=FIG.colors["blue"], label="CKA")
-    ax.bar(x + w / 2, [scores[n]["rsa"] for n in names], w, color=FIG.colors["orange"], label="RSA")
-    ax.set(xticks=x, ylim=(0, 1), ylabel="similarity to predicted geometry",
-           title="representational convergence across architectures")
-    ax.set_xticklabels(names); ax.legend(frameon=False); FIG.style_axes(ax)
+    fig, ax = plt.subplots(figsize=(7, 4.3))
+    for off, key, color in [(-w / 2, "cka", SERIES[2]), (w / 2, "rsa", SERIES[1])]:
+        ax.bar(x + off, [scores[n][key] for n in names], w, color=color,
+               edgecolor="white", linewidth=1.2, label=key.upper())
+    ax.set(xticks=x, ylim=(0, 1.16), ylabel="similarity to predicted geometry")
+    ax.set_xticklabels(names)
+    ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.13), ncol=2)
+    ax.set_title("representational convergence across architectures", pad=30)
+    FIG.style_axes(ax)
     return fig

@@ -360,18 +360,43 @@ def cooccur_logcond(A, gamma=0.8):
     return logcond_from_sim(walk_cooccur(A, gamma))
 
 
-def tree_conditional(n=3, k=2, gamma=0.85):
-    """Branching-diffusion tree of depth n, branching factor k: features spread through internal
-    nodes, read out at leaves -> ultrametric co-occurrence -> nested (hierarchical) geometry."""
-    addr = [tuple(a) for a in itertools.product(range(k), repeat=n)]
-    nodes = [t for L in range(n + 1) for t in itertools.product(range(k), repeat=L)]
-    ixn = {nd: i for i, nd in enumerate(nodes)}
-    A = np.zeros((len(nodes), len(nodes)))
-    for nd in nodes:
-        if nd: A[ixn[nd], ixn[nd[:-1]]] = A[ixn[nd[:-1]], ixn[nd]] = 1.0
-    leaf_id = [ixn[a] for a in addr]
-    Jl = walk_cooccur(A, gamma)[np.ix_(leaf_id, leaf_id)]
-    return logcond_from_sim(Jl)
+def tree_conditional(n=3, k=2, parents=None, gamma=0.85, leaves_only=True):
+    """Branching-diffusion tree -> ultrametric co-occurrence -> nested (hierarchical) geometry,
+    over *all* nodes (inner nodes are items too, as in Park et al.). Balanced (depth n, branching
+    k) or unbalanced via an explicit `parents` list (``parents[i]`` = parent index, root = -1).
+    ``leaves_only=True`` restricts to leaves (the older branching-diffusion setup)."""
+    parents = tree_parents(n, k, parents)
+    J = walk_cooccur(tree_adjacency(parents), gamma)
+    if leaves_only:
+        internal = {p for p in parents if p is not None and p >= 0}
+        ids = [i for i in range(len(parents)) if i not in internal]
+        J = J[np.ix_(ids, ids)]
+    return logcond_from_sim(J)
+
+
+def tree_parents(n=3, k=2, parents=None):
+    """Parent-index list for a tree (root = -1). Explicit ``parents`` if given, else a balanced
+    depth-n, branching-k tree in DFS pre-order, so each node is immediately followed by its whole
+    subtree — subtrees stay contiguous, giving the conditional its nested-block (ultrametric) look."""
+    if parents is not None:
+        return list(parents)
+    out = []
+    def build(depth, parent):
+        me = len(out); out.append(parent)
+        if depth < n:
+            for _ in range(k):
+                build(depth + 1, me)
+    build(0, -1)
+    return out
+
+
+def tree_adjacency(parents):
+    """Symmetric parent-child adjacency for a parent-index list."""
+    N = len(parents); A = np.zeros((N, N))
+    for c, p in enumerate(parents):
+        if p is not None and p >= 0:
+            A[c, p] = A[p, c] = 1.0
+    return A
 
 
 def log_line_conditional(n=30, lam=2.0):

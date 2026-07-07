@@ -6,4 +6,4 @@ model_config:
   embed_dim: 16
   hidden_size: 64
   num_layers: 1
-  init_scale: 0.3
+  init_scale: 0.02
