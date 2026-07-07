@@ -1,0 +1,11 @@
+# @package _global_
+# MLP runner — model-centric; choose the task with `setting=`. Pointwise, full-batch.
+#   python -m src.code.train runner=mlp setting=graph
+defaults:
+  - override /model: mlp
+  - override /train: default
+  - _self_
+
+name: mlp
+output_dir: ${run_dir}/checkpoints
+sample_mode: pointwise

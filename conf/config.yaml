@@ -1,19 +1,19 @@
 defaults:
-  - setting: balls_and_urns
-  - model: small_lm
+  - setting: graph
+  - model: transformer
   - train: default
   - _self_
-  - runner: train_small_lm
+  - runner: transformer
 
 # Experiment metadata
 name: ??? # Must be set by the runner config
 random_seed: 42
 overwrite: false # Flag for overwriting existing checkpoints / metrics
 
-# Weights & Biases logging. Set `wandb.enabled=false` to disable all wandb logging
-# (no init, no online metric logging) — useful for quick / debug runs.
+# Weights & Biases logging. Off by default (we train small models locally); set
+# `wandb.enabled=true` to log init + online metrics.
 wandb:
-  enabled: true
+  enabled: false
   entity: null # null -> use the WANDB_ENTITY env var / your default entity
   project: template-lm-training
 

@@ -35,6 +35,7 @@ class StepMetricsCallback(TrainerCallback):
         self.config = config
         self.step_interval = step_interval
         self.use_wandb = config.cfg.wandb.enabled
+        self.history = []  # in-memory {step, **metrics} log, returned for notebook use
         # Build the evaluator once (fixed batches), reusing a cached eval if configured.
         cache_dir = config.get("eval_cache_dir")
         if cache_dir:
@@ -49,6 +50,7 @@ class StepMetricsCallback(TrainerCallback):
         if state.global_step % self.step_interval != 0:
             return
         metrics, extras = self.evaluator.evaluate(self.trainer.model)
+        self.history.append({"step": state.global_step, **metrics})
         if self.use_wandb:
             wandb.log({f"eval/{k}": v for k, v in metrics.items()}, step=state.global_step)
 

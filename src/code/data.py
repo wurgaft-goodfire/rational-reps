@@ -1,146 +1,633 @@
+import itertools
+from functools import reduce
+
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
-import torch.nn.functional as F
 from .config import Config
-import os
 
 ##### Init dataset #####
 def init_dataset(config, overwrite_data: bool = False):
     """Initialize a dataset from the config's `setting`."""
-    if config.setting == "balls-and-urns":
-        return BallsAndUrnsDataset(config, overwrite_data=overwrite_data)
+    if config.setting == "graph-cooccurrence":
+        return GraphCooccurrenceDataset(config)
+    if config.setting == "distribution-family":
+        return DistributionFamilyDataset(config)
+    if config.setting == "relational":
+        return RelationalDataset(config)
     raise ValueError(f"Unsupported setting: {config.setting}")
 
-##### Dataset class #####
-class MixtureDataset(Dataset):
-    def __init__(
-        self, config: "Config", overwrite_data: bool = False
-    ):
+
+##### Graph co-occurrence dataset (order-1, symmetric) #####
+
+class GraphCooccurrenceDataset(Dataset):
+    """Order-1 latent-structure task. A graph -> diffusion co-occurrence -> the log-conditional
+    `log p(token | nearby context)` (exposed as `.conditional`, the object the geometry oracle
+    factors). Items are the graph's nodes; the generative transition is the row-normalized
+    conditional, so what a network learns and what we predict come from the same object.
+
+    Two `sample_mode`s share that transition:
+      - "pointwise": (item -> neighbor) pairs; makes the arity-1 linear readout well-posed.
+      - "sequence":  Markov walks under the transition; for the transformer / RNN and future ICL.
+    """
+
+    def __init__(self, config: Config):
         self.config = config
-        self.num_dims = config.num_dims
-        self.num_tasks = config.num_tasks
-        self.infinite_task_diversity = config.num_tasks == "inf"
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.rng = torch.Generator(device=self.device)
-        self.rng.manual_seed(self.config.random_seed)
+        self.rng.manual_seed(config.random_seed)
 
-        if not self.infinite_task_diversity:
-            if not os.path.exists(self.config.data_path) or overwrite_data:
-                self.tasks = self.make_dataset(num_tasks=self.num_tasks, save=True)
-            else:
-                self.tasks = torch.load(self.config.data_path)["tasks"].to(self.device)
-            self.num_tasks = len(self.tasks)
-            self._process_task_prior()
-        else:
-            self.tasks = None
+        from omegaconf import OmegaConf
+        sk = config.get("structure_kwargs")
+        structure_kwargs = OmegaConf.to_container(sk, resolve=True) if sk else {}
+        spec = {"structure": config.get("structure"), **structure_kwargs}
+        gamma = config.get("gamma", 0.8)
+        self._L = graph_conditional(spec, gamma)       # (n, n) log-conditional (numpy)
 
-    def __len__(self):
-        """since getitem returns a batch, return 1"""
-        return 1
-    
-    def _process_task_prior(self):
-        """ 
-        Process the task prior.
-        """
-        if self.config.task_prior == 'uniform':
-            self.task_prior = torch.ones(self.num_tasks, device=self.device) / self.num_tasks
-        elif self.config.task_prior == 'power_law':
-            self.task_prior = F.normalize(torch.pow(torch.arange(1, self.num_tasks + 1, device=self.device), -self.config.task_prior_exponent), p=1, dim=0)
-        else:
-            raise ValueError("Unsupported prior type. Use 'uniform' or 'power_law'.")
+        self.n_nodes = len(self._L)
+        self.arity = 1
+        self.sample_mode = config.get("sample_mode", "pointwise")
+        self.item_tokens = torch.arange(self.n_nodes)
+        self.start_token = self.n_nodes                           # extra token for sequence starts
 
-    def __gettask__(self, batch_size):
-        """
-        Returns a batch of tasks from the dataset.
-        """
-        if self.infinite_task_diversity:
-            return self.make_dataset(batch_size, save=False), None
-        task_idx = torch.multinomial(self.task_prior, batch_size, replacement=True, generator=self.rng)
-        return self.tasks[task_idx].to(self.device), task_idx
+        # generative transition P[i] = p(next | i), row-normalized exp(conditional)
+        P = torch.tensor(np.exp(self._L), dtype=torch.float32, device=self.device)
+        self.P = P / P.sum(-1, keepdim=True)
+        self.marginal = self.P.mean(0)                            # dist after the start token
 
-    def make_dataset(self, num_tasks=None, save=True):
-        """
-        Implemented in child class.
-        """
-        raise NotImplementedError("make_dataset method must be implemented in child class.")
+    # ── interface read by the oracle / trainer / evaluator ──────────────────
+    @property
+    def conditional(self):
+        """The order-1 log-conditional the geometry oracle factors."""
+        return self._L
 
-##### Balls and urns dataset #####
-
-class BallsAndUrnsDataset(MixtureDataset):
-    def __init__(self, config: Config, overwrite_data: bool = False):
-        """
-        Args:
-            config: Config object
-            overwrite_data: Whether to overwrite the dataset if it already exists
-        """
-        super().__init__(config, overwrite_data)
-
-        # Set up token mappings after parent initialization
-        if hasattr(config, "tokenizer"):
-            self.item_tokens = torch.tensor([config.tokenizer.encode(word, add_special_tokens=False)[0] for word in config.word_list])
-            self.start_token = torch.as_tensor(config.tokenizer.bos_token_id).long()
-        else:
-            self.item_tokens = torch.arange(0, config.num_dims)
-            self.start_token = torch.tensor(len(self.item_tokens)).long()
+    @property
+    def num_dims(self):
+        """Number of outcome classes (= nodes); used by the Evaluator vocab remap + k-linear head."""
+        return self.n_nodes
 
     @property
     def vocab_size(self):
-        """Number of token ids the model must span: item tokens + start token."""
-        return int(self.start_token.item()) + 1
+        return self.n_nodes + 1                                    # items + start token
 
     @property
     def seq_len(self):
-        """Sequence length the model sees: context length + start token."""
-        return self.config.training_kwargs["context_length"] + 1
+        if self.sample_mode == "sequence":
+            return self.config.training_kwargs["context_length"] + 1
+        return self.arity + 1
 
-    def make_dataset(self, num_tasks, save=False):
-        """Sample `num_tasks` flat-Dirichlet categorical distributions (the "urns")."""
-        def dirichlet_flat(n, d, generator):
-            # Draw Exp(1) as -log(U) (clamped off 0), then normalize rows.
-            x = -torch.log(torch.rand((n, d), generator=generator, device=generator.device).clamp(min=1e-10))
-            return x / x.sum(dim=-1, keepdim=True)
-        tasks = dirichlet_flat(num_tasks, self.config.num_dims, generator=self.rng)  # (num_tasks, num_dims)
-        if save:
-            torch.save({"tasks": tasks.cpu()}, self.config.data_path)
-        return tasks.to(self.device)
+    def __len__(self):
+        return 1
+
+    def _batch_size(self):
+        return self.config.training_kwargs["batch_size"]
 
     def __getitem__(self, i=None):
-        tasks, _ = self.__gettask__(self.config.training_kwargs["batch_size"])
-        # sample from categorical distribution based on distributions provided in task
-        input_ids = torch.multinomial(tasks, self.config.training_kwargs["context_length"], replacement=True, generator=self.rng) # (batch_size, context_length)
-        # tokenize if tokenizer is provided
-        if hasattr(self.config, "tokenizer"):
-            input_ids = self.item_tokens[input_ids]
-        # add start token
-        input_ids = torch.cat([self.start_token.to(self.device).expand(input_ids.shape[0], 1), input_ids], dim=1)
-        return {
-            "input_ids": input_ids,
-            "labels": input_ids.clone(),
-            "eval_labels": tasks.clone().unsqueeze(1).repeat(1, self.config.training_kwargs["context_length"], 1), # has size (batch_size, context_length, num_dims), given by duplicating the task distribution
-        }
-    
-    @staticmethod
-    def compute_metrics(eval_pred, return_all=True):
-        """Compute KL divergence loss for next token prediction"""
-        logits, labels = eval_pred
-        logits = logits[:, :-1] # remove last token
+        if self.sample_mode == "sequence":
+            return self._sequence_batch()
+        return self._pointwise_batch()
 
-        results = {}
+    def _pointwise_batch(self):
+        # full batch: every item with its exact neighbour distribution as a soft target
+        items = torch.arange(self.n_nodes, device=self.device)
+        return {"input_ids": items.unsqueeze(1), "labels": self.P, "eval_labels": self.P}
 
-        probs = torch.nn.functional.softmax(logits, dim=-1)
-        log_probs = torch.log(probs)
-        kl_div_fn = nn.KLDivLoss(reduction="none")
-        with torch.no_grad():
-            loss = (
-                kl_div_fn(log_probs, labels)
-                .sum(dim=-1)
-                .reshape(logits.shape[0], -1)
-            )
+    def _sequence_batch(self):
+        B = self._batch_size()
+        L = self.config.training_kwargs["context_length"]
+        walk = torch.empty(B, L, dtype=torch.long, device=self.device)
+        walk[:, 0] = torch.randint(0, self.n_nodes, (B,), generator=self.rng, device=self.device)
+        for t in range(1, L):
+            walk[:, t] = torch.multinomial(self.P[walk[:, t - 1]], 1, generator=self.rng).squeeze(1)
+        start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
+        input_ids = torch.cat([start, walk], dim=1)               # (B, L+1)
+        # true next-token dist at each prefix: P[token_j] (start token -> item marginal).
+        dist_table = torch.cat([self.P, self.marginal.unsqueeze(0)], dim=0)  # (vocab, C)
+        eval_labels = dist_table[input_ids[:, :-1]]               # (B, L, C), aligns with logits[:, :-1]
+        return {"input_ids": input_ids, "labels": input_ids.clone(), "eval_labels": eval_labels}
 
-        results['loss'] = loss.mean().item()
+    def compute_metrics(self, eval_pred, return_all=True):
+        return _kl_metrics(eval_pred, return_all)
 
-        if return_all:
-            results['all_loss'] = loss.detach().cpu()
 
-        return results
+##### Distribution-family dataset (order-1, asymmetric) #####
+
+class DistributionFamilyDataset(Dataset):
+    """Order-1 asymmetric task. Items are parametric distributions; the conditional is
+    `log p(x|theta)` on an x-grid (exposed as `.conditional`). Factoring it recovers the code =
+    natural parameters and decoder = sufficient statistic. Pointwise sampler: an item index ->
+    a sampled (binned) outcome, so the learned per-item embedding matches the predicted code.
+    (Sequence/in-context inference of theta from samples is the future LLM case, kept separate.)
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.rng = torch.Generator(device=self.device)
+        self.rng.manual_seed(config.random_seed)
+
+        from omegaconf import OmegaConf
+        fk = config.get("family_kwargs")
+        family_kwargs = OmegaConf.to_container(fk, resolve=True) if fk else {}
+        spec = {"family": config.get("family"), **family_kwargs}
+        self._L = family_conditional(spec)                # (n_items, n_x) log-conditional
+
+        self.n_items, self.n_outcomes = self._L.shape
+        self.arity = 1
+        self.item_tokens = torch.arange(self.n_items)
+        P = torch.tensor(np.exp(self._L), dtype=torch.float32, device=self.device)
+        self.P = P / P.sum(-1, keepdim=True)                      # p(x | theta) over outcome bins
+
+    @property
+    def conditional(self):
+        return self._L
+
+    @property
+    def num_dims(self):
+        return self.n_outcomes                                    # number of outcome classes
+
+    @property
+    def vocab_size(self):
+        return self.n_items                                       # embedding table size (one row per item)
+
+    @property
+    def seq_len(self):
+        return self.arity + 1
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, i=None):
+        # full batch: every item (distribution) with its exact p(x|theta) as a soft target
+        items = torch.arange(self.n_items, device=self.device)
+        return {"input_ids": items.unsqueeze(1), "labels": self.P, "eval_labels": self.P}
+
+    def compute_metrics(self, eval_pred, return_all=True):
+        return _kl_metrics(eval_pred, return_all)
+
+
+##### Relational dataset (order >= 2, combination) #####
+
+class RelationalDataset(Dataset):
+    """Order-2+ task. The latent structure is an operation c = a*b; the conditional is a tensor
+    `T[a, b, ..., c]` (exposed as `.conditional`) read out bilinearly by a shared code. The
+    pointwise sampler emits (a, b, ...) -> c so an arity-k readout learns e(a)^T M e(b). arity is
+    inferred from the tensor. For graded ops (max/averaging/entailment) factor_tensor gives the
+    geometry; for group ops it is degenerate and the trained model selects a single frequency.
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.rng = torch.Generator(device=self.device)
+        self.rng.manual_seed(config.random_seed)
+
+        from omegaconf import OmegaConf
+        ok = config.get("operation_kwargs")
+        operation_kwargs = OmegaConf.to_container(ok, resolve=True) if ok else {}
+        spec = {"operation": config.get("operation"), **operation_kwargs}
+        T = relation_tensor(spec)                          # (n_items,)*arity + (n_outcomes,)
+
+        self.arity = T.ndim - 1
+        self.n_items = T.shape[0]
+        self.n_outcomes = T.shape[-1]
+        self._T = T
+        self.item_tokens = torch.arange(self.n_items)
+        # per-input-tuple outcome distribution, flattened over the input tuple for fast lookup
+        flat = T.reshape(-1, self.n_outcomes)
+        P = torch.tensor(flat, dtype=torch.float32, device=self.device)
+        self.P = P / P.sum(-1, keepdim=True)
+
+    @property
+    def conditional(self):
+        return self._T                                            # tensor -> factor_tensor in the oracle
+
+    @property
+    def num_dims(self):
+        return self.n_outcomes
+
+    @property
+    def vocab_size(self):
+        return self.n_items
+
+    @property
+    def seq_len(self):
+        return self.arity + 1
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, i=None):
+        # full batch: every input tuple with its exact p(c | a, b, ...) as a soft target
+        items = torch.arange(self.n_items, device=self.device)
+        inputs = torch.cartesian_prod(*([items] * self.arity))   # (n^arity, arity)
+        if self.arity == 1:
+            inputs = inputs.unsqueeze(1)
+        flat = torch.zeros(len(inputs), dtype=torch.long, device=self.device)
+        for j in range(self.arity):
+            flat = flat * self.n_items + inputs[:, j]             # row-major over the item axes
+        dist = self.P[flat]
+        return {"input_ids": inputs, "labels": dist, "eval_labels": dist}
+
+    def compute_metrics(self, eval_pred, return_all=True):
+        return _kl_metrics(eval_pred, return_all)
+
+
+def _kl_metrics(eval_pred, return_all=True):
+    """KL(model || true) over the outcome distribution. Handles pointwise (logits (B,C)) and
+    sequence (logits (B,T,C)) shapes; for causal sequences drop the final unmatched prediction."""
+    logits, labels = eval_pred
+    logits = torch.as_tensor(logits, dtype=torch.float32)
+    labels = torch.as_tensor(labels, dtype=torch.float32)
+    if logits.ndim == 3 and labels.ndim == 3:
+        logits = logits[:, :-1, :]                                # causal shift
+    elif logits.ndim == 3 and labels.ndim == 2:
+        logits = logits[:, -1, :]                                 # pointwise input through a sequence model
+
+    log_probs = torch.log_softmax(logits, dim=-1)
+    with torch.no_grad():
+        loss = nn.KLDivLoss(reduction="none")(log_probs, labels).sum(dim=-1)
+        loss = loss.reshape(loss.shape[0], -1)
+    results = {"loss": loss.mean().item()}
+    if return_all:
+        results["all_loss"] = loss.detach().cpu()
+    return results
+
+
+# =====================================================================================
+# Generative processes: the conditional each setting exposes for the geometry oracle to
+# factor and for the sampler to draw from. Ported from src/notebooks/demo_graphs.ipynb.
+# =====================================================================================
+
+# ── Graph co-occurrence (order-1, symmetric): a graph -> diffusion -> log p(word|context) ──
+
+def ring(n):
+    """Cyclic graph Z_n (periodic) -> Fourier modes -> circle."""
+    A = np.zeros((n, n)); idx = np.arange(n)
+    A[idx, (idx + 1) % n] = 1.0; A[idx, (idx - 1) % n] = 1.0
+    return A
+
+
+def chain(n):
+    """Path graph (open boundary) -> standing-wave cosines -> horseshoe/arch."""
+    A = np.zeros((n, n)); idx = np.arange(n - 1)
+    A[idx, idx + 1] = 1.0; A[idx + 1, idx] = 1.0
+    return A
+
+
+def grid(n, m=None):
+    """2-D lattice, n rows x m cols (m defaults to n) -> a distorted sheet."""
+    m = n if m is None else m
+    N = n * m; A = np.zeros((N, N)); ix = lambda i, j: i * m + j
+    for i in range(n):
+        for j in range(m):
+            if i + 1 < n: A[ix(i, j), ix(i + 1, j)] = A[ix(i + 1, j), ix(i, j)] = 1.0
+            if j + 1 < m: A[ix(i, j), ix(i, j + 1)] = A[ix(i, j + 1), ix(i, j)] = 1.0
+    return A
+
+
+def sphere(n, k=8):
+    """kNN graph over ~uniform (Fibonacci) sphere points -> degree-1 harmonics -> sphere."""
+    idx = np.arange(n); gold = np.pi * (1 + 5 ** 0.5)
+    zc = 1 - 2 * (idx + 0.5) / n; rc = np.sqrt(1 - zc ** 2); ph = gold * idx
+    pts = np.stack([rc * np.cos(ph), rc * np.sin(ph), zc], 1)
+    D2 = ((pts[:, None] - pts[None]) ** 2).sum(-1)
+    A = np.zeros((n, n))
+    for i in range(n):
+        nb = np.argsort(D2[i])[1:k + 1]; A[i, nb] = A[nb, i] = 1.0
+    return A
+
+
+def communities(n=25, k=3, p_in=0.45, p_out=0.04, seed=0):
+    """Stochastic block model: k communities of n nodes each -> community-block geometry."""
+    rng = np.random.default_rng(seed); lab = np.repeat(np.arange(k), n)
+    N = len(lab); A = np.zeros((N, N))
+    for i in range(N):
+        for j in range(i + 1, N):
+            if rng.random() < (p_in if lab[i] == lab[j] else p_out):
+                A[i, j] = A[j, i] = 1.0
+    return A
+
+
+def hypercube(n):
+    """Binary attribute cube: n attributes -> 2^n nodes, neighbors differ in one bit -> analogies."""
+    B = np.array([[(v >> b) & 1 for b in range(n)] for v in range(2 ** n)])
+    H = (B[:, None] != B[None]).sum(-1)
+    return (H == 1).astype(float)
+
+
+def complete(n):
+    """Complete graph (no structure) -> every item equidistant -> a simplex."""
+    return 1.0 - np.eye(n)
+
+
+def cartesian_product(A, B):
+    """Product graph on nodes (i, j): move along one factor at a time (shared support)."""
+    nA, nB = len(A), len(B); N = nA * nB; G = np.zeros((N, N)); ix = lambda i, j: i * nB + j
+    for i in range(nA):
+        for j in range(nB):
+            for k in np.where(A[i] > 0)[0]: G[ix(i, j), ix(k, j)] = 1.0
+            for l in np.where(B[j] > 0)[0]: G[ix(i, j), ix(i, l)] = 1.0
+    return G
+
+
+def block_diagonal(*mats):
+    """Disjoint union (block-diagonal adjacency): separate structures on separate words."""
+    N = sum(len(m) for m in mats); G = np.zeros((N, N)); o = 0
+    for m in mats:
+        k = len(m); G[o:o + k, o:o + k] = m; o += k
+    return G
+
+
+def walk_cooccur(A, gamma=0.8):
+    """Diffusion co-occurrence ``(I - gamma P)^-1``, symmetrized (decays with diffusion distance)."""
+    A = np.asarray(A, dtype=np.float64)
+    deg = A.sum(1); P = A / deg[:, None]; pi = deg / deg.sum()
+    M = np.linalg.inv(np.eye(len(A)) - gamma * P)
+    J = pi[:, None] * M
+    return 0.5 * (J + J.T)
+
+
+def logcond_from_sim(K):
+    """Symmetric co-occurrence kernel -> row-normalized log-conditional ``log p(word|context)``."""
+    K = np.asarray(K, dtype=np.float64)
+    return np.log(K / K.sum(1, keepdims=True) + 1e-12)
+
+
+def cooccur_logcond(A, gamma=0.8):
+    """Graph adjacency -> ``log p(token | nearby context)`` via diffusion co-occurrence."""
+    return logcond_from_sim(walk_cooccur(A, gamma))
+
+
+def tree_conditional(n=3, k=2, gamma=0.85):
+    """Branching-diffusion tree of depth n, branching factor k: features spread through internal
+    nodes, read out at leaves -> ultrametric co-occurrence -> nested (hierarchical) geometry."""
+    addr = [tuple(a) for a in itertools.product(range(k), repeat=n)]
+    nodes = [t for L in range(n + 1) for t in itertools.product(range(k), repeat=L)]
+    ixn = {nd: i for i, nd in enumerate(nodes)}
+    A = np.zeros((len(nodes), len(nodes)))
+    for nd in nodes:
+        if nd: A[ixn[nd], ixn[nd[:-1]]] = A[ixn[nd[:-1]], ixn[nd]] = 1.0
+    leaf_id = [ixn[a] for a in addr]
+    Jl = walk_cooccur(A, gamma)[np.ix_(leaf_id, leaf_id)]
+    return logcond_from_sim(Jl)
+
+
+def log_line_conditional(n=30, lam=2.0):
+    """A 1-D line with a logarithmic metric (Weber/Fechner): large magnitudes compress."""
+    x = np.log1p(np.arange(n)); dist = np.abs(x[:, None] - x[None])
+    return logcond_from_sim(np.exp(-lam * dist))
+
+
+_GRAPH_BUILDERS = {
+    "ring": ring, "chain": chain, "grid": grid, "sphere": sphere,
+    "communities": communities, "hypercube": hypercube, "complete": complete,
+}
+_CONDITIONAL_BUILDERS = {"tree": tree_conditional, "log_line": log_line_conditional}
+
+
+def _build_adjacency(name, params):
+    if name in ("product", "stack"):
+        As = [_build_adjacency(f["structure"], {k: v for k, v in f.items() if k != "structure"})
+              for f in params["factors"]]
+        return reduce(cartesian_product, As) if name == "product" else block_diagonal(*As)
+    if name not in _GRAPH_BUILDERS:
+        raise ValueError(f"Unknown graph structure {name!r}; known: {sorted(_GRAPH_BUILDERS)}")
+    return _GRAPH_BUILDERS[name](**params)
+
+
+def graph_conditional(spec, gamma=0.8):
+    """Log-conditional for a graph spec ``{'structure': name, **params}``. Graph shapes (and their
+    ``product``/``stack`` compositions) diffuse to a co-occurrence log-conditional; ``tree`` and
+    ``log_line`` define their conditional directly."""
+    params = {k: v for k, v in dict(spec).items() if k != "structure"}
+    name = spec["structure"]
+    if name in _CONDITIONAL_BUILDERS:
+        return _CONDITIONAL_BUILDERS[name](**params)
+    return cooccur_logcond(_build_adjacency(name, params), gamma)
+
+
+def structure_adjacency(spec):
+    """Adjacency matrix of a graph structure (for drawing it); raises for the non-graph
+    conditionals (tree / log_line)."""
+    params = {k: v for k, v in dict(spec).items() if k != "structure"}
+    return _build_adjacency(spec["structure"], params)
+
+
+def stacked_conditional(specs, mode="union", gamma=0.8):
+    """Combine several structures on one representation (demo_graphs §2 stack / share / superpose):
+
+      - ``"union"``   : disjoint supports (block-diagonal) -> the geometries stack as a union;
+      - ``"product"`` : shared support, independent factors (Cartesian) -> the product geometry;
+      - ``"share"``   : aligned relations on the same nodes (summed adjacency) -> one shared code.
+
+    The over-capacity ``superpose`` regime (more co-occurring features than dimensions) is the
+    nonlinear ``train_sparse_autoencoder`` in models.py.
+    """
+    As = [structure_adjacency(s) for s in specs]
+    if mode == "union":
+        A = block_diagonal(*As)
+    elif mode == "product":
+        A = reduce(cartesian_product, As)
+    elif mode == "share":
+        A = sum(As)
+    else:
+        raise ValueError(f"Unknown stacking mode {mode!r}; use union | product | share")
+    return cooccur_logcond(A, gamma)
+
+
+# ── Distribution families (order-1, asymmetric): items are distributions, L = log p(x|theta) ──
+
+def gaussian1d(n_mu=13, n_sig=6, x_n=200, x_lim=7.0, mu_lim=2.5, sig_lo=0.6, sig_hi=1.8):
+    """N(mu, sigma): sufficient statistic (x, x^2) -> Hermite; natural params (mu/s^2, 1/s^2)."""
+    mus = np.linspace(-mu_lim, mu_lim, n_mu); sigs = np.linspace(sig_lo, sig_hi, n_sig)
+    theta = np.array([(m, s) for s in sigs for m in mus])
+    x = np.linspace(-x_lim, x_lim, x_n)
+    L = -0.5 * ((x[None] - theta[:, 0:1]) / theta[:, 1:2]) ** 2 - np.log(theta[:, 1:2])
+    natural = np.stack([theta[:, 0] / theta[:, 1] ** 2, 1.0 / theta[:, 1] ** 2], 1)
+    return L, {"x": x, "params": theta, "natural": natural}
+
+
+def von_mises(n_mu=20, kappas=(1.5, 3.0, 4.5), x_n=200):
+    """p ∝ exp(kappa cos(x-mu)): sufficient statistic (cos x, sin x); natural (k cos mu, k sin mu)."""
+    mus = np.linspace(0, 2 * np.pi, n_mu, endpoint=False)
+    theta = np.array([(m, k) for k in kappas for m in mus])
+    x = np.linspace(0, 2 * np.pi, x_n, endpoint=False)
+    L = theta[:, 1:2] * np.cos(x[None] - theta[:, 0:1])
+    natural = np.stack([theta[:, 1] * np.cos(theta[:, 0]), theta[:, 1] * np.sin(theta[:, 0])], 1)
+    return L, {"x": x, "params": theta, "natural": natural}
+
+
+def gaussian2d(n_mu=6, sigmas=(0.8, 1.3, 2.0), grid_n=16, xy_lim=5.0, mu_lim=2.0):
+    """N(mu, s^2 I): sufficient statistic (x1, x2, |x|^2); natural (mu1/s^2, mu2/s^2, 1/s^2)."""
+    mm = np.linspace(-mu_lim, mu_lim, n_mu)
+    theta = np.array([(a, b, s) for s in sigmas for b in mm for a in mm])
+    a1 = np.linspace(-xy_lim, xy_lim, grid_n)
+    X1, X2 = np.meshgrid(a1, a1); xy = np.stack([X1.ravel(), X2.ravel()], 1)
+    diff2 = ((xy[None, :, :] - theta[:, None, :2]) ** 2).sum(-1)   # (N, M)
+    L = -0.5 * diff2 / theta[:, 2:3] ** 2 - np.log(theta[:, 2:3])
+    natural = np.stack([theta[:, 0] / theta[:, 2] ** 2, theta[:, 1] / theta[:, 2] ** 2,
+                        1.0 / theta[:, 2] ** 2], 1)
+    return L, {"xy": xy, "params": theta, "natural": natural}
+
+
+def categorical(K=3, n_items=200, alpha=1.0, seed=0):
+    """Flat-Dirichlet categoricals (the null case): nothing to compress."""
+    P = np.random.default_rng(seed).dirichlet(np.full(K, alpha), size=n_items)
+    return np.log(P + 1e-12), {"P": P}
+
+
+def mixture(x_n=300):
+    """Two families (Gaussian + von Mises) on shared support -> the superposition case: the
+    decoder is the union of their sufficient statistics."""
+    x = np.linspace(-np.pi, np.pi, x_n)
+    gm = np.linspace(-2, 2, 9); gs = np.linspace(0.5, 1.1, 3)
+    G = np.array([(m, s) for s in gs for m in gm])
+    vmm = np.linspace(-np.pi, np.pi, 9, endpoint=False); vk = np.array([1.5, 2.5, 4.0])
+    V = np.array([(m, k) for k in vk for m in vmm])
+    Lg = -0.5 * ((x[None] - G[:, 0:1]) / G[:, 1:2]) ** 2 - np.log(G[:, 1:2])
+    Lv = V[:, 1:2] * np.cos(x[None] - V[:, 0:1])
+    return np.vstack([Lg, Lv]), {"x": x, "family": np.array([0] * len(Lg) + [1] * len(Lv))}
+
+
+_FAMILY_BUILDERS = {"gaussian1d": gaussian1d, "gaussian2d": gaussian2d, "von_mises": von_mises,
+                    "categorical": categorical, "mixture": mixture}
+
+
+def family_build(spec):
+    """Build ``(L, info)`` for a family spec ``{'family': name, **params}``."""
+    params = {k: v for k, v in dict(spec).items() if k != "family"}
+    name = spec["family"]
+    if name not in _FAMILY_BUILDERS:
+        raise ValueError(f"Unknown family {name!r}; known: {sorted(_FAMILY_BUILDERS)}")
+    return _FAMILY_BUILDERS[name](**params)
+
+
+def family_conditional(spec):
+    """The log-conditional ``L`` the geometry oracle factors."""
+    return family_build(spec)[0]
+
+
+# ── Relational operations (order >= 2): the latent structure is an operation c = a*b ──
+
+def modular_add(p=12, arity=2):
+    """c = (a + b + ...) mod p  -> a circle (turning addition into rotation)."""
+    T = np.zeros((p,) * arity + (p,))
+    for idx in itertools.product(range(p), repeat=arity):
+        T[idx + (sum(idx) % p,)] = 1.0
+    return T
+
+
+def standard_add(m=10):
+    """c = a + b (no wraparound) -> an open arc."""
+    T = np.zeros((m, m, 2 * m - 1))
+    for a in range(m):
+        for b in range(m):
+            T[a, b, a + b] = 1.0
+    return T
+
+
+def modular_mult(p=13, g=2):
+    """c = (a * b) mod p over the units (indexed by discrete log) -> a circle."""
+    units = list(range(1, p)); dlog = {}; v = 1
+    for x in range(p - 1):
+        dlog[v] = x; v = (v * g) % p
+    n = p - 1; T = np.zeros((n, n, n))
+    for a in units:
+        for b in units:
+            T[dlog[a], dlog[b], dlog[(a * b) % p]] = 1.0
+    return T
+
+
+def standard_mult(m=10):
+    """c = a * b -> the log number line, arched (x2 = equal steps)."""
+    T = np.zeros((m, m, m * m))
+    for a in range(1, m + 1):
+        for b in range(1, m + 1):
+            T[a - 1, b - 1, a * b - 1] = 1.0
+    return T
+
+
+def product(p=14, q=9):
+    """Two parallel modular additions (mod p and mod q) on paired items -> a torus."""
+    els = [(i, j) for i in range(p) for j in range(q)]; n = p * q
+    idx = {e: k for k, e in enumerate(els)}
+    T = np.zeros((n, n, n))
+    for a in range(n):
+        for b in range(n):
+            c = ((els[a][0] + els[b][0]) % p, (els[a][1] + els[b][1]) % q)
+            T[a, b, idx[c]] = 1.0
+    return T
+
+
+def maximum(n=8):
+    """c = max(a, b) on a total order -> an ordered line."""
+    T = np.zeros((n, n, n))
+    for a in range(n):
+        for b in range(n):
+            T[a, b, max(a, b)] = 1.0
+    return T
+
+
+def averaging(grid=4, sigma=0.7):
+    """c = midpoint(a, b) on a 2-D grid (soft) -> a flat (Euclidean) plane."""
+    P = np.array([(i, j) for i in range(grid) for j in range(grid)], float); n = len(P)
+    T = np.zeros((n, n, n))
+    for a in range(n):
+        for b in range(n):
+            w = np.exp(-((P - (P[a] + P[b]) / 2) ** 2).sum(1) / (2 * sigma ** 2))
+            T[a, b] = w / w.sum()
+    return T
+
+
+def set_intersection(nbit=3):
+    """c = a & b over feature sets (Boolean lattice) -> the hypercube (one binary coord/feature)."""
+    n = 2 ** nbit; T = np.zeros((n, n, n))
+    for a in range(n):
+        for b in range(n):
+            T[a, b, a & b] = 1.0
+    return T
+
+
+def entailment(depth=2, branch=3):
+    """c = LCA(a, b) (the meet on an is-a tree) -> a hierarchy embedding."""
+    parent = [None]; children = [[]]; frontier = [0]
+    for _ in range(depth):
+        new = []
+        for u in frontier:
+            for _ in range(branch):
+                i = len(parent); parent.append(u); children.append([]); children[u].append(i); new.append(i)
+        frontier = new
+    n = len(parent)
+    anc = []
+    for a in range(n):
+        chain = []; u = a
+        while u is not None:
+            chain.append(u); u = parent[u]
+        anc.append(chain)
+    T = np.zeros((n, n, n))
+    for a in range(n):
+        sa = set(anc[a])
+        for b in range(n):
+            T[a, b, next(u for u in anc[b] if u in sa)] = 1.0
+    return T
+
+
+_RELATION_BUILDERS = {
+    "modular_add": modular_add, "standard_add": standard_add, "modular_mult": modular_mult,
+    "standard_mult": standard_mult, "product": product, "maximum": maximum,
+    "averaging": averaging, "set_intersection": set_intersection, "entailment": entailment,
+}
+GROUP_OPERATIONS = {"modular_add", "modular_mult", "standard_add", "standard_mult", "product"}
+
+
+def relation_tensor(spec):
+    """Build the conditional tensor ``T`` for an operation spec ``{'operation': name, **params}``.
+    Graded ops (max/averaging/entailment) factor cleanly; group ops are degenerate (the trained
+    model selects a single frequency -> a circle)."""
+    params = {k: v for k, v in dict(spec).items() if k != "operation"}
+    name = spec["operation"]
+    if name not in _RELATION_BUILDERS:
+        raise ValueError(f"Unknown operation {name!r}; known: {sorted(_RELATION_BUILDERS)}")
+    return _RELATION_BUILDERS[name](**params)

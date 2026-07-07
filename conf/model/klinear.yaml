@@ -1,0 +1,8 @@
+# @package model_kwargs
+# Unified k-linear readout: shared embedding + rank-(k+1) tensor. vocab_size / num_classes / arity
+# are derived from the dataset at train time, so this one model spans linear (k=1) / bilinear
+# (k=2) / trilinear (k=3) without any per-task config.
+model_type: klinear
+model_config:
+  embed_dim: 16
+  init_scale: 0.3

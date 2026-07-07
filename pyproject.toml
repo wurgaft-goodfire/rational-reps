@@ -9,11 +9,13 @@ dependencies = [
     "hydra-core>=1.3.2",
     "hydra-joblib-launcher>=1.2.0",
     "ipykernel>=6.0.0",
+    "ipywidgets>=8.1.8",
     "matplotlib>=3.8.0",
     "numpy>=1.26.0",
     "pandas>=2.0.0",
     "pyprojroot>=0.3.0",
     "python-dotenv>=1.0.0",
+    "seaborn>=0.13.2",
     "torch>=2.4.0",
     "tqdm>=4.66.0",
     "transformers>=4.44.0",
@@ -24,6 +26,16 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+
+# Pull torch from the CUDA 12.8 wheel index: the cluster driver supports CUDA 12.8, so the
+# default cu130 wheel won't initialize the GPU. cu128 matches the driver.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
 
 [tool.pytest.ini_options]
 # importlib mode keeps `src/` off sys.path, so the `src/code/` package doesn't

@@ -1,0 +1,10 @@
+# @package model_kwargs
+# MLP over the concatenated input-item embeddings. vocab_size / num_classes / arity are derived
+# from the dataset at train time. The compared representation is the penultimate activation
+# (pre-decode), so the head has real capacity.
+model_type: mlp
+model_config:
+  embed_dim: 16
+  hidden_size: 64
+  num_layers: 2
+  init_scale: 0.3
