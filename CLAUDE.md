@@ -10,6 +10,7 @@ This is research code. Correctness, succinctness, and clarity take priority over
 - **Minimize code.** Prefer principled abstractions over bloated ones. A clean abstraction that reduces duplication is good; a speculative one added for hypothetical future use is not.
 - **No defensive validation** at internal boundaries. Trust that callers pass correct inputs; only validate at the outermost entry point (CLI args, config files).
 - **Integration tests may load real models.** A test that runs an actual forward pass is more trustworthy than one that mocks the model.
+- **Comments explain the current state of the code, not its chronology and development** (that's what git is for). No "(removed) …", "previously …", or "now uses …" notes.
 
 # Development approach
 

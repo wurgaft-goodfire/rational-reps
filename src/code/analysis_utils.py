@@ -86,7 +86,7 @@ def _load_local(setting, experiment_name) -> pd.DataFrame:
                 metrics = _read_metrics_file(os.path.join(checkpoints_dir, str(step), "metrics.pt"))
                 rows.append({**sweep_params, "config": config, "step": step, **metrics})
         else:
-            # Single-run eval (LLM / Bayesian): metrics at the run root.
+            # Single-run eval (pretrained LLM): metrics at the run root.
             metrics = _read_metrics_file(os.path.join(subdir_path, "metrics.pt"))
             rows.append({**sweep_params, "config": config, "step": None, **metrics})
 

@@ -1,0 +1,13 @@
+# @package _global_
+# RNN (GRU) causal language model — a sequence model over walks; choose the task with `setting=`.
+#   python -m src.code.train runner=rnn setting=graph
+defaults:
+  - override /model: rnn
+  - override /train: default
+  - _self_
+
+name: rnn
+output_dir: ${run_dir}/checkpoints
+sample_mode: sequence
+training_kwargs:
+  learning_rate: 0.005     # sequence LM wants a lower lr than the readouts

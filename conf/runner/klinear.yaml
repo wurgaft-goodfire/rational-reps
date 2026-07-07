@@ -1,0 +1,11 @@
+# @package _global_
+# k-linear runner — model-centric; choose the task with `setting=`. Pointwise, full-batch.
+#   python -m src.code.train runner=klinear setting=graph
+defaults:
+  - override /model: klinear
+  - override /train: default
+  - _self_
+
+name: klinear
+output_dir: ${run_dir}/checkpoints
+sample_mode: pointwise

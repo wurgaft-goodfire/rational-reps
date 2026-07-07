@@ -1,10 +1,10 @@
 # @package _global_
 
 training_kwargs:
-  train_steps: 50000
-  batch_size: 64
-  learning_rate: 0.0005
-  context_length: 128
+  train_steps: 1500        # sized for these small tasks; runners override lr / sample_mode only
+  batch_size: 128          # walk batch for the sequence models (ignored by full-batch readouts)
+  learning_rate: 0.01      # readout default; the sequence models (transformer/rnn) lower it
+  context_length: 24       # walk length (sequence mode)
   warmup_steps: 0
   lr_scheduler_type: constant
   lr_scheduler_kwargs: {}
@@ -14,7 +14,7 @@ training_kwargs:
   optimizer: adamw_torch
   save_online_eval: false # if true, save online-eval metrics to disk each eval step
   logging_steps: 100
-  eval_steps: 100
+  eval_steps: 150
   pre_batch_data_collator: true # if batching data in the dataset's __getitem__ - usually much faster
   save_steps_method: end_only # end_only | every_eval | linear_schedule | sqrt_schedule | specific_steps
   num_save_checkpoints: 10 # used by linear_schedule / sqrt_schedule

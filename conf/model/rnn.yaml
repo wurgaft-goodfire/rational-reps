@@ -1,0 +1,9 @@
+# @package model_kwargs
+# GRU over the input-item embeddings; readout from the final hidden state. vocab_size /
+# num_classes / arity are derived from the dataset at train time.
+model_type: rnn
+model_config:
+  embed_dim: 16
+  hidden_size: 64
+  num_layers: 1
+  init_scale: 0.3

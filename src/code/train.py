@@ -1,12 +1,15 @@
 import os
 import shutil
+import pandas as pd
 from transformers import TrainingArguments, Trainer
 import torch
 import wandb
 import hydra
+from hydra import compose, initialize_config_dir
+from hydra.core.global_hydra import GlobalHydra
 from dotenv import load_dotenv
 from pyprojroot import here
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from .models import init_model
 from .config import Config
 from .data import init_dataset
@@ -53,12 +56,20 @@ def train(config):
     # Initialize the dataset first so we can size the model from it.
     dataset = init_dataset(config)
 
-    # Derive model I/O dimensions from the dataset and patch the config so the
-    # architecture can't drift out of sync with the data.
-    config.cfg.model_kwargs.model_config.vocab_size = dataset.vocab_size
-    config.cfg.model_kwargs.model_config.max_position_embeddings = dataset.seq_len
-    print(f"Model config patched from dataset: vocab_size={dataset.vocab_size}, "
-          f"max_position_embeddings={dataset.seq_len}")
+    # Derive all data-determined model dimensions from the dataset and inject them, so configs
+    # never hardcode vocab_size / num_classes / arity / max_position_embeddings.
+    mc = config.cfg.model_kwargs.model_config
+    with open_dict(mc):
+        mc.vocab_size = dataset.vocab_size
+        if config.cfg.model_kwargs.model_type in ("klinear", "mlp", "rnn"):
+            mc.num_classes = dataset.num_dims          # readout heads: outcome classes + arity
+            mc.arity = dataset.arity
+            print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
+                  f"num_classes={dataset.num_dims}, arity={dataset.arity}")
+        else:
+            mc.max_position_embeddings = dataset.seq_len
+            print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
+                  f"max_position_embeddings={dataset.seq_len}")
 
     model = init_model(config)
 
@@ -99,14 +110,53 @@ def train(config):
     )
 
     trainer.add_callback(CustomSaveCallback(config.training_kwargs["save_steps"], trainer=trainer))
-    trainer.add_callback(StepMetricsCallback(
+    metrics_callback = StepMetricsCallback(
         trainer=trainer, step_interval=config.training_kwargs["eval_steps"], config=config,
-    ))
+    )
+    trainer.add_callback(metrics_callback)
 
     trainer.train()
 
     if config.cfg.wandb.enabled:
         wandb.finish()
+
+    # Return the trained artifacts so callers (notebooks) can use them in-process; the CLI
+    # entry point ignores the return value.
+    return {
+        "model": trainer.model,
+        "dataset": dataset,
+        "evaluator": metrics_callback.evaluator,
+        "history": metrics_callback.history,
+    }
+
+
+def train_inline(overrides, name=None, cache_dir=None):
+    """Train in-process from a list of Hydra overrides (for notebooks). Composes the same config
+    the CLI builds — all conf/ groups reused — then runs `train()`. Returns
+    ``(model, dataset, evaluator, history_df)`` with one history row per eval step. Real sweeps
+    still go through `python -m src.code.train -m ...`.
+
+        model, dataset, evaluator, history = train_inline(["runner=transformer", "setting=graph"])
+    """
+    overrides = list(overrides) + ([f"name={name}"] if name is not None else [])
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
+        cfg = compose(config_name="config", overrides=overrides)
+    cache_dir = cache_dir or os.getenv("CACHE_DIR") or str(here() / "outputs")
+    cfg.cache_dir = cache_dir
+    # run_dir's ${hydra:runtime.output_dir} interpolation only resolves under @hydra.main, so set it.
+    cfg.run_dir = os.path.join(cache_dir, cfg.setting, cfg.name, "notebook")
+    result = train(Config(cfg, make_run_dirs=True))
+    return result["model"], result["dataset"], result["evaluator"], pd.DataFrame(result["history"])
+
+
+def graph_overrides(spec):
+    """Hydra overrides selecting a graph structure from a spec dict, e.g.
+    ``{"structure": "grid", "n": 6, "m": 6}``. Replaces the setting's default ``structure_kwargs``
+    (deletes it, then re-adds this structure's params) so switching structures needs no per-key
+    dance: ``train_inline(graph_overrides(spec) + ["runner=klinear"])``."""
+    ov = ["setting=graph", f"structure={spec['structure']}", "~structure_kwargs"]
+    return ov + [f"+structure_kwargs.{k}={v}" for k, v in spec.items() if k != "structure"]
 
 
 @hydra.main(version_base=None, config_path=str(here("conf")), config_name="config")
@@ -114,9 +164,9 @@ def main(cfg: DictConfig) -> None:
     """Main training entry point.
 
     Usage:
-      python -m src.code.train runner=train_small_lm
-      python -m src.code.train -m runner=train_small_lm model_kwargs.model_config.hidden_size=64,128
-      python -m src.code.train runner=train_small_lm wandb.enabled=false   # no wandb
+      python -m src.code.train runner=transformer setting=graph
+      python -m src.code.train -m runner=klinear setting=graph structure=ring,chain
+      python -m src.code.train runner=rnn setting=distribution
     """
     config = Config(cfg, make_run_dirs=True)
     config.to_yaml(os.path.join(config.run_dir, "config_resolved.yaml"))
