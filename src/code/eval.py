@@ -34,6 +34,22 @@ def cka(X, Y):
     return float((Kx * Ky).sum() / denom) if denom > 0 else 0.0
 
 
+def cca(X, Y, tol=1e-8):
+    """Mean canonical correlation between X and Y (rows = samples). Invariant to any invertible
+    linear map of each side — the right similarity when representations are equal up to a linear
+    transform (e.g. belief states in different bases), where CKA (rotation-only) under-reports.
+    Computed SVCCA-style: orthonormal bases of the two column spaces, then singular values of their
+    product."""
+    def basis(A):
+        A = np.asarray(A, np.float64); A = A - A.mean(0)
+        U, S, _ = np.linalg.svd(A, full_matrices=False)
+        return U[:, S > tol * S[0]]
+    Bx, By = basis(X), basis(Y)
+    if Bx.shape[1] == 0 or By.shape[1] == 0:
+        return 0.0
+    return float(np.linalg.svd(Bx.T @ By, compute_uv=False).mean())
+
+
 def _rankdata(a):
     """Average ranks of a 1-D array (tied values share their mean rank). Values within a small
     relative tolerance are treated as tied. This matters for *ultrametric* RDMs (e.g. trees), whose

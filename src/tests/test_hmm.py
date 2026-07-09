@@ -56,3 +56,23 @@ def _belief_geometry_cka(kappa):
 def test_informative_emissions_recover_latent_geometry_in_belief_space():
     assert _belief_geometry_cka(kappa=8.0) > 0.9              # sharp emissions -> belief is the ring
     assert _belief_geometry_cka(kappa=8.0) > _belief_geometry_cka(kappa=0.3) + 0.2   # >> noisy
+
+
+def test_spectral_hmm_matches_forward_algorithm_up_to_a_linear_map():
+    from src.code.geometry import spectral_hmm, spectral_beliefs
+    from src.code.eval import cca
+    ds = HMMDataset(_cfg(kappa=3.0, n=12, M=24))              # M > n so the spectral rank is meaningful
+    pi, T, Em = ds.pi.cpu().numpy(), ds.T.cpu().numpy(), ds.Em.cpu().numpy()
+    U, B, b1, b_inf = spectral_hmm(pi, T, Em)
+    assert U.shape == (24, 12)                                # observable subspace has rank n_states
+    # sample observation sequences and compare spectral vs forward beliefs
+    Bsz, L = 32, 30
+    s = torch.empty(Bsz, L, dtype=torch.long, device=ds.device)
+    s[:, 0] = torch.multinomial(ds.pi, Bsz, replacement=True, generator=ds.rng)
+    for t in range(1, L):
+        s[:, t] = torch.multinomial(ds.T[s[:, t-1]], 1, generator=ds.rng).squeeze(1)
+    x = torch.multinomial(ds.Em[s.reshape(-1)], 1, generator=ds.rng).reshape(Bsz, L)
+    fwd = ds.forward_algorithm(x).cpu().numpy().reshape(-1, ds.n_states)
+    spec = spectral_beliefs(B, b1, b_inf, x.cpu().numpy()).reshape(-1, ds.n_states)
+    assert cca(spec, fwd) > 0.999                             # identical up to an invertible linear map
+    assert cka(spec, fwd) < cca(spec, fwd)                    # ... but not up to rotation (CKA under-reports)

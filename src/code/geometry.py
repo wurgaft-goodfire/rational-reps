@@ -63,3 +63,36 @@ def predicted_geometry(conditional):
     if conditional.ndim == 2:
         return factor_logcond(conditional)[1]
     return factor_tensor(conditional)[0]
+
+
+def spectral_hmm(pi, T, Em):
+    """Hsu-Kakade-Zhang spectral learning of an HMM from its exact observable moments — the
+    closed-form, observables-only belief oracle. Inputs: ``pi`` (n,), ``T`` (n,n) row-stochastic
+    ``p(s'|s)``, ``Em`` (n,M) ``p(x|s)``. Returns ``(U, B, b1, b_inf)``: ``U`` (M,n) the observable
+    subspace (top-n left singular vectors of the bigram co-occurrence — a closed-form belief
+    geometry whose rank is the number of hidden states), ``B`` (M,n,n) the observable operators
+    (the belief update is linear: ``b <- normalize(B[x] @ b)``), and ``b1``/``b_inf`` the initial
+    state / normalizer. The spectral belief equals the forward-algorithm belief up to an invertible
+    linear map, so predictions are identical.
+    """
+    pi = np.asarray(pi, np.float64); T = np.asarray(T, np.float64); Em = np.asarray(Em, np.float64)
+    n, _ = Em.shape
+    P1 = pi @ Em                                                      # p(x1)
+    P21 = np.einsum("s,sj,st,ti->ij", pi, Em, T, Em)                 # p(x2=i, x1=j)
+    P3 = np.einsum("s,sj,st,tx,tu,ui->xij", pi, Em, T, Em, T, Em)    # p(x3=i, x2=x, x1=j)
+    U = np.linalg.svd(P21)[0][:, :n]                                 # observable subspace
+    UP21_pinv = np.linalg.pinv(U.T @ P21)
+    B = np.stack([(U.T @ P3[x]) @ UP21_pinv for x in range(len(P3))])
+    return U, B, U.T @ P1, UP21_pinv.T @ P1
+
+
+def spectral_beliefs(B, b1, b_inf, obs):
+    """Per-position spectral belief states for ``obs`` (batch, L); each equals the forward-algorithm
+    belief up to the fixed linear map from ``spectral_hmm``. Normalized every step to stay bounded."""
+    obs = np.asarray(obs); out = np.zeros((*obs.shape, len(b1)))
+    for r in range(obs.shape[0]):
+        st = b1.copy()
+        for t in range(obs.shape[1]):
+            st = B[obs[r, t]] @ st; st = st / (b_inf @ st)
+            out[r, t] = st
+    return out

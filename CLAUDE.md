@@ -43,6 +43,12 @@ outputs saved, so the user never has to re-run it themselves:
 `uv run jupyter nbconvert --to notebook --execute --inplace <path.ipynb>`. Confirm it ran clean
 before finishing.
 
+**Always look at the figures.** After running any analysis that produces a plot, extract the PNG
+and actually view it (Read the image) before reporting. A clean run and good printed metrics do not
+mean the figure is good — a 2D PCA scatter of a high-dimensional object, for instance, can be
+hijacked by a few outlier points and collapse everything else to a blob even when the underlying
+match is perfect. Inspect the visual, judge whether it conveys the claim, and fix it if it doesn't.
+
 # Architecture
 
 Hydra composes config from `conf/` and runs one **runner** (a top-level job: train or eval).
