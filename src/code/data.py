@@ -16,6 +16,8 @@ def init_dataset(config, overwrite_data: bool = False):
         return DistributionFamilyDataset(config)
     if config.setting == "relational":
         return RelationalDataset(config)
+    if config.setting == "hmm":
+        return HMMDataset(config)
     raise ValueError(f"Unsupported setting: {config.setting}")
 
 
@@ -43,7 +45,9 @@ class GraphCooccurrenceDataset(Dataset):
         structure_kwargs = OmegaConf.to_container(sk, resolve=True) if sk else {}
         spec = {"structure": config.get("structure"), **structure_kwargs}
         gamma = config.get("gamma", 0.8)
-        self._L = graph_conditional(spec, gamma)       # (n, n) log-conditional (numpy)
+        # "diffusion": multi-step co-occurrence; "adjacency": raw one-step neighbour transition
+        cooccurrence = config.get("cooccurrence", "diffusion")
+        self._L = graph_conditional(spec, gamma, cooccurrence)   # (n, n) log-conditional (numpy)
 
         self.n_nodes = len(self._L)
         self.arity = 1
@@ -234,6 +238,106 @@ class RelationalDataset(Dataset):
         return _kl_metrics(eval_pred, return_all)
 
 
+##### Hidden-Markov dataset (latent graph walk + emissions) #####
+
+class HMMDataset(Dataset):
+    """Latent states walk a graph (the same co-occurrence transition as the graph setting); each
+    state emits an observable token via ``Em[s,:] = softmax(kappa * G)`` over a shared M-symbol
+    alphabet (``G`` random). The network sees only tokens, so the latent geometry lives in the
+    belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the token embedding. ``emission_kappa``
+    sets the SNR (0 -> uninformative, large -> near one-to-one) and ``n_symbols`` the alphabet
+    (``n_symbols < n_states`` forces aliasing). Sequence-only. ``kappa -> inf`` with ``M >= n_states``
+    recovers the fully-observed graph geometry up to a token permutation."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.rng = torch.Generator(device=self.device); self.rng.manual_seed(config.random_seed)
+
+        from omegaconf import OmegaConf
+        sk = config.get("structure_kwargs")
+        structure_kwargs = OmegaConf.to_container(sk, resolve=True) if sk else {}
+        spec = {"structure": config.get("structure"), **structure_kwargs}
+        self._L = graph_conditional(spec, config.get("gamma", 0.8),
+                                    config.get("cooccurrence", "diffusion"))   # latent transition
+        self.n_states = len(self._L)
+        self.arity = 1
+
+        T = torch.tensor(np.exp(self._L), dtype=torch.float32, device=self.device)
+        self.T = T / T.sum(-1, keepdim=True)
+        self.pi = self._stationary(self.T)                        # prior = stationary distribution
+
+        self.n_symbols = int(config.get("n_symbols", self.n_states))
+        kappa = float(config.get("emission_kappa", 4.0))
+        g = torch.Generator(device=self.device); g.manual_seed(config.random_seed + 1)
+        logits = torch.randn(self.n_states, self.n_symbols, generator=g, device=self.device)
+        self.Em = torch.softmax(kappa * logits, dim=-1)           # (n_states, M) emission
+
+        self.item_tokens = torch.arange(self.n_symbols)           # emission symbols = outcome classes
+        self.start_token = self.n_symbols                         # extra token to begin a sequence
+
+    @staticmethod
+    def _stationary(T, iters=2000):
+        v = torch.full((T.shape[0],), 1.0 / T.shape[0], device=T.device)
+        for _ in range(iters):
+            v = v @ T
+        return v / v.sum()
+
+    @property
+    def latent_conditional(self):
+        """Log-conditional of the latent transition — factor for the predicted latent geometry."""
+        return self._L
+
+    @property
+    def num_dims(self):
+        return self.n_symbols
+
+    @property
+    def vocab_size(self):
+        return self.n_symbols + 1                                 # symbols + start token
+
+    @property
+    def seq_len(self):
+        return self.config.training_kwargs["context_length"] + 1
+
+    def __len__(self):
+        return 1
+
+    def _batch_size(self):
+        return self.config.training_kwargs["batch_size"]
+
+    def __getitem__(self, i=None):
+        B = self._batch_size(); L = self.config.training_kwargs["context_length"]
+        s = torch.empty(B, L, dtype=torch.long, device=self.device)   # latent walk: s_1 ~ pi
+        s[:, 0] = torch.multinomial(self.pi, B, replacement=True, generator=self.rng)
+        for t in range(1, L):
+            s[:, t] = torch.multinomial(self.T[s[:, t - 1]], 1, generator=self.rng).squeeze(1)
+        x = torch.multinomial(self.Em[s.reshape(-1)], 1, generator=self.rng).reshape(B, L)  # emit
+
+        start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
+        input_ids = torch.cat([start, x], dim=1)                  # (B, L+1)
+        # Bayes-optimal next-token distributions p(x_{t+1} | x_{1:t}) via the forward algorithm
+        beliefs = self.forward_algorithm(x)                       # (B, L, n_states) = b_1..b_L
+        pred_first = (self.pi @ self.Em).expand(B, 1, -1)         # predict x_1 from the prior
+        pred_rest = (beliefs[:, :-1] @ self.T) @ self.Em          # predict x_{t+1}, t = 1..L-1
+        eval_labels = torch.cat([pred_first, pred_rest], dim=1)   # (B, L, M)
+        return {"input_ids": input_ids, "labels": input_ids.clone(), "eval_labels": eval_labels}
+
+    def forward_algorithm(self, obs):
+        """Per-position posteriors ``b_t = p(s_t | x_{1:t})`` via the forward algorithm. obs: (B, L)."""
+        B, L = obs.shape; b = self.pi.expand(B, -1).clone(); out = []
+        for t in range(L):
+            if t > 0:
+                b = b @ self.T                                    # transition (not before the 1st emission)
+            b = b * self.Em[:, obs[:, t]].T                       # emission update
+            b = b / b.sum(-1, keepdim=True)
+            out.append(b.clone())
+        return torch.stack(out, 1)                                # (B, L, n_states)
+
+    def compute_metrics(self, eval_pred, return_all=True):
+        return _kl_metrics(eval_pred, return_all)
+
+
 def _kl_metrics(eval_pred, return_all=True):
     """KL(model || true) over the outcome distribution. Handles pointwise (logits (B,C)) and
     sequence (logits (B,T,C)) shapes; for causal sequences drop the final unmatched prediction."""
@@ -355,6 +459,14 @@ def logcond_from_sim(K):
     return np.log(K / K.sum(1, keepdims=True) + 1e-12)
 
 
+def geodesic_cooccur(A, gamma=0.8):
+    """Shortest-path (geodesic) kernel ``gamma ** d(i,j)``: full self-similarity on the diagonal
+    (``gamma**0 = 1``, unlike adjacency's zero diagonal), decaying by graph distance."""
+    from scipy.sparse.csgraph import shortest_path
+    D = shortest_path(np.asarray(A, dtype=np.float64) > 0, directed=False, unweighted=True)
+    return gamma ** D
+
+
 def cooccur_logcond(A, gamma=0.8):
     """Graph adjacency -> ``log p(token | nearby context)`` via diffusion co-occurrence."""
     return logcond_from_sim(walk_cooccur(A, gamma))
@@ -422,21 +534,35 @@ def _build_adjacency(name, params):
     return _GRAPH_BUILDERS[name](**params)
 
 
-def graph_conditional(spec, gamma=0.8):
-    """Log-conditional for a graph spec ``{'structure': name, **params}``. Graph shapes (and their
-    ``product``/``stack`` compositions) diffuse to a co-occurrence log-conditional; ``tree`` and
-    ``log_line`` define their conditional directly."""
-    params = {k: v for k, v in dict(spec).items() if k != "structure"}
-    name = spec["structure"]
+def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
+    """Log-conditional for a graph spec ``{'structure': name, **params}``. ``cooccurrence`` selects
+    how a graph shape becomes a conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``,
+    integrating multi-step context), ``"geodesic"`` (shortest-path kernel ``gamma**d``, self-similar
+    diagonal), or ``"adjacency"`` (raw one-step neighbours, zero diagonal). ``tree``/``log_line``
+    define their conditional directly and ignore ``cooccurrence``. ``gamma`` and ``cooccurrence`` may
+    also be passed as spec keys (overriding the args), so one spec dict configures the task."""
+    spec = dict(spec)
+    name = spec.pop("structure")
+    gamma = spec.pop("gamma", gamma)
+    cooccurrence = spec.pop("cooccurrence", cooccurrence)
     if name in _CONDITIONAL_BUILDERS:
-        return _CONDITIONAL_BUILDERS[name](**params)
-    return cooccur_logcond(_build_adjacency(name, params), gamma)
+        if name == "tree":
+            spec.setdefault("gamma", gamma)            # tree runs its own diffusion
+        return _CONDITIONAL_BUILDERS[name](**spec)
+    A = _build_adjacency(name, spec)
+    if cooccurrence == "diffusion":
+        return cooccur_logcond(A, gamma)
+    if cooccurrence == "geodesic":
+        return logcond_from_sim(geodesic_cooccur(A, gamma))
+    if cooccurrence == "adjacency":
+        return logcond_from_sim(A)
+    raise ValueError(f"Unknown cooccurrence {cooccurrence!r}; use diffusion | geodesic | adjacency")
 
 
 def structure_adjacency(spec):
     """Adjacency matrix of a graph structure (for drawing it); raises for the non-graph
-    conditionals (tree / log_line)."""
-    params = {k: v for k, v in dict(spec).items() if k != "structure"}
+    conditionals (tree / log_line). Strips the task-level keys (gamma / cooccurrence)."""
+    params = {k: v for k, v in dict(spec).items() if k not in ("structure", "gamma", "cooccurrence")}
     return _build_adjacency(spec["structure"], params)
 
 

@@ -6,4 +6,5 @@ structure: ring          # graph shape (see src/code/structures.py)
 structure_kwargs:
   n: 24                  # number of nodes / items
 gamma: 0.8               # diffusion decay for the co-occurrence kernel
+cooccurrence: diffusion  # diffusion (multi-step co-occ) | geodesic (shortest-path gamma**d) | adjacency (raw one-step)
 sample_mode: sequence    # sequence (Markov walks, for transformer/RNN) | pointwise (for k-linear/MLP)

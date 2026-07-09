@@ -1,0 +1,58 @@
+"""HMM dataset: latent states walk a graph + emit tokens. The forward algorithm's belief
+p(s_t | x_{1:t}) recovers the latent geometry when emissions are informative; a token alone does
+not (the geometry lives in belief space, not the emission alphabet)."""
+import numpy as np
+import torch
+from omegaconf import OmegaConf
+
+from src.code.config import Config
+from src.code.data import HMMDataset
+from src.code.geometry import predicted_geometry
+from src.code.eval import cka
+
+
+def _cfg(kappa=6.0, n=16, M=16, seed=0):
+    return Config(OmegaConf.create({
+        "setting": "hmm", "structure": "ring", "structure_kwargs": {"n": n},
+        "gamma": 0.8, "cooccurrence": "diffusion", "emission_kappa": kappa, "n_symbols": M,
+        "sample_mode": "sequence", "random_seed": seed,
+        "model_kwargs": {"model_type": "transformer"},
+        "training_kwargs": {"batch_size": 64, "context_length": 40},
+        "eval_kwargs": {"num_eval_batches": 1, "output_hidden_states": False},
+    }))
+
+
+def test_forward_algorithm_returns_valid_beliefs():
+    ds = HMMDataset(_cfg())
+    x = ds[0]["input_ids"][:, 1:]                              # drop the start token
+    b = ds.forward_algorithm(x)
+    assert b.shape == (x.shape[0], x.shape[1], ds.n_states)
+    assert torch.allclose(b.sum(-1), torch.ones_like(b.sum(-1)), atol=1e-4)
+
+
+def test_batch_shapes_and_normalised_targets():
+    ds = HMMDataset(_cfg()); b = ds[0]
+    B, L = ds._batch_size(), ds.config.training_kwargs["context_length"]
+    assert b["input_ids"].shape == (B, L + 1)                  # start + L emitted tokens
+    assert b["eval_labels"].shape == (B, L, ds.num_dims)       # Bayes-optimal next-token dists
+    ones = torch.ones(B, L, device=b["eval_labels"].device)
+    assert torch.allclose(b["eval_labels"].sum(-1), ones, atol=1e-4)
+
+
+def _belief_geometry_cka(kappa):
+    """CKA between the per-latent-state mean belief-weighted code and the predicted latent geometry."""
+    ds = HMMDataset(_cfg(kappa=kappa))
+    E = predicted_geometry(ds.latent_conditional)             # predicted latent ring
+    L = 600; s = torch.empty(1, L, dtype=torch.long, device=ds.device)
+    s[:, 0] = torch.multinomial(ds.pi, 1, generator=ds.rng)
+    for t in range(1, L):
+        s[:, t] = torch.multinomial(ds.T[s[:, t - 1]], 1, generator=ds.rng).squeeze(1)
+    x = torch.multinomial(ds.Em[s.reshape(-1)], 1, generator=ds.rng).reshape(1, L)
+    b = ds.forward_algorithm(x)[0].cpu().numpy(); st = s[0].cpu().numpy()
+    codes = np.vstack([b[st == k].mean(0) for k in range(ds.n_states)]) @ E    # (n_states, d)
+    return cka(codes, E)
+
+
+def test_informative_emissions_recover_latent_geometry_in_belief_space():
+    assert _belief_geometry_cka(kappa=8.0) > 0.9              # sharp emissions -> belief is the ring
+    assert _belief_geometry_cka(kappa=8.0) > _belief_geometry_cka(kappa=0.3) + 0.2   # >> noisy

@@ -1,0 +1,13 @@
+# @package _global_
+# Hidden-Markov task: latent states walk a graph (the graph co-occurrence transition); each state
+# emits an observable token. The latent geometry lives in the belief state p(s_t | x_{1:t}) (the
+# forward algorithm), not the token embedding.
+setting: hmm
+structure: ring          # latent graph shape
+structure_kwargs:
+  n: 24                  # number of latent states
+gamma: 0.8               # latent diffusion decay
+cooccurrence: diffusion  # latent transition: diffusion | geodesic | adjacency
+emission_kappa: 4.0      # emission SNR: 0 -> uninformative, large -> near one-to-one
+n_symbols: 24            # emission alphabet size (n_symbols < n_states -> aliasing)
+sample_mode: sequence    # HMM is sequence-only

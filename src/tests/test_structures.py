@@ -11,6 +11,26 @@ def _ES(spec, gamma=0.8):
     return E, S
 
 
+def test_geodesic_cooccurrence_is_self_similar_and_decays_with_graph_distance():
+    spec = {"structure": "chain", "n": 6}
+    P = np.exp(build_conditional(spec, cooccurrence="geodesic"))   # p(x | i) from the geodesic kernel
+    for i in range(6):
+        assert P[i].argmax() == i                                  # a node predicts itself most (dist 0)
+    assert P[0, 0] > P[0, 1] > P[0, 2] > P[0, 3]                   # decays monotonically with distance
+
+
+def test_adjacency_cooccurrence_is_the_raw_one_step_transition():
+    from src.code.data import grid
+    spec = {"structure": "grid", "n": 5, "m": 5}
+    A = grid(5, 5)
+    L_adj = build_conditional(spec, cooccurrence="adjacency")
+    L_diff = build_conditional(spec, cooccurrence="diffusion")
+    for i in range(len(A)):                                   # raw: top outcomes are exactly neighbours
+        nbrs = set(np.where(A[i] > 0)[0])
+        assert set(np.argsort(L_adj[i])[-len(nbrs):]) == nbrs
+    assert not np.allclose(L_adj, L_diff)                     # diffusion spreads beyond neighbours
+
+
 def test_chain_is_an_ordered_horseshoe():
     E, _ = _ES({"structure": "chain", "n": 40})
     assert abs(np.corrcoef(E[:, 0], np.arange(40))[0, 1]) > 0.95   # PC1 monotonic in position
