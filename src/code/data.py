@@ -1,4 +1,6 @@
+import inspect
 import itertools
+from collections import namedtuple
 from functools import reduce
 
 import numpy as np
@@ -538,11 +540,28 @@ def log_line_conditional(n=30, lam=2.0):
     return logcond_from_sim(np.exp(-lam * dist))
 
 
-_GRAPH_BUILDERS = {
-    "ring": ring, "chain": chain, "grid": grid, "sphere": sphere,
-    "communities": communities, "hypercube": hypercube, "complete": complete,
+def _tree_graph(n=2, k=2, parents=None, **_):
+    """Tree adjacency over *all* nodes (balanced depth-n branch-k, or an explicit ``parents`` list).
+    ``**_`` swallows conditional-only keys (gamma / leaves_only)."""
+    return tree_adjacency(tree_parents(n, k, parents))
+
+
+def _line_graph(n=30, **_):
+    """log_line's graph is a plain line — the log-metric lives in its conditional, not its edges."""
+    return chain(n)
+
+
+# One structure = one graph. Every structure builds an adjacency (used by the HMM latent walk and by
+# drawing); a structure may additionally define its own conditional (tree's ultrametric, log_line's
+# log-distance kernel), which overrides the generic adjacency->cooccurrence derivation.
+_Structure = namedtuple("_Structure", ["adjacency", "conditional"], defaults=[None])
+_STRUCTURES = {
+    "ring": _Structure(ring), "chain": _Structure(chain), "grid": _Structure(grid),
+    "sphere": _Structure(sphere), "communities": _Structure(communities),
+    "hypercube": _Structure(hypercube), "complete": _Structure(complete),
+    "tree": _Structure(_tree_graph, tree_conditional),
+    "log_line": _Structure(_line_graph, log_line_conditional),
 }
-_CONDITIONAL_BUILDERS = {"tree": tree_conditional, "log_line": log_line_conditional}
 
 
 def _build_adjacency(name, params):
@@ -550,26 +569,28 @@ def _build_adjacency(name, params):
         As = [_build_adjacency(f["structure"], {k: v for k, v in f.items() if k != "structure"})
               for f in params["factors"]]
         return reduce(cartesian_product, As) if name == "product" else block_diagonal(*As)
-    if name not in _GRAPH_BUILDERS:
-        raise ValueError(f"Unknown graph structure {name!r}; known: {sorted(_GRAPH_BUILDERS)}")
-    return _GRAPH_BUILDERS[name](**params)
+    if name not in _STRUCTURES:
+        raise ValueError(f"Unknown structure {name!r}; known: {sorted(_STRUCTURES)}")
+    return _STRUCTURES[name].adjacency(**params)
 
 
 def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
-    """Log-conditional for a graph spec ``{'structure': name, **params}``. ``cooccurrence`` selects
-    how a graph shape becomes a conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``,
-    integrating multi-step context), ``"geodesic"`` (shortest-path kernel ``gamma**d``, self-similar
-    diagonal), or ``"adjacency"`` (raw one-step neighbours, zero diagonal). ``tree``/``log_line``
-    define their conditional directly and ignore ``cooccurrence``. ``gamma`` and ``cooccurrence`` may
-    also be passed as spec keys (overriding the args), so one spec dict configures the task."""
+    """Log-conditional for a structure spec ``{'structure': name, **params}``. A structure with its
+    own conditional (tree, log_line) uses it directly; otherwise ``cooccurrence`` turns the adjacency
+    into a conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``, integrating multi-step
+    context), ``"geodesic"`` (shortest-path kernel ``gamma**d``, self-similar diagonal), or
+    ``"adjacency"`` (raw one-step neighbours, zero diagonal). ``gamma`` and ``cooccurrence`` may also
+    be passed as spec keys (overriding the args), so one spec dict configures the task."""
     spec = dict(spec)
     name = spec.pop("structure")
     gamma = spec.pop("gamma", gamma)
     cooccurrence = spec.pop("cooccurrence", cooccurrence)
-    if name in _CONDITIONAL_BUILDERS:
-        if name == "tree":
-            spec.setdefault("gamma", gamma)            # tree runs its own diffusion
-        return _CONDITIONAL_BUILDERS[name](**spec)
+    struct = _STRUCTURES.get(name)
+    if struct is not None and struct.conditional is not None:
+        # pass the task gamma only to conditionals that take it (tree does; log_line uses lam)
+        if "gamma" in inspect.signature(struct.conditional).parameters:
+            spec.setdefault("gamma", gamma)
+        return struct.conditional(**spec)
     A = _build_adjacency(name, spec)
     if cooccurrence == "diffusion":
         return cooccur_logcond(A, gamma)
@@ -581,8 +602,9 @@ def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
 
 
 def structure_adjacency(spec):
-    """Adjacency matrix of a graph structure (for drawing it); raises for the non-graph
-    conditionals (tree / log_line). Strips the task-level keys (gamma / cooccurrence)."""
+    """Adjacency matrix of a structure's graph — for the HMM latent walk and for drawing. Every
+    structure has one (tree/log_line included); their special conditionals live in graph_conditional.
+    Strips the task-level keys (gamma / cooccurrence)."""
     params = {k: v for k, v in dict(spec).items() if k not in ("structure", "gamma", "cooccurrence")}
     return _build_adjacency(spec["structure"], params)
 

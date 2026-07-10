@@ -114,3 +114,15 @@ def test_log_line_compresses_large_magnitudes():
     E = predicted_geometry(build_conditional({"structure": "log_line", "n": 30}))
     gaps = np.abs(np.diff(E[:, 0]))
     assert gaps[0] > 5 * gaps[-1]                                   # Weber: small numbers spread, large bunch
+
+
+def test_structure_adjacency_supports_tree_and_log_line():
+    # Unified on adjacency: every structure yields an adjacency, so the HMM latent walk and the
+    # structure-drawing path accept tree/log_line too — not just the graph-conditional path.
+    from src.code.data import structure_adjacency
+    A_tree = structure_adjacency({"structure": "tree", "n": 2, "k": 3})   # all nodes: 1 + 3 + 9 = 13
+    assert A_tree.shape == (13, 13)
+    assert np.allclose(A_tree, A_tree.T) and A_tree.sum() > 0             # symmetric tree edges
+    A_line = structure_adjacency({"structure": "log_line", "n": 8})       # log_line's graph is a line
+    assert A_line.shape == (8, 8)
+    assert A_line[np.arange(7), np.arange(1, 8)].sum() == 7               # consecutive-node edges
