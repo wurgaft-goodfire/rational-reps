@@ -38,19 +38,14 @@ Follow BDD dual-loop TDD. Every feature increment starts from a failing integrat
 `uv`-managed. Use `uv run python -m ...` so commands resolve the project venv. Fast tests:
 `uv run python -m pytest -m "not slow"`; full suite: `uv run python -m pytest`.
 
-**Notebooks are thin.** Real logic lives in `src/code/` and is unit-tested there — develop and test
-against the modules directly (pytest, or a `uv run python -c` one-liner). A notebook only calls those
-tested functions and renders figures. Notebooks are percent-format `.py` files (jupytext / `# %%`
-cells) — there is **no `.ipynb` in the repo**; edit and run the `.py` directly. Figures save to the
-gitignored cache via `plot_utils.figure_path(config, "<name>")` (the run's `config`, returned by
-`train_inline`) — PNG by default so they're viewable, `ext="pdf"` for paper-final:
-`save_figure(fig, figure_path(config, "<name>"))` → `$CACHE_DIR/{setting}/figures/{override_dirname}/<name>.png`
-(experiment-keyed, dropping the per-model level so cross-model comparison figures share a dir). Never
-commit figure binaries. Before finishing, execute the notebook end-to-end
-(`uv run jupytext --to notebook --execute <name>.py -o /tmp/out.ipynb`) and confirm it runs clean.
+**Notebooks are thin.** Real logic lives in `src/code/` and is unit-tested there; a notebook only
+calls those tested functions and renders figures. Notebooks are percent-format `.py` files (no
+`.ipynb` in the repo), and figures are saved to the gitignored cache, never committed. Execute a
+notebook end-to-end and confirm it runs clean before finishing. (Workflow specifics — jupytext, the
+`figure_path`/`save_figure` helpers, cache paths — live in the README.)
 
 **Always look at the figures.** After running any analysis that produces a plot, open the saved
-figure (`Read` the PNG under `$CACHE_DIR/figures/`) and actually view it before reporting. A clean run and good printed metrics do not
+figure and actually view it (`Read` the PNG) before reporting. A clean run and good printed metrics do not
 mean the figure is good — a 2D PCA scatter of a high-dimensional object, for instance, can be
 hijacked by a few outlier points and collapse everything else to a blob even when the underlying
 match is perfect. Inspect the visual, judge whether it conveys the claim, and fix it if it doesn't.
