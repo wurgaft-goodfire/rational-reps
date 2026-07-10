@@ -2,6 +2,7 @@
 p(s_t | x_{1:t}) recovers the latent geometry when emissions are informative; a token alone does
 not (the geometry lives in belief space, not the emission alphabet)."""
 import numpy as np
+import pytest
 import torch
 from omegaconf import OmegaConf
 
@@ -11,9 +12,10 @@ from src.code.geometry import predicted_geometry
 from src.code.eval import cka
 
 
-def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0):
+def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0, structure="ring", structure_kwargs=None):
     return Config(OmegaConf.create({
-        "setting": "hmm", "structure": "ring", "structure_kwargs": {"n": n},
+        "setting": "hmm", "structure": structure,
+        "structure_kwargs": {"n": n} if structure_kwargs is None else structure_kwargs,
         "gamma": 0.8, "cooccurrence": "diffusion",
         "emission": emission, "emission_sigma": sigma, "n_symbols": M,
         "sample_mode": "sequence", "random_seed": seed,
@@ -21,6 +23,22 @@ def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0):
         "training_kwargs": {"batch_size": 64, "context_length": 40},
         "eval_kwargs": {"num_eval_batches": 1, "output_hidden_states": False},
     }))
+
+
+@pytest.mark.parametrize("structure,kwargs", [
+    ("ring", {"n": 12}), ("chain", {"n": 12}), ("grid", {"n": 4, "m": 4}),
+    ("sphere", {"n": 30}), ("communities", {"n": 6, "k": 3}), ("hypercube", {"n": 4}),
+    ("complete", {"n": 10}), ("tree", {"n": 3, "k": 2}), ("log_line", {"n": 12}),
+    ("product", {"factors": [{"structure": "ring", "n": 6}, {"structure": "ring", "n": 4}]}),
+])
+def test_every_structure_works_as_hmm_latent(structure, kwargs):
+    # Every structure yields an adjacency + conditional, so any of them can be the HMM latent graph
+    # (tree/log_line/product included, not only the plain graphs).
+    ds = HMMDataset(_cfg(structure=structure, structure_kwargs=kwargs))
+    x = ds[0]["input_ids"][:, 1:]                              # drop the start token
+    b = ds.forward_algorithm(x)
+    assert b.shape == (x.shape[0], x.shape[1], ds.n_states)    # a belief per position over the states
+    assert torch.allclose(b.sum(-1), torch.ones_like(b.sum(-1)), atol=1e-4)   # valid distributions
 
 
 def test_forward_algorithm_returns_valid_beliefs():

@@ -244,9 +244,9 @@ class RelationalDataset(Dataset):
 ##### Hidden-Markov dataset (latent graph walk + emissions) #####
 
 class HMMDataset(Dataset):
-    """Latent states walk a graph (the same co-occurrence transition as the graph setting); each
-    state emits an observable token. The network sees only tokens, so the latent geometry lives in
-    the belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the token embedding. Every state is
+    """Latent states are the nodes of a structure's graph and walk it (co-occurrence of the
+    adjacency); each state emits an observable token. The network sees only tokens, so the latent
+    geometry lives in the belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the token embedding. Every state is
     given the *same* emission shape (uniform per-state distinguishability -> even belief coverage);
     ``emission`` picks how the shape is placed and ``emission_sigma`` its width (small -> sharp/high
     SNR, large -> aliased):
@@ -269,8 +269,12 @@ class HMMDataset(Dataset):
         sk = config.get("structure_kwargs")
         structure_kwargs = OmegaConf.to_container(sk, resolve=True) if sk else {}
         spec = {"structure": config.get("structure"), **structure_kwargs}
-        self._L = graph_conditional(spec, config.get("gamma", 0.8),
-                                    config.get("cooccurrence", "diffusion"))   # latent transition
+        # The latent states are the nodes of the structure's graph, so both the transition and the
+        # (bump) emission are built from the one adjacency — consistent for every structure, including
+        # tree (all nodes, not the graph-task's leaves-only conditional).
+        A = structure_adjacency(spec)
+        self._L = adjacency_conditional(A, config.get("gamma", 0.8),
+                                        config.get("cooccurrence", "diffusion"))   # latent transition
         self.n_states = len(self._L)
         self.arity = 1
 
@@ -284,7 +288,7 @@ class HMMDataset(Dataset):
         if emission == "bump":
             # localized kernel over the latent graph; symbols correspond to states (M = n_states)
             from scipy.sparse.csgraph import shortest_path
-            D = shortest_path(structure_adjacency(spec) > 0, directed=False, unweighted=True)
+            D = shortest_path(A > 0, directed=False, unweighted=True)
             Em = np.exp(-(D ** 2) / (2 * sigma ** 2)); self.n_symbols = self.n_states
             self.Em = torch.tensor(Em / Em.sum(1, keepdims=True), dtype=torch.float32, device=self.device)
         elif emission == "permuted":
@@ -610,7 +614,13 @@ def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
         if "gamma" in inspect.signature(struct.conditional).parameters:
             spec.setdefault("gamma", gamma)
         return struct.conditional(**spec)
-    A = _build_adjacency(name, spec)
+    return adjacency_conditional(_build_adjacency(name, spec), gamma, cooccurrence)
+
+
+def adjacency_conditional(A, gamma=0.8, cooccurrence="diffusion"):
+    """Turn an adjacency into a log-conditional: ``"diffusion"`` (walk co-occurrence), ``"geodesic"``
+    (shortest-path kernel), or ``"adjacency"`` (raw one-step neighbours). The graph-walk view of a
+    structure — used directly by the HMM latent transition, whose states are the graph's nodes."""
     if cooccurrence == "diffusion":
         return cooccur_logcond(A, gamma)
     if cooccurrence == "geodesic":
