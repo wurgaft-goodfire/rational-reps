@@ -87,11 +87,20 @@ def save_figure(fig, filepath, **kwargs):
 
 ######### Geometry-analysis plots (used by geometry_analysis.ipynb) #########
 
-def _pca2(X):
-    """Top-2 PCA coordinates of a representation (rows = items)."""
+def _pca(X, k=2):
+    """Top-k PCA coordinates of a representation (rows = items)."""
     Xc = np.asarray(X) - np.asarray(X).mean(0)
     U, S, _ = np.linalg.svd(Xc, full_matrices=False)
-    return U[:, :2] * S[:2]
+    return U[:, :k] * S[:k]
+
+
+# Structures whose geometry needs three dimensions to read (everything else is 2-D by default).
+_VIEW_3D = {"sphere", "hypercube", "product", "helix"}
+
+
+def _view_ndim(spec):
+    """How many dimensions to plot a structure's embedding in (2 or 3), the per-structure default."""
+    return 3 if spec is not None and spec.get("structure") in _VIEW_3D else 2
 
 
 def _shape_positions(name, p):
@@ -229,10 +238,23 @@ def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None):
 
 
 def scatter_geometry(ax, XY, title, cmap=None):
-    """Embedding scatter colored by item index (borderless manifold panel)."""
-    XY = np.asarray(XY)
-    ax.scatter(XY[:, 0], XY[:, 1], c=np.arange(len(XY)), cmap=cmap or FIG.cyclic_cmap, s=45)
-    ax.set_title(title); ax.set_aspect("equal"); ax.margins(0.15); FIG.clean(ax); ax.set_anchor("N")
+    """Embedding scatter colored by item index (borderless manifold panel); 2-D or 3-D by XY's width."""
+    XY = np.asarray(XY); c = np.arange(len(XY)); cmap = cmap or FIG.cyclic_cmap
+    if XY.shape[1] >= 3:
+        ax.scatter(XY[:, 0], XY[:, 1], XY[:, 2], c=c, cmap=cmap, s=28)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([]); ax.set_title(title)
+        for pane in (ax.xaxis, ax.yaxis, ax.zaxis): pane.pane.set_facecolor((1, 1, 1, 0))
+    else:
+        ax.scatter(XY[:, 0], XY[:, 1], c=c, cmap=cmap, s=45)
+        ax.set_title(title); ax.set_aspect("equal"); ax.margins(0.15); FIG.clean(ax); ax.set_anchor("N")
+
+
+def draw_embedding(fig, cell, r, spec, title, cmap=None):
+    """One embedding panel for a non-tree structure: a 2-D or 3-D PCA scatter per the structure's
+    default view (see `_view_ndim`). Trees route to their own views in the callers."""
+    ndim = _view_ndim(spec)
+    ax = fig.add_subplot(cell, projection="3d" if ndim == 3 else None)
+    scatter_geometry(ax, _pca(r, ndim), title, cmap)
 
 
 def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", ylabel=r"item  $\theta$"):
@@ -274,7 +296,7 @@ def plot_predicted_geometry(spec, L, E, tree_view="ultrametric", cmap=None):
     elif is_tree and tree_view == "simplex":
         _draw_simplex_of_simplices(fig, gs[0, 2], parents, items, E, cmap)
     else:
-        scatter_geometry(fig.add_subplot(gs[0, 2]), E[:, :2], "embedding", cmap)
+        draw_embedding(fig, gs[0, 2], E, spec, "embedding", cmap)
     # arrows in the column gaps, aligned to the conditional panel's vertical center (never overlap)
     fig.canvas.draw()
     yc = np.mean([axB.get_position().y0, axB.get_position().y1])
@@ -406,7 +428,7 @@ def plot_embedding_panels(E_pred, embeddings, L, spec=None, tree_view="ultrametr
             _draw_simplex_of_simplices(fig, gs[0, j], parents, items, r, cmap, titles=False)
             headers.append((j, name))
         else:
-            scatter_geometry(fig.add_subplot(gs[0, j]), _pca2(r), name, cmap)
+            draw_embedding(fig, gs[0, j], r, spec, name, cmap)
         axb = fig.add_subplot(gs[1, j])
         conditional_heatmap(axb, L, title="log-conditional") if j == 0 else rdm_heatmap(axb, r)
     if headers:                                          # column names for the simplex sub-grids

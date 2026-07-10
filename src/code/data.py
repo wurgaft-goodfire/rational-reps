@@ -242,12 +242,20 @@ class RelationalDataset(Dataset):
 
 class HMMDataset(Dataset):
     """Latent states walk a graph (the same co-occurrence transition as the graph setting); each
-    state emits an observable token via ``Em[s,:] = softmax(kappa * G)`` over a shared M-symbol
-    alphabet (``G`` random). The network sees only tokens, so the latent geometry lives in the
-    belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the token embedding. ``emission_kappa``
-    sets the SNR (0 -> uninformative, large -> near one-to-one) and ``n_symbols`` the alphabet
-    (``n_symbols < n_states`` forces aliasing). Sequence-only. ``kappa -> inf`` with ``M >= n_states``
-    recovers the fully-observed graph geometry up to a token permutation."""
+    state emits an observable token. The network sees only tokens, so the latent geometry lives in
+    the belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the token embedding. Every state is
+    given the *same* emission shape (uniform per-state distinguishability -> even belief coverage);
+    ``emission`` picks how the shape is placed and ``emission_sigma`` its width (small -> sharp/high
+    SNR, large -> aliased):
+
+    - ``bump``: a localized kernel over the latent graph, ``Em[k,j] ~ exp(-d(k,j)^2 / 2 sigma^2)``
+      with ``d`` the graph distance. Symbols correspond to states, so ``M = n_states``; on a
+      vertex-transitive graph (ring, torus, ...) every state is identical up to a shift.
+    - ``permuted``: one peaked template distribution over the ``M`` symbols, independently permuted
+      per state -- identical entropy, different symbols (``n_symbols < n_states`` forces aliasing).
+
+    Sequence-only. ``sigma -> 0`` with ``bump`` recovers the fully-observed graph geometry up to a
+    token permutation."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -268,10 +276,23 @@ class HMMDataset(Dataset):
         self.pi = self._stationary(self.T)                        # prior = stationary distribution
 
         self.n_symbols = int(config.get("n_symbols", self.n_states))
-        kappa = float(config.get("emission_kappa", 4.0))
-        g = torch.Generator(device=self.device); g.manual_seed(config.random_seed + 1)
-        logits = torch.randn(self.n_states, self.n_symbols, generator=g, device=self.device)
-        self.Em = torch.softmax(kappa * logits, dim=-1)           # (n_states, M) emission
+        emission = config.get("emission", "bump")
+        sigma = float(config.get("emission_sigma", 1.0))
+        if emission == "bump":
+            # localized kernel over the latent graph; symbols correspond to states (M = n_states)
+            from scipy.sparse.csgraph import shortest_path
+            D = shortest_path(structure_adjacency(spec) > 0, directed=False, unweighted=True)
+            Em = np.exp(-(D ** 2) / (2 * sigma ** 2)); self.n_symbols = self.n_states
+            self.Em = torch.tensor(Em / Em.sum(1, keepdims=True), dtype=torch.float32, device=self.device)
+        elif emission == "permuted":
+            # one peaked template over the M symbols, independently permuted per state
+            j = np.arange(self.n_symbols); template = np.exp(-(j ** 2) / (2 * sigma ** 2))
+            g = torch.Generator(device=self.device); g.manual_seed(config.random_seed + 1)
+            perms = torch.stack([torch.randperm(self.n_symbols, generator=g, device=self.device)
+                                 for _ in range(self.n_states)])
+            self.Em = torch.tensor(template / template.sum(), dtype=torch.float32, device=self.device)[perms]
+        else:
+            raise ValueError(f"unknown emission {emission!r} (expected 'bump' or 'permuted')")
 
         self.item_tokens = torch.arange(self.n_symbols)           # emission symbols = outcome classes
         self.start_token = self.n_symbols                         # extra token to begin a sequence

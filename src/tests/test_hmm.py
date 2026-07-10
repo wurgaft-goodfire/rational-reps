@@ -11,10 +11,11 @@ from src.code.geometry import predicted_geometry
 from src.code.eval import cka
 
 
-def _cfg(kappa=6.0, n=16, M=16, seed=0):
+def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0):
     return Config(OmegaConf.create({
         "setting": "hmm", "structure": "ring", "structure_kwargs": {"n": n},
-        "gamma": 0.8, "cooccurrence": "diffusion", "emission_kappa": kappa, "n_symbols": M,
+        "gamma": 0.8, "cooccurrence": "diffusion",
+        "emission": emission, "emission_sigma": sigma, "n_symbols": M,
         "sample_mode": "sequence", "random_seed": seed,
         "model_kwargs": {"model_type": "transformer"},
         "training_kwargs": {"batch_size": 64, "context_length": 40},
@@ -39,9 +40,9 @@ def test_batch_shapes_and_normalised_targets():
     assert torch.allclose(b["eval_labels"].sum(-1), ones, atol=1e-4)
 
 
-def _belief_geometry_cka(kappa):
+def _belief_geometry_cka(sigma):
     """CKA between the per-latent-state mean belief-weighted code and the predicted latent geometry."""
-    ds = HMMDataset(_cfg(kappa=kappa))
+    ds = HMMDataset(_cfg(sigma=sigma))
     E = predicted_geometry(ds.latent_conditional)             # predicted latent ring
     L = 600; s = torch.empty(1, L, dtype=torch.long, device=ds.device)
     s[:, 0] = torch.multinomial(ds.pi, 1, generator=ds.rng)
@@ -54,14 +55,22 @@ def _belief_geometry_cka(kappa):
 
 
 def test_informative_emissions_recover_latent_geometry_in_belief_space():
-    assert _belief_geometry_cka(kappa=8.0) > 0.9              # sharp emissions -> belief is the ring
-    assert _belief_geometry_cka(kappa=8.0) > _belief_geometry_cka(kappa=0.3) + 0.2   # >> noisy
+    assert _belief_geometry_cka(sigma=0.8) > 0.9             # sharp emissions -> belief is the ring
+    assert _belief_geometry_cka(sigma=0.8) > _belief_geometry_cka(sigma=8.0) + 0.2   # >> aliased
+
+
+def test_bump_and_permuted_emissions_have_uniform_per_state_entropy():
+    """Both emission modes give every state the same peakiness -> even belief coverage."""
+    for emission in ("bump", "permuted"):
+        Em = HMMDataset(_cfg(emission=emission, sigma=1.0, n=16, M=16)).Em.cpu().numpy()
+        ent = -(Em * np.log(Em + 1e-12)).sum(1)
+        assert ent.std() < 0.02 * ent.mean()                # near-identical entropy across states
 
 
 def test_spectral_hmm_matches_forward_algorithm_up_to_a_linear_map():
     from src.code.geometry import spectral_hmm, spectral_beliefs
     from src.code.eval import cca
-    ds = HMMDataset(_cfg(kappa=3.0, n=12, M=24))              # M > n so the spectral rank is meaningful
+    ds = HMMDataset(_cfg(emission="permuted", sigma=1.0, n=12, M=24))   # M > n so spectral rank is meaningful
     pi, T, Em = ds.pi.cpu().numpy(), ds.T.cpu().numpy(), ds.Em.cpu().numpy()
     U, B, b1, b_inf = spectral_hmm(pi, T, Em)
     assert U.shape == (24, 12)                                # observable subspace has rank n_states

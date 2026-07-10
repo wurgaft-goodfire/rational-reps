@@ -152,11 +152,18 @@ def train_inline(overrides, name=None, cache_dir=None):
 
 def graph_overrides(spec):
     """Hydra overrides selecting a graph structure from a spec dict, e.g.
-    ``{"structure": "grid", "n": 6, "m": 6}``. Replaces the setting's default ``structure_kwargs``
-    (deletes it, then re-adds this structure's params) so switching structures needs no per-key
-    dance: ``train_inline(graph_overrides(spec) + ["runner=klinear"])``."""
+    ``{"structure": "grid", "n": 6, "m": 6}`` or a composite
+    ``{"structure": "product", "factors": [{"structure": "ring", "n": 9}, ...]}``. Replaces the
+    setting's default ``structure_kwargs`` (deletes it, then re-adds this structure's params) so
+    switching structures needs no per-key dance: ``train_inline(graph_overrides(spec) + ["runner=klinear"])``."""
+    def literal(v):                                           # nested list/dict -> Hydra override literal
+        if isinstance(v, dict):
+            return "{" + ",".join(f"{k}:{literal(x)}" for k, x in v.items()) + "}"
+        if isinstance(v, (list, tuple)):
+            return "[" + ",".join(literal(x) for x in v) + "]"
+        return str(v)
     ov = ["setting=graph", f"structure={spec['structure']}", "~structure_kwargs"]
-    return ov + [f"+structure_kwargs.{k}={v}" for k, v in spec.items() if k != "structure"]
+    return ov + [f"+structure_kwargs.{k}={literal(v)}" for k, v in spec.items() if k != "structure"]
 
 
 @hydra.main(version_base=None, config_path=str(here("conf")), config_name="config")
