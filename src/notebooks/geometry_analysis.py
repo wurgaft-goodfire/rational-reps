@@ -40,7 +40,7 @@ from src.code import plot_utils           # importing this applies the house plo
 
 # %%
 # pick a structure here — everything below follows from it
-spec = {"structure": "sphere", "n": 100, "gamma": 0.8}
+spec = {"structure": "product", "factors": [{"structure": "chain", "n": 15}, {"structure": "ring", "n": 15}]}
 L = graph_conditional(spec)
 E_pred = predicted_geometry(L)
 fig_pred = plot_utils.plot_predicted_geometry(spec, L, E_pred)   # saved once we have a run config (below)
