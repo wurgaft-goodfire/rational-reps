@@ -119,6 +119,22 @@ def test_log_line_compresses_large_magnitudes():
     assert gaps[0] > 5 * gaps[-1]                                   # Weber: small numbers spread, large bunch
 
 
+def test_view_defaults_per_structure_and_override():
+    from src.code.plot_utils import _view
+    assert _view({"structure": "complete", "n": 6}) == "3d"          # a simplex -> 3-D
+    assert _view({"structure": "hypercube", "n": 4}) == "3d"
+    assert _view({"structure": "sphere", "n": 50}) == "3d"
+    assert _view({"structure": "tree", "n": 2, "k": 3}) == "ultrametric"
+    assert _view({"structure": "ring", "n": 12}) == "2d"
+    assert _view({"structure": "ring", "n": 12, "view": "3d"}) == "3d"   # yaml structure_kwarg override
+
+
+def test_view_kwarg_is_presentation_only_and_never_reaches_builders():
+    from src.code.data import graph_conditional, structure_adjacency
+    assert graph_conditional({"structure": "ring", "n": 8, "view": "3d"}).shape == (8, 8)
+    assert structure_adjacency({"structure": "ring", "n": 8, "view": "3d"}).shape == (8, 8)
+
+
 def test_structure_adjacency_supports_tree_and_log_line():
     # Unified on adjacency: every structure yields an adjacency, so the HMM latent walk and the
     # structure-drawing path accept tree/log_line too — not just the graph-conditional path.

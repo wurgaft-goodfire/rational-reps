@@ -59,9 +59,9 @@ def test_tree_triptych_default_is_ultrametric_dendrogram():
 def test_tree_triptych_simplex_view_draws_one_panel_per_split():
     from src.code import plot_utils
     # unbalanced Park example: splits at node 0 (segment), node 1 (tetrahedron/3-D), node 5 (triangle)
-    spec = {"structure": "tree", "parents": [-1, 0, 0, 1, 1, 1, 1, 5, 5, 5]}
+    spec = {"structure": "tree", "parents": [-1, 0, 0, 1, 1, 1, 1, 5, 5, 5], "view": "simplex"}
     L = graph_conditional(spec)
-    fig = plot_utils.plot_predicted_geometry(spec, L, predicted_geometry(L), tree_view="simplex")
+    fig = plot_utils.plot_predicted_geometry(spec, L, predicted_geometry(L))
     assert len(fig.axes) == 2 + 3                               # structure + conditional + one per split
 
 

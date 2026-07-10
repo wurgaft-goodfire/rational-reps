@@ -111,12 +111,19 @@ def _pca(X, k=2):
 
 
 # Structures whose geometry needs three dimensions to read (everything else is 2-D by default).
-_VIEW_3D = {"sphere", "hypercube", "product", "helix"}
+# Per-structure default presentation view; anything unlisted defaults to "2d".
+_DEFAULT_VIEW = {"sphere": "3d", "hypercube": "3d", "complete": "3d", "product": "3d",
+                 "helix": "3d", "tree": "ultrametric"}
 
 
-def _view_ndim(spec):
-    """How many dimensions to plot a structure's embedding in (2 or 3), the per-structure default."""
-    return 3 if spec is not None and spec.get("structure") in _VIEW_3D else 2
+def _view(spec):
+    """The presentation view for a structure's geometry: ``spec['view']`` if set (a yaml-able
+    structure kwarg) else the per-structure default — ``"3d"`` for intrinsically-3-D structures
+    (sphere, hypercube, complete, ...), ``"ultrametric"`` for trees, ``"2d"`` otherwise. Values:
+    ``"2d"`` | ``"3d"`` (PCA scatters) | ``"ultrametric"`` | ``"simplex"`` | ``"pca"`` (tree; a 2-D scatter)."""
+    if spec is None:
+        return "2d"
+    return spec.get("view") or _DEFAULT_VIEW.get(spec.get("structure"), "2d")
 
 
 def _shape_positions(name, p):
@@ -266,9 +273,9 @@ def scatter_geometry(ax, XY, title, cmap=None):
 
 
 def draw_embedding(fig, cell, r, spec, title, cmap=None):
-    """One embedding panel for a non-tree structure: a 2-D or 3-D PCA scatter per the structure's
-    default view (see `_view_ndim`). Trees route to their own views in the callers."""
-    ndim = _view_ndim(spec)
+    """One embedding panel: a 2-D or 3-D PCA scatter per the structure's view (see `_view`). Tree
+    ultrametric/simplex views route separately in the callers."""
+    ndim = 3 if _view(spec) == "3d" else 2
     ax = fig.add_subplot(cell, projection="3d" if ndim == 3 else None)
     scatter_geometry(ax, _pca(r, ndim), title, cmap)
 
@@ -283,21 +290,22 @@ def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", 
     ax.set(title=title, xlabel=xlabel, ylabel=ylabel)     # keep just the axis labels
 
 
-def plot_predicted_geometry(spec, L, E, tree_view="ultrametric", cmap=None):
-    """The demo triptych: latent structure -> conditional -> the geometry it encodes. A tree's raw
-    2-D code is a confusing blob, so ``tree_view`` picks its third panel: ``"ultrametric"`` (a
-    dendrogram of the code, the default), ``"pca"`` (the raw scatter), or ``"simplex"`` (the
-    simplex-of-simplices grid, Park et al.). ``spec`` may set ``leaves_only`` to make only leaves
-    items — inner nodes then show as gray junctions and drop out of the conditional/code. ``cmap``
-    overrides the house cyclic colormap for item coloring."""
+def plot_predicted_geometry(spec, L, E, cmap=None):
+    """The demo triptych: latent structure -> conditional -> the geometry it encodes. ``spec['view']``
+    (a yaml-able structure kwarg) picks the third panel; for a tree the choices are ``"ultrametric"``
+    (a dendrogram of the code, the default), ``"pca"`` (the raw scatter), or ``"simplex"`` (the
+    simplex-of-simplices grid, Park et al.); other structures use ``"2d"``/``"3d"`` PCA. ``spec`` may
+    set ``leaves_only`` to make only leaves items — inner nodes then show as gray junctions and drop
+    out of the conditional/code. ``cmap`` overrides the house cyclic colormap for item coloring."""
     A, pos = _structure_graph(spec)
     is3d = pos.shape[1] == 3
     is_tree = spec["structure"] == "tree"
+    view = _view(spec)
     parents = items = None
     H = 3.9
     if is_tree:
         parents, items = _tree_items(spec, len(E))
-        if tree_view == "simplex":
+        if view == "simplex":
             n = sum(len(v) >= 2 for v in _tree_children(parents).values())
             H = max(3.9, 2.2 * int(np.ceil(n / np.ceil(np.sqrt(n)))))
     fig = plt.figure(figsize=(13, H))
@@ -306,10 +314,10 @@ def plot_predicted_geometry(spec, L, E, tree_view="ultrametric", cmap=None):
     draw_structure(fig.add_subplot(gs[0, 0], projection="3d" if is3d else None), A, pos,
                    item_ids=item_ids, cmap=cmap)
     axB = fig.add_subplot(gs[0, 1]); conditional_heatmap(axB, L)
-    if is_tree and tree_view == "ultrametric":
+    if is_tree and view == "ultrametric":
         rows, cmax = _tree_leaf_rows(parents, items)
         _draw_ultrametric(fig.add_subplot(gs[0, 2]), E[rows], np.array(rows), cmax, cmap)
-    elif is_tree and tree_view == "simplex":
+    elif is_tree and view == "simplex":
         _draw_simplex_of_simplices(fig, gs[0, 2], parents, items, E, cmap)
     else:
         draw_embedding(fig, gs[0, 2], E, spec, "embedding", cmap)
@@ -422,14 +430,15 @@ def rdm_heatmap(ax, reps, title="RDM"):
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
 
 
-def plot_embedding_panels(E_pred, embeddings, L, spec=None, tree_view="ultrametric", cmap=None):
+def plot_embedding_panels(E_pred, embeddings, L, spec=None, cmap=None):
     """Two rows. Top: predicted code beside each model's representation (pre-decode activations).
-    Bottom: the predicted log-conditional beside each model's RDM. For a tree ``spec`` the top row
-    follows ``tree_view`` (``"ultrametric"`` | ``"pca"`` | ``"simplex"``), matching
-    ``plot_predicted_geometry``; otherwise it is the 2-D PCA scatter. ``embeddings``: {name: reps}."""
+    Bottom: the predicted log-conditional beside each model's RDM. The top row follows the structure's
+    ``view`` (see `_view`): for a tree ``"ultrametric"`` | ``"pca"`` | ``"simplex"``, else ``"2d"``/
+    ``"3d"`` PCA. ``embeddings``: {name: reps}."""
     names = ["predicted"] + list(embeddings)
     reps = [E_pred] + list(embeddings.values())
     is_tree = spec is not None and spec["structure"] == "tree"
+    view = _view(spec)
     if is_tree:
         parents, items = _tree_items(spec, len(E_pred))
         leaf_rows, cmax = _tree_leaf_rows(parents, items)
@@ -437,10 +446,10 @@ def plot_embedding_panels(E_pred, embeddings, L, spec=None, tree_view="ultrametr
     gs = fig.add_gridspec(2, len(names), hspace=0.25, wspace=0.3)
     headers = []
     for j, (name, r) in enumerate(zip(names, reps)):
-        if is_tree and tree_view == "ultrametric":
+        if is_tree and view == "ultrametric":
             ax = fig.add_subplot(gs[0, j])
             _draw_ultrametric(ax, r[leaf_rows], np.array(leaf_rows), cmax, cmap); ax.set_title(name)
-        elif is_tree and tree_view == "simplex":
+        elif is_tree and view == "simplex":
             _draw_simplex_of_simplices(fig, gs[0, j], parents, items, r, cmap, titles=False)
             headers.append((j, name))
         else:

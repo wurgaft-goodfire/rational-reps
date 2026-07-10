@@ -572,6 +572,7 @@ _STRUCTURES = {
 
 
 def _build_adjacency(name, params):
+    params = {k: v for k, v in params.items() if k != "view"}   # 'view' is presentation-only (plotting)
     if name in ("product", "stack"):
         As = [_build_adjacency(f["structure"], {k: v for k, v in f.items() if k != "structure"})
               for f in params["factors"]]
@@ -608,6 +609,7 @@ def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
     name = spec.pop("structure")
     gamma = spec.pop("gamma", gamma)
     cooccurrence = spec.pop("cooccurrence", cooccurrence)
+    spec.pop("view", None)                                    # 'view' is presentation-only (plotting)
     if name == "product":
         return _product_conditional(spec["factors"], gamma, cooccurrence)
     struct = _STRUCTURES.get(name)
