@@ -1,4 +1,3 @@
-import hashlib
 import os
 import shutil
 import pandas as pd
@@ -12,7 +11,7 @@ from dotenv import load_dotenv
 from pyprojroot import here
 from omegaconf import DictConfig, OmegaConf, open_dict
 from .models import init_model, load_model
-from .config import Config
+from .config import Config, clean_dirname
 from .data import init_dataset
 from .eval import Evaluator
 from .train_utils import (
@@ -175,14 +174,9 @@ def train_inline(overrides, name=None, cache_dir=None):
     GlobalHydra.instance().clear()
     with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
         cfg = compose(config_name="config", overrides=overrides, return_hydra_config=True)
-    # override_dirname is only computed under Hydra; grab it, then drop the hydra node so the
-    # config resolves/saves cleanly, and key the run dir exactly as the CLI would. Guard the
-    # filesystem's 255-byte name limit (many overrides overflow it): keep a readable prefix and
-    # append a hash of the full string for uniqueness.
-    override_dirname = cfg.hydra.job.override_dirname or "single_run"
-    if len(override_dirname) > 200:
-        digest = hashlib.md5(override_dirname.encode()).hexdigest()[:8]
-        override_dirname = f"{override_dirname[:180]}-{digest}"
+    # override_dirname is only computed under Hydra; grab it, then drop the hydra node so the config
+    # resolves/saves cleanly, and key the run dir exactly as the CLI does (same clean_dirname).
+    override_dirname = clean_dirname(cfg.hydra.job.override_dirname)
     with open_dict(cfg):
         del cfg["hydra"]
     cache_dir = cache_dir or os.getenv("CACHE_DIR") or str(here() / "outputs")

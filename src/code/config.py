@@ -1,8 +1,47 @@
+import hashlib
 import os
 import random
+import re
 import torch
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
+
+
+def clean_dirname(override_dirname):
+    """Turn Hydra's raw ``override_dirname`` into a tidy, config-keyed run/figure dir name. Drops the
+    bookkeeping noise (``~key`` deletions, the redundant ``setting=`` already in the path), strips the
+    ``+`` / ``structure_kwargs.`` prefixes, compresses factor dicts (``{structure:ring,n:15}`` ->
+    ``ring(n=15)``), and puts ``structure`` first. Hashes a suffix if it would overflow the filesystem
+    name limit. Empty (no distinguishing overrides) -> ``single_run``."""
+    # split on top-level commas only — factor values like [{structure:ring,n:15},...] carry their own
+    items, depth, cur = [], 0, ""
+    for ch in str(override_dirname):
+        depth += (ch in "[{(") - (ch in "]})")
+        if ch == "," and depth == 0:
+            items.append(cur); cur = ""
+        else:
+            cur += ch
+    items.append(cur)
+
+    parts = []
+    for item in items:
+        if not item or item.startswith("~") or item.startswith("setting="):
+            continue
+        parts.append(item.lstrip("+").replace("structure_kwargs.", ""))
+    if not parts:
+        return "single_run"
+    parts.sort(key=lambda s: (not s.startswith("structure="), s))     # structure first, then the rest
+    name = re.sub(r"\{structure:([^,}]+)(?:,([^}]*))?\}",
+                  lambda m: m.group(1) + (f"({m.group(2)})" if m.group(2) else ""), ",".join(parts))
+    name = name.replace(":", "=")                                     # factor kwargs n:15 -> n=15
+    if len(name) > 200:                                              # guard the 255-byte name limit
+        name = f"{name[:180]}-{hashlib.md5(name.encode()).hexdigest()[:8]}"
+    return name
+
+
+# Used by conf/config.yaml's run/sweep dir templates so the CLI writes the same tidy paths that
+# train_inline builds. replace=True keeps re-imports (tests, reloads) from raising.
+OmegaConf.register_new_resolver("clean_dirname", clean_dirname, replace=True)
 
 
 def set_seed(seed: int):

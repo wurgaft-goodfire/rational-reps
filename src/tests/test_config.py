@@ -4,7 +4,19 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from src.code.config import Config, set_seed
+from src.code.config import Config, set_seed, clean_dirname
+
+
+def test_clean_dirname_tidies_the_override_string():
+    # the raw graph_overrides string is noisy: deletions, +/structure_kwargs. prefixes, redundant
+    # setting=, and verbose factor dicts. Clean it to a readable, config-keyed run/figure dir name.
+    od = ("+structure_kwargs.factors=[{structure:chain,n:15},{structure:ring,n:15}],"
+          "setting=graph,structure=product,~structure_kwargs")
+    assert clean_dirname(od) == "structure=product,factors=[chain(n=15),ring(n=15)]"
+    assert clean_dirname("+structure_kwargs.n=12,setting=graph,structure=ring,~structure_kwargs") == \
+        "structure=ring,n=12"
+    assert clean_dirname("") == "single_run"           # no distinguishing overrides
+    assert clean_dirname("setting=graph,~structure_kwargs") == "single_run"
 
 
 def test_set_seed_makes_all_rngs_deterministic():
