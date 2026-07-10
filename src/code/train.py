@@ -181,7 +181,7 @@ def train_inline(overrides, name=None, cache_dir=None):
         del cfg["hydra"]
     cache_dir = cache_dir or os.getenv("CACHE_DIR") or str(here() / "outputs")
     cfg.cache_dir = cache_dir
-    cfg.run_dir = os.path.join(cache_dir, cfg.setting, cfg.name, override_dirname)
+    cfg.run_dir = os.path.join(cache_dir, cfg.setting, override_dirname, cfg.name)
     config = Config(cfg, make_run_dirs=True)
 
     if _run_exists(config):

@@ -6,7 +6,7 @@ from src.code.analysis_utils import load_eval_results
 
 
 def _write_run(root, override, steps):
-    run_dir = root / "graph-cooccurrence" / "my_run" / override
+    run_dir = root / "graph-cooccurrence" / override / "my_run"
     run_dir.mkdir(parents=True)
     OmegaConf.save(OmegaConf.create({"random_seed": 0, "name": "my_run"}),
                    run_dir / "config_resolved.yaml")

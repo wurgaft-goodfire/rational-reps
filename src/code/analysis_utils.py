@@ -31,7 +31,7 @@ def load_eval_results(setting, experiment_name, source="local", entity=None, pro
     per (run, step) with a `step` column, a `config` column, and one column per
     flat metric (e.g. ``loss``).
 
-    - ``source="local"`` (default): walk ``$CACHE_DIR/{setting}/{name}/`` and read
+    - ``source="local"`` (default): walk ``$CACHE_DIR/{setting}/{override_dirname}/{name}/`` and read
       the ``metrics.pt`` files written by ``eval.py`` / the online-eval callback.
       No wandb required.
     - ``source="wandb"``: pull logged history for the experiment's runs via the
@@ -69,10 +69,11 @@ def _read_metrics_file(path: str) -> dict:
 
 
 def _load_local(setting, experiment_name) -> pd.DataFrame:
-    experiment_dir = os.path.join(os.getenv("CACHE_DIR", "./outputs"), setting, experiment_name)
+    # runs live at {setting}/{override_dirname}/{name}; collect every sweep cell of `experiment_name`
+    setting_dir = os.path.join(os.getenv("CACHE_DIR", "./outputs"), setting)
     rows = []
-    for subdir in sorted(os.listdir(experiment_dir)):
-        subdir_path = os.path.join(experiment_dir, subdir)
+    for subdir in sorted(os.listdir(setting_dir)):
+        subdir_path = os.path.join(setting_dir, subdir, experiment_name)
         config_path = os.path.join(subdir_path, "config_resolved.yaml")
         if not os.path.isdir(subdir_path) or not os.path.exists(config_path):
             continue

@@ -12,8 +12,8 @@ from src.code.plot_utils import figure_path, save_figure
 
 
 def _config(cache_dir, setting, model_name, override_dirname):
-    """A minimal Config whose run_dir mirrors the real {cache}/{setting}/{model}/{dirname} layout."""
-    run_dir = str(Path(cache_dir) / setting / model_name / override_dirname)
+    """A minimal Config whose run_dir mirrors the real {cache}/{setting}/{dirname}/{model} layout."""
+    run_dir = str(Path(cache_dir) / setting / override_dirname / model_name)
     cfg = OmegaConf.create({"random_seed": 0, "cache_dir": str(cache_dir),
                             "setting": setting, "run_dir": run_dir})
     return Config(cfg)
@@ -24,8 +24,8 @@ def test_figure_path_is_experiment_keyed_dropping_model_level(tmp_path):
     p_klinear = figure_path(_config(tmp_path, "graph", "klinear", "structure=ring"), "rsa_by_arch")
     p_transf = figure_path(_config(tmp_path, "graph", "transformer", "structure=ring"), "rsa_by_arch")
 
-    # {setting}/figures/{override_dirname}/ — a per-setting figures tree, separate from run artifacts
-    assert Path(p_klinear) == tmp_path / "graph" / "figures" / "structure=ring" / "rsa_by_arch.png"
+    # {setting}/{override_dirname}/figures/ — beside the per-model run dirs for that structure
+    assert Path(p_klinear) == tmp_path / "graph" / "structure=ring" / "figures" / "rsa_by_arch.png"
     assert p_klinear == p_transf                       # model level dropped -> shared
     assert Path(p_klinear).parent.is_dir()             # parent created for immediate savefig
 

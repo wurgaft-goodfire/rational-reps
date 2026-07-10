@@ -89,14 +89,13 @@ def save_figure(fig, filepath, **kwargs):
 
 
 def figure_path(config, name, ext="png"):
-    """Path for a figure under the gitignored cache, keyed by *experiment* — ``{cache_dir}/{setting}/
-    figures/{override_dirname}/`` — a per-setting figures tree (separate from the run artifacts),
-    dropping the per-model level of the run dir so cross-model comparison figures for one structure
-    share a home and switching structures needs no renaming. Defaults to PNG (viewable everywhere);
-    pass ``ext="pdf"`` for a paper-final vector figure. Creates the parent dir so ``save_figure`` can
-    write immediately."""
-    override_dirname = Path(config.run_dir).name                 # run_dir = .../{setting}/{model}/{dirname}
-    path = Path(config.cache_dir) / config.setting / "figures" / override_dirname / f"{name}.{ext}"
+    """Path for a figure under the gitignored cache, in the experiment's ``figures/`` dir beside its
+    per-model run dirs — ``{cache_dir}/{setting}/{override_dirname}/figures/``. The run dir is
+    ``.../{override_dirname}/{model}``, so its parent is the experiment dir shared by every model on
+    that structure; comparison figures live there and switching structures needs no renaming. Defaults
+    to PNG (viewable everywhere); pass ``ext="pdf"`` for a paper-final vector figure. Creates the parent
+    dir so ``save_figure`` can write immediately."""
+    path = Path(config.run_dir).parent / "figures" / f"{name}.{ext}"   # run_dir = .../{override}/{model}
     path.parent.mkdir(parents=True, exist_ok=True)
     return str(path)
 
