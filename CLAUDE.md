@@ -38,6 +38,11 @@ Follow BDD dual-loop TDD. Every feature increment starts from a failing integrat
 `uv`-managed. Use `uv run python -m ...` so commands resolve the project venv. Fast tests:
 `uv run python -m pytest -m "not slow"`; full suite: `uv run python -m pytest`.
 
+**Never run on the login node — always run on the interactive GPU compute node or as a SLURM job.**
+The login node has no GPU allocation and kills heavy processes (exit 144); anything that trains, loads
+a model, or runs a notebook end-to-end must run on the interactive GPU compute node or be submitted as
+a SLURM job (see the SLURM conventions — no custom `--partition`/CPU/mem, wait with `monitor_jobs`).
+
 **Notebooks are thin.** Real logic lives in `src/code/` and is unit-tested there; a notebook only
 calls those tested functions and renders figures. Notebooks are percent-format `.py` files (no
 `.ipynb` in the repo), and figures are saved to the gitignored cache, never committed. Execute a
