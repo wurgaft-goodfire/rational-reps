@@ -216,7 +216,13 @@ def _structure_graph(spec):
                 q[:, 0] += xoff - q[:, 0].min(); xoff = q[:, 0].max() + 2.0
                 blocks.append(q)
             return A, np.vstack(blocks)
-        grids = [np.asarray(pi, float) for _, pi in subs]     # product: concat factor coords
+        # product: concat each factor's *intrinsic* coords (drop padding/constant columns, so a
+        # chain contributes 1-D and a ring 2-D) — otherwise a leading chain's padding column would
+        # push a real axis of a later factor past the 3-D truncation (a cylinder would look flat).
+        def _intrinsic(P):
+            P = np.asarray(P, float); keep = P.std(0) > 1e-9
+            return P[:, keep] if keep.any() else P[:, :1]
+        grids = [_intrinsic(pi) for _, pi in subs]
         pos = np.array([np.concatenate(combo) for combo in itertools.product(*grids)])
         pos = pos[:, :3] if pos.shape[1] >= 3 else np.c_[pos, np.zeros((len(pos), 3 - pos.shape[1]))]
         return A, pos

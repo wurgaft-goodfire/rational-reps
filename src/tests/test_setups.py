@@ -7,6 +7,18 @@ from src.code.data import graph_conditional, stacked_conditional
 from src.code.geometry import predicted_geometry
 
 
+def test_product_structure_layout_is_order_independent():
+    # chain (1-D) x ring (2-D) draws as a 3-D cylinder regardless of factor order — the earlier
+    # code padded each factor to 2-D and truncated to 3 columns, dropping the ring's second axis
+    # when the chain came first (it looked like a flat grid).
+    from src.code.plot_utils import _structure_graph
+    for factors in ([{"structure": "chain", "n": 8}, {"structure": "ring", "n": 10}],
+                    [{"structure": "ring", "n": 10}, {"structure": "chain", "n": 8}]):
+        _, pos = _structure_graph({"structure": "product", "factors": factors})
+        assert pos.shape[1] == 3
+        assert int((pos.std(0) > 1e-6).sum()) == 3       # all three axes informative (a full cylinder)
+
+
 # ── stacking ──────────────────────────────────────────────────────────────────
 
 def test_stacking_modes_have_expected_node_counts():
