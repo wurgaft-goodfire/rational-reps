@@ -7,6 +7,19 @@ from src.code.data import graph_conditional, stacked_conditional
 from src.code.geometry import predicted_geometry
 
 
+def test_hypercube_and_complete_embeddings_draw_graph_edges():
+    # cube / simplex embeddings draw the graph edges (legible polytope), a plain scatter does not
+    import matplotlib.pyplot as plt
+    from src.code.plot_utils import draw_embedding
+    for spec, edges in [({"structure": "hypercube", "n": 3}, True),
+                        ({"structure": "complete", "n": 6}, True),
+                        ({"structure": "ring", "n": 10}, False)]:
+        E = predicted_geometry(graph_conditional(spec))
+        fig = plt.figure(); draw_embedding(fig, 111, E, spec, "t")
+        assert (len(fig.axes[0].lines) > 0) == edges
+        plt.close(fig)
+
+
 def test_two_ring_product_defaults_to_torus_view():
     from src.code.plot_utils import _view
     ring, chain = {"structure": "ring", "n": 10}, {"structure": "chain", "n": 8}

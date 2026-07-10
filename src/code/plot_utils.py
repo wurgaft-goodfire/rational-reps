@@ -318,6 +318,13 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None):
         return
     ndim = 3 if view == "3d" else 2
     ax = fig.add_subplot(cell, projection="3d" if ndim == 3 else None)
+    name = spec.get("structure") if spec is not None else None
+    if name in ("hypercube", "complete"):
+        # draw the graph edges over the learned positions so the cube / simplex is legible as a
+        # connected polytope, not just a point cloud (as demo_graphs did for the cube)
+        from .data import structure_adjacency
+        draw_structure(ax, structure_adjacency(spec), _pca(r, ndim), title, cmap=cmap)
+        return
     scatter_geometry(ax, _pca(r, ndim), title, cmap)
 
 
