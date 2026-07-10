@@ -259,10 +259,16 @@ def _structure_graph(spec):
     return structure_adjacency(spec), _shape_positions(name, p)
 
 
-def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None):
+def _hypercube_labels(spec):
+    """Binary vertex labels for a hypercube (``'101'`` etc.), one per node in adjacency order."""
+    n = spec.get("n", 3)
+    return [format(v, f"0{n}b") for v in range(2 ** n)]
+
+
+def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None, labels=None):
     """Draw a latent graph: light edges + nodes at `pos` (2-D or 3-D). Nodes in `item_ids` are
     colored by item index (via `cmap`, default the house cyclic map); others (e.g. inner tree nodes
-    in leaves-only mode) are gray."""
+    in leaves-only mode) are gray. `labels`, if given, annotates each node (e.g. hypercube bit strings)."""
     cmap = cmap or FIG.cyclic_cmap
     A, pos = np.asarray(A), np.asarray(pos); N = len(pos)
     item_ids = list(range(N)) if item_ids is None else list(item_ids)
@@ -278,6 +284,9 @@ def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None):
             ax.scatter(pos[~it, 0], pos[~it, 1], c="0.8", s=28, zorder=1)
         ax.scatter(pos[it, 0], pos[it, 1], c=cidx[it], cmap=cmap,
                    vmin=0, vmax=vmax, s=40, zorder=2)
+        if labels is not None:
+            for (x, y), lab in zip(pos[:, :2], labels):
+                ax.text(x, y, lab, fontsize=6, ha="center", va="bottom", zorder=3)
         d0, d1 = np.ptp(pos[:, 0]), np.ptp(pos[:, 1])
         if min(d0, d1) < 0.1 * max(d0, d1):               # ~1-D (chain / log line): fill, don't squash
             pad = 0.25 * max(d0, d1)
@@ -292,6 +301,9 @@ def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None):
             ax.scatter(pos[~it, 0], pos[~it, 1], pos[~it, 2], c="0.8", s=16)
         ax.scatter(pos[it, 0], pos[it, 1], pos[it, 2], c=cidx[it], cmap=cmap,
                    vmin=0, vmax=vmax, s=25)
+        if labels is not None:
+            for (x, y, z), lab in zip(pos, labels):
+                ax.text(x, y, z, lab, fontsize=6, ha="center", va="bottom")
         ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
     ax.set_title(title)
 
@@ -359,8 +371,9 @@ def plot_predicted_geometry(spec, L, E, cmap=None):
     fig = plt.figure(figsize=(13, H))
     gs = fig.add_gridspec(1, 3, wspace=0.45)
     item_ids = items if is_tree and len(items) != len(A) else None
+    labels = _hypercube_labels(spec) if spec["structure"] == "hypercube" else None
     draw_structure(fig.add_subplot(gs[0, 0], projection="3d" if is3d else None), A, pos,
-                   item_ids=item_ids, cmap=cmap)
+                   item_ids=item_ids, cmap=cmap, labels=labels)
     axB = fig.add_subplot(gs[0, 1]); conditional_heatmap(axB, L)
     if is_tree and view == "ultrametric":
         rows, cmax = _tree_leaf_rows(parents, items)
