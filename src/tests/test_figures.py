@@ -24,7 +24,8 @@ def test_figure_path_is_experiment_keyed_dropping_model_level(tmp_path):
     p_klinear = figure_path(_config(tmp_path, "graph", "klinear", "structure=ring"), "rsa_by_arch")
     p_transf = figure_path(_config(tmp_path, "graph", "transformer", "structure=ring"), "rsa_by_arch")
 
-    assert Path(p_klinear) == tmp_path / "graph" / "structure=ring" / "figures" / "rsa_by_arch.png"
+    # {setting}/figures/{override_dirname}/ — a per-setting figures tree, separate from run artifacts
+    assert Path(p_klinear) == tmp_path / "graph" / "figures" / "structure=ring" / "rsa_by_arch.png"
     assert p_klinear == p_transf                       # model level dropped -> shared
     assert Path(p_klinear).parent.is_dir()             # parent created for immediate savefig
 

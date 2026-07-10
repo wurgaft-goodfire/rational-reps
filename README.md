@@ -127,16 +127,21 @@ uv run jupytext --to notebook --execute src/notebooks/<name>.py -o /tmp/out.ipyn
 Keep notebooks thin: real logic belongs in `src/code/` (unit-tested); the notebook just calls those
 functions and renders/saves figures.
 
-**Figures** are written to the gitignored cache via `plot_utils.figure_path`, so the repo stays
-binary-free — promote a figure to git by hand only when it is paper-final:
+**Figures** are written to the gitignored cache via `plot_utils.figure_path(config, name)`, keyed by
+experiment (`config` is the run config returned by `train_inline`), so the repo stays binary-free —
+promote a figure to git by hand only when it is paper-final:
 
 ```python
 from src.code.plot_utils import save_figure, figure_path
 
-save_figure(fig, figure_path("geometry_analysis", "cca_by_arch"))            # PNG (default, viewable)
-# -> $CACHE_DIR/figures/geometry_analysis/cca_by_arch.png
-save_figure(fig, figure_path("geometry_analysis", "cca_by_arch", ext="pdf")) # vector, for paper-final
+save_figure(fig, figure_path(config, "cca_by_arch"))            # PNG (default, viewable)
+# -> $CACHE_DIR/{setting}/figures/{override_dirname}/cca_by_arch.png
+save_figure(fig, figure_path(config, "cca_by_arch", ext="pdf")) # vector, for paper-final
 ```
+
+Figures are keyed by `{setting}/figures/{override_dirname}` (the per-model level of the run dir is
+dropped), so all models trained on one structure share a figures dir and switching structures needs
+no renaming.
 
 ## Analysis
 

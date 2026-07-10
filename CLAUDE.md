@@ -42,11 +42,12 @@ Follow BDD dual-loop TDD. Every feature increment starts from a failing integrat
 against the modules directly (pytest, or a `uv run python -c` one-liner). A notebook only calls those
 tested functions and renders figures. Notebooks are percent-format `.py` files (jupytext / `# %%`
 cells) — there is **no `.ipynb` in the repo**; edit and run the `.py` directly. Figures save to the
-gitignored cache via `plot_utils.figure_path` — PNG by default so they're viewable, `ext="pdf"` for
-paper-final: `save_figure(fig, figure_path("<notebook>", "<name>"))` →
-`$CACHE_DIR/figures/<notebook>/<name>.png`. Never commit figure binaries. Before finishing, execute
-the notebook end-to-end (`uv run jupytext --to notebook --execute <name>.py -o /tmp/out.ipynb`) and
-confirm it runs clean.
+gitignored cache via `plot_utils.figure_path(config, "<name>")` (the run's `config`, returned by
+`train_inline`) — PNG by default so they're viewable, `ext="pdf"` for paper-final:
+`save_figure(fig, figure_path(config, "<name>"))` → `$CACHE_DIR/{setting}/figures/{override_dirname}/<name>.png`
+(experiment-keyed, dropping the per-model level so cross-model comparison figures share a dir). Never
+commit figure binaries. Before finishing, execute the notebook end-to-end
+(`uv run jupytext --to notebook --execute <name>.py -o /tmp/out.ipynb`) and confirm it runs clean.
 
 **Always look at the figures.** After running any analysis that produces a plot, open the saved
 figure (`Read` the PNG under `$CACHE_DIR/figures/`) and actually view it before reporting. A clean run and good printed metrics do not
