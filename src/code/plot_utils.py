@@ -5,6 +5,8 @@ manifold panels) — and the geometry-analysis helpers render through it (struct
 -> embedding), matching src/notebooks/demo_graphs.ipynb.
 """
 import itertools
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
@@ -63,8 +65,9 @@ class FigureGenerator:
             ax.spines[side].set_linewidth(spine_width)
         ax.tick_params(length=tick_length, width=tick_width)
 
-    def save_figure(self, fig, filepath, format='pdf', dpi=1000):
-        """Save figure with publication-quality settings and selective rasterization."""
+    def save_figure(self, fig, filepath, format=None, dpi=300):
+        """Save figure with publication-quality settings and selective rasterization. ``format=None``
+        infers the format from the filepath extension (``.png`` for viewing, ``.pdf`` for papers)."""
         for ax in fig.get_axes():
             for collection in ax.collections:
                 if collection.__class__.__name__ in ['QuadMesh', 'AxesImage']:
@@ -83,6 +86,18 @@ FIG = FigureGenerator()
 def save_figure(fig, filepath, **kwargs):
     """Save a figure with the house rasterization/quality settings."""
     FIG.save_figure(fig, filepath, **kwargs)
+
+
+def figure_path(config, name, ext="png"):
+    """Path for a figure under the gitignored cache, keyed by *experiment* — ``{cache_dir}/{setting}/
+    {override_dirname}/figures/`` — dropping the per-model level of the run dir so cross-model
+    comparison figures for one structure share a home and switching structures needs no renaming.
+    Defaults to PNG (viewable everywhere); pass ``ext="pdf"`` for a paper-final vector figure.
+    Creates the parent dir so ``save_figure`` can write immediately."""
+    override_dirname = Path(config.run_dir).name                 # run_dir = .../{setting}/{model}/{dirname}
+    path = Path(config.cache_dir) / config.setting / override_dirname / "figures" / f"{name}.{ext}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 ######### Geometry-analysis plots (used by geometry_analysis.ipynb) #########

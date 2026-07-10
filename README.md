@@ -113,6 +113,31 @@ uv run python -m pytest -m "not slow"   # fast unit tests
 uv run python -m pytest                 # full suite (includes the end-to-end smoke test)
 ```
 
+## Notebooks
+
+Analysis notebooks in `src/notebooks/` are plain **percent-format `.py` files** ([jupytext](https://jupytext.readthedocs.io/)
+/ VS Code `# %%` cells) — there is no `.ipynb` in the repo, so git stays free of notebook JSON and
+output bloat. Run them interactively (VS Code Interactive Window, or open the `.py` as a notebook in
+Jupyter Lab), or execute one headless:
+
+```bash
+uv run jupytext --to notebook --execute src/notebooks/<name>.py -o /tmp/out.ipynb   # run end-to-end; temp output
+```
+
+Keep notebooks thin: real logic belongs in `src/code/` (unit-tested); the notebook just calls those
+functions and renders/saves figures.
+
+**Figures** are written to the gitignored cache via `plot_utils.figure_path`, so the repo stays
+binary-free — promote a figure to git by hand only when it is paper-final:
+
+```python
+from src.code.plot_utils import save_figure, figure_path
+
+save_figure(fig, figure_path("geometry_analysis", "cca_by_arch"))            # PNG (default, viewable)
+# -> $CACHE_DIR/figures/geometry_analysis/cca_by_arch.png
+save_figure(fig, figure_path("geometry_analysis", "cca_by_arch", ext="pdf")) # vector, for paper-final
+```
+
 ## Analysis
 
 wandb is optional, so analysis works from disk or from wandb — neither is the

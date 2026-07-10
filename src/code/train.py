@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import pandas as pd
@@ -10,9 +11,10 @@ from hydra.core.global_hydra import GlobalHydra
 from dotenv import load_dotenv
 from pyprojroot import here
 from omegaconf import DictConfig, OmegaConf, open_dict
-from .models import init_model
+from .models import init_model, load_model
 from .config import Config
 from .data import init_dataset
+from .eval import Evaluator
 from .train_utils import (
     CustomSaveCallback,
     StepMetricsCallback,
@@ -120,34 +122,78 @@ def train(config):
     if config.cfg.wandb.enabled:
         wandb.finish()
 
+    # Persist the training curve so a later reuse (train_inline load path) returns the same history
+    # even when only the final checkpoint was saved.
+    history = pd.DataFrame(metrics_callback.history)
+    history.to_csv(os.path.join(config.run_dir, "history.csv"), index=False)
+
     # Return the trained artifacts so callers (notebooks) can use them in-process; the CLI
     # entry point ignores the return value.
     return {
         "model": trainer.model,
         "dataset": dataset,
         "evaluator": metrics_callback.evaluator,
-        "history": metrics_callback.history,
+        "history": history,
     }
 
 
-def train_inline(overrides, name=None, cache_dir=None):
-    """Train in-process from a list of Hydra overrides (for notebooks). Composes the same config
-    the CLI builds — all conf/ groups reused — then runs `train()`. Returns
-    ``(model, dataset, evaluator, history_df)`` with one history row per eval step. Real sweeps
-    still go through `python -m src.code.train -m ...`.
+def _run_exists(config):
+    """Write config_resolved and report whether a completed run is already on disk. Honors
+    ``overwrite``: when set, wipes the output dir and returns False so training re-runs."""
+    config.to_yaml(os.path.join(config.run_dir, "config_resolved.yaml"))
+    if os.path.exists(config.output_dir) and len(os.listdir(config.output_dir)) > 0:
+        if not config.cfg.overwrite:
+            return True
+        print(f"overwrite=true: cleaning output directory {config.output_dir}")
+        shutil.rmtree(config.output_dir)
+        os.makedirs(config.output_dir, exist_ok=True)
+    return False
 
-        model, dataset, evaluator, history = train_inline(["runner=transformer", "setting=graph"])
+
+def _load_run(config, device=None):
+    """Load a finished run's final checkpoint + rebuild its evaluator (on the run's cached eval
+    batches) and history — the reuse counterpart to `train()`, returning the same artifacts."""
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = init_dataset(config)
+    evaluator = Evaluator.from_cache(config, dataset, config.run_dir)
+    last = max(int(d) for d in os.listdir(config.output_dir) if d.isdigit())
+    model, _ = load_model(config, os.path.join(config.output_dir, str(last), "model"), device=device)
+    history = pd.read_csv(os.path.join(config.run_dir, "history.csv"))
+    return model, dataset, evaluator, history
+
+
+def train_inline(overrides, name=None, cache_dir=None):
+    """Train in-process from a list of Hydra overrides (for notebooks) — the same job the CLI runs,
+    with the same config-keyed run dir and save schedule. Returns
+    ``(model, dataset, evaluator, history_df, config)``. If that exact run already exists on disk
+    (and ``overwrite`` is not set), loads it instead of retraining. Real sweeps still go through
+    ``python -m src.code.train -m ...``.
+
+        model, dataset, evaluator, history, config = train_inline(["runner=transformer", "setting=graph"])
     """
     overrides = list(overrides) + ([f"name={name}"] if name is not None else [])
     GlobalHydra.instance().clear()
     with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
-        cfg = compose(config_name="config", overrides=overrides)
+        cfg = compose(config_name="config", overrides=overrides, return_hydra_config=True)
+    # override_dirname is only computed under Hydra; grab it, then drop the hydra node so the
+    # config resolves/saves cleanly, and key the run dir exactly as the CLI would. Guard the
+    # filesystem's 255-byte name limit (many overrides overflow it): keep a readable prefix and
+    # append a hash of the full string for uniqueness.
+    override_dirname = cfg.hydra.job.override_dirname or "single_run"
+    if len(override_dirname) > 200:
+        digest = hashlib.md5(override_dirname.encode()).hexdigest()[:8]
+        override_dirname = f"{override_dirname[:180]}-{digest}"
+    with open_dict(cfg):
+        del cfg["hydra"]
     cache_dir = cache_dir or os.getenv("CACHE_DIR") or str(here() / "outputs")
     cfg.cache_dir = cache_dir
-    # run_dir's ${hydra:runtime.output_dir} interpolation only resolves under @hydra.main, so set it.
-    cfg.run_dir = os.path.join(cache_dir, cfg.setting, cfg.name, "notebook")
-    result = train(Config(cfg, make_run_dirs=True))
-    return result["model"], result["dataset"], result["evaluator"], pd.DataFrame(result["history"])
+    cfg.run_dir = os.path.join(cache_dir, cfg.setting, cfg.name, override_dirname)
+    config = Config(cfg, make_run_dirs=True)
+
+    if _run_exists(config):
+        return (*_load_run(config), config)
+    result = train(config)
+    return result["model"], result["dataset"], result["evaluator"], result["history"], config
 
 
 def graph_overrides(spec):
@@ -176,16 +222,9 @@ def main(cfg: DictConfig) -> None:
       python -m src.code.train runner=rnn setting=distribution
     """
     config = Config(cfg, make_run_dirs=True)
-    config.to_yaml(os.path.join(config.run_dir, "config_resolved.yaml"))
-
-    if os.path.exists(config.output_dir) and len(os.listdir(config.output_dir)) > 0:
-        if not cfg.overwrite:
-            print(f"Output directory {config.output_dir} is not empty. Set overwrite=true to overwrite.")
-            return
-        print(f"overwrite=true: cleaning output directory {config.output_dir}")
-        shutil.rmtree(config.output_dir)
-        os.makedirs(config.output_dir, exist_ok=True)
-
+    if _run_exists(config):
+        print(f"Output directory {config.output_dir} is not empty. Set overwrite=true to overwrite.")
+        return
     train(config)
     print("DONE")
 

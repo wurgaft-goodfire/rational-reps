@@ -2,14 +2,16 @@
 # HMM experiment: latent states walk a graph, emitting observable tokens. Belief-tracking needs a
 # bigger transformer + longer training than the fully-observed graph tasks (the default tiny model
 # under-fits and never reaches Bayes). Sized to reach Bayes-optimal on the belief-tracking task.
-#   python -m src.code.train runner=hmm
+#   python -m src.code.train runner=hmm_transformer
 defaults:
   - override /setting: hmm
   - override /model: transformer
   - override /train: default
   - _self_
 
-name: hmm
+# {task}_{arch}: the arch is baked in here (not a CLI override), so it never reaches override_dirname;
+# the name is the only thing separating this preset from a generic transformer-on-hmm run.
+name: hmm_transformer
 output_dir: ${run_dir}/checkpoints
 sample_mode: sequence
 model_kwargs:
