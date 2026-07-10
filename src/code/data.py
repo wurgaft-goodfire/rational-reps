@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from .config import Config
-from .geometry import factor_logcond, predicted_geometry
+from .geometry import predicted_geometry
 
 ##### Init dataset #####
 def init_dataset(config, overwrite_data: bool = False):
@@ -582,36 +582,19 @@ def _build_adjacency(name, params):
     return _STRUCTURES[name].adjacency(**params)
 
 
-def _product_conditional(factor_specs, gamma, cooccurrence):
-    """Balanced product geometry (a *proper* torus for ring x ring): factors are independent, so their
-    log-conditionals combine as a Kronecker sum ``L[(i,j..),(i',j'..)] = sum_f L_f[i_f, i'_f]``. Each
-    factor is centered and unit-scaled by its own top singular value, so factors of different sizes
-    contribute at the same scale (otherwise the larger factor dominates the geometry). Factors may be
-    any structure — built recursively, so products of products / trees / etc. compose."""
-    def unit_scaled(spec):
-        L = graph_conditional(spec, gamma, cooccurrence)
-        return (L - L.mean()) / factor_logcond(L)[3][0]        # [3] = singular values; [0] = the top
-    def kron_sum(A, B):
-        na, nb = len(A), len(B)
-        return (A[:, None, :, None] + B[None, :, None, :]).reshape(na * nb, na * nb)
-    return reduce(kron_sum, (unit_scaled(f) for f in factor_specs))
-
-
 def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
     """Log-conditional for a structure spec ``{'structure': name, **params}``. A structure with its
-    own conditional (tree, log_line) uses it directly; ``product`` combines its factors into a balanced
-    product geometry; otherwise ``cooccurrence`` turns the adjacency into a conditional: ``"diffusion"``
-    (walk co-occurrence ``(I-gamma P)^-1``, integrating multi-step context), ``"geodesic"`` (shortest-
-    path kernel ``gamma**d``, self-similar diagonal), or ``"adjacency"`` (raw one-step neighbours, zero
-    diagonal). ``gamma`` and ``cooccurrence`` may also be passed as spec keys (overriding the args), so
-    one spec dict configures the task."""
+    own conditional (tree, log_line) uses it directly; otherwise ``cooccurrence`` turns the adjacency
+    into a conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``, integrating multi-step
+    context), ``"geodesic"`` (shortest-path kernel ``gamma**d``, self-similar diagonal), or
+    ``"adjacency"`` (raw one-step neighbours, zero diagonal) — a ``product``/``stack`` builds its
+    (Cartesian / block) adjacency and co-occurs that. ``gamma`` and ``cooccurrence`` may also be passed
+    as spec keys (overriding the args), so one spec dict configures the task."""
     spec = dict(spec)
     name = spec.pop("structure")
     gamma = spec.pop("gamma", gamma)
     cooccurrence = spec.pop("cooccurrence", cooccurrence)
     spec.pop("view", None)                                    # 'view' is presentation-only (plotting)
-    if name == "product":
-        return _product_conditional(spec["factors"], gamma, cooccurrence)
     struct = _STRUCTURES.get(name)
     if struct is not None and struct.conditional is not None:
         # pass the task gamma only to conditionals that take it (tree does; log_line uses lam)

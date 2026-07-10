@@ -61,13 +61,10 @@ def test_hypercube_supports_analogies():
     assert int(np.argmin(((E - pred) ** 2).sum(1))) == queen       # == queen
 
 
-def test_ring_product_ring_is_a_balanced_torus():
-    # A *proper* torus even from unequal factors: the two circles must share scale, so the top four
-    # singular values are ~equal (not dominated by the larger ring), with a clear drop after four.
+def test_ring_product_ring_is_rank_four_torus():
     _, S = _ES({"structure": "product",
                 "factors": [{"structure": "ring", "n": 12}, {"structure": "ring", "n": 8}]})
-    assert S[3] / S[0] > 0.9                                        # balanced: both circles same scale
-    assert S[4] / S[3] < 0.5                                        # rank-4 torus (two Fourier pairs)
+    assert S[3] > 2 * S[4]                                          # two Fourier pairs (a torus)
 
 
 def test_stack_of_two_rings_is_two_circles():

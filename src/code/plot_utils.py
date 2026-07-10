@@ -134,20 +134,15 @@ def _view(spec):
     return _DEFAULT_VIEW.get(spec.get("structure"), "2d")
 
 
-def _torus_donut(r, spec):
-    """Map a representation of a ring x ring torus onto the classic 3-D donut: linearly fit ``r`` to
-    the two known ring angles (a linear readout, like the decoder probe), then place each item on the
-    torus surface. A rep that linearly holds the torus lands on a clean donut; a poor one distorts."""
-    facs = spec["factors"]; nA, nB = facs[0]["n"], facs[1]["n"]
-    i = np.repeat(np.arange(nA), nB); j = np.tile(np.arange(nB), nA)          # node = i*nB + j
-    th, ph = 2 * np.pi * i / nA, 2 * np.pi * j / nB
-    C = np.c_[np.cos(th), np.sin(th), np.cos(ph), np.sin(ph)]                 # canonical torus (4-D)
-    rc = np.asarray(r, float); rc = rc - rc.mean(0)
-    F = rc @ np.linalg.lstsq(rc, C, rcond=None)[0]                            # rep -> fitted (cosθ,sinθ,cosφ,sinφ)
-    th2, ph2 = np.arctan2(F[:, 1], F[:, 0]), np.arctan2(F[:, 3], F[:, 2])
+def _torus_donut(r):
+    """Map a ring x ring torus onto the classic 3-D donut by reading the two ring angles straight from
+    the geometry (as in demo_graphs): the two circles occupy the top-2 and next-2 principal axes (they
+    separate when the rings differ in size), so theta/phi are those coordinate pairs' angles."""
+    E4 = _pca(r, 4)
+    th, ph = np.arctan2(E4[:, 1], E4[:, 0]), np.arctan2(E4[:, 3], E4[:, 2])
     Rmaj, rmin = 2.0, 0.9
-    return np.c_[(Rmaj + rmin * np.cos(ph2)) * np.cos(th2),
-                 (Rmaj + rmin * np.cos(ph2)) * np.sin(th2), rmin * np.sin(ph2)]
+    return np.c_[(Rmaj + rmin * np.cos(ph)) * np.cos(th),
+                 (Rmaj + rmin * np.cos(ph)) * np.sin(th), rmin * np.sin(ph)]
 
 
 def _shape_positions(name, p):
@@ -319,7 +314,7 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None):
     view = _view(spec)
     if view == "torus":
         ax = fig.add_subplot(cell, projection="3d")
-        scatter_geometry(ax, _torus_donut(r, spec), title, cmap)
+        scatter_geometry(ax, _torus_donut(r), title, cmap)
         return
     ndim = 3 if view == "3d" else 2
     ax = fig.add_subplot(cell, projection="3d" if ndim == 3 else None)
