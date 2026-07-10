@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from .config import Config
-from .geometry import factor_logcond
+from .geometry import factor_logcond, predicted_geometry
 
 ##### Init dataset #####
 def init_dataset(config, overwrite_data: bool = False):
@@ -244,16 +244,17 @@ class RelationalDataset(Dataset):
 ##### Hidden-Markov dataset (latent graph walk + emissions) #####
 
 class HMMDataset(Dataset):
-    """Latent states are the nodes of a structure's graph and walk it (co-occurrence of the
-    adjacency); each state emits an observable token. The network sees only tokens, so the latent
-    geometry lives in the belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the token embedding. Every state is
+    """Latent states walk a transition given by any log-conditional the structure defines (``_L``);
+    each state emits an observable token. The network sees only tokens, so the latent geometry lives
+    in the belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the token embedding. Every state is
     given the *same* emission shape (uniform per-state distinguishability -> even belief coverage);
     ``emission`` picks how the shape is placed and ``emission_sigma`` its width (small -> sharp/high
     SNR, large -> aliased):
 
-    - ``bump``: a localized kernel over the latent graph, ``Em[k,j] ~ exp(-d(k,j)^2 / 2 sigma^2)``
-      with ``d`` the graph distance. Symbols correspond to states, so ``M = n_states``; on a
-      vertex-transitive graph (ring, torus, ...) every state is identical up to a shift.
+    - ``bump``: a localized kernel over the *latent geometry*, ``Em[k,j] ~ exp(-d(k,j)^2 / 2 sigma^2)``
+      with ``d`` the distance in the predicted geometry (in units of nearest-neighbour spacing, so
+      ``sigma`` is scale-free). Works for any conditional, not only an adjacency; symbols correspond to
+      states, so ``M = n_states``, and on a symmetric geometry (ring, torus, ...) every state is a shift.
     - ``permuted``: one peaked template distribution over the ``M`` symbols, independently permuted
       per state -- identical entropy, different symbols (``n_symbols < n_states`` forces aliasing).
 
@@ -269,12 +270,10 @@ class HMMDataset(Dataset):
         sk = config.get("structure_kwargs")
         structure_kwargs = OmegaConf.to_container(sk, resolve=True) if sk else {}
         spec = {"structure": config.get("structure"), **structure_kwargs}
-        # The latent states are the nodes of the structure's graph, so both the transition and the
-        # (bump) emission are built from the one adjacency — consistent for every structure, including
-        # tree (all nodes, not the graph-task's leaves-only conditional).
-        A = structure_adjacency(spec)
-        self._L = adjacency_conditional(A, config.get("gamma", 0.8),
-                                        config.get("cooccurrence", "diffusion"))   # latent transition
+        # The latent transition is any log-conditional the structure defines (tree ultrametric,
+        # balanced product torus, log_line's log-metric, ...) — not restricted to an adjacency.
+        self._L = graph_conditional(spec, config.get("gamma", 0.8),
+                                    config.get("cooccurrence", "diffusion"))
         self.n_states = len(self._L)
         self.arity = 1
 
@@ -286,9 +285,12 @@ class HMMDataset(Dataset):
         emission = config.get("emission", "bump")
         sigma = float(config.get("emission_sigma", 1.0))
         if emission == "bump":
-            # localized kernel over the latent graph; symbols correspond to states (M = n_states)
-            from scipy.sparse.csgraph import shortest_path
-            D = shortest_path(A > 0, directed=False, unweighted=True)
+            # localized kernel over the latent geometry (any conditional, not just an adjacency);
+            # symbols correspond to states (M = n_states)
+            E = predicted_geometry(self._L)
+            D = np.sqrt(((E[:, None] - E[None]) ** 2).sum(-1))
+            nn = np.sort(D + np.eye(len(D)) * D.max(), axis=1)[:, 1].mean()   # mean nearest-neighbour spacing
+            D = D / nn                                                        # sigma in neighbour-spacing units
             Em = np.exp(-(D ** 2) / (2 * sigma ** 2)); self.n_symbols = self.n_states
             self.Em = torch.tensor(Em / Em.sum(1, keepdims=True), dtype=torch.float32, device=self.device)
         elif emission == "permuted":
