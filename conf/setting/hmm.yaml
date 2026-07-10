@@ -4,10 +4,10 @@
 # forward algorithm), not the token embedding.
 setting: hmm
 structure: ring          # latent graph shape
-structure_kwargs:
+structure_kwargs:        # the full latent-structure spec: shape params + the transition kernel
   n: 3                  # number of latent states
-gamma: 0.8               # latent diffusion decay
-cooccurrence: diffusion  # latent transition: diffusion | geodesic | adjacency
+  gamma: 0.8             # latent diffusion decay
+  cooccurrence: diffusion  # latent transition: diffusion | geodesic | adjacency | heat
 emission: bump           # emission shape placement: bump (graph-distance kernel) | permuted (template)
 emission_sigma: 2.5      # emission width: small -> sharp / high SNR, large -> aliased (fills the belief disk)
 n_symbols: 24            # alphabet size (permuted only; bump forces n_symbols = n_states)

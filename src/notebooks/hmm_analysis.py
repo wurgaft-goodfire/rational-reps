@@ -21,10 +21,14 @@
 # overlays the two trajectories in belief-ring coordinates (they coincide over the whole context).
 
 # %%
-import sys
+import os, sys
+from pathlib import Path
 import numpy as np, torch
-from pyprojroot import here
-sys.path.append(str(here()))
+
+# Project root, independent of the kernel's cwd (headless `jupytext --execute` can launch it outside
+# the repo): the uv venv sits at the repo root. chdir so Hydra resolves conf/, and add it to sys.path.
+ROOT = Path(sys.prefix).parent            # <repo>/.venv -> <repo>
+os.chdir(ROOT); sys.path.insert(0, str(ROOT))
 from src.code.geometry import predicted_geometry, spectral_hmm, spectral_beliefs
 from src.code.eval import cka, cca
 from src.code.train import train_inline

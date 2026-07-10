@@ -46,11 +46,10 @@ class GraphCooccurrenceDataset(Dataset):
         from omegaconf import OmegaConf
         sk = config.get("structure_kwargs")
         structure_kwargs = OmegaConf.to_container(sk, resolve=True) if sk else {}
+        # gamma / cooccurrence (the co-occurrence kernel) ride in structure_kwargs; graph_conditional
+        # reads them off the spec (like family_kwargs / operation_kwargs for the other settings).
         spec = {"structure": config.get("structure"), **structure_kwargs}
-        gamma = config.get("gamma", 0.8)
-        # "diffusion": multi-step co-occurrence; "adjacency": raw one-step neighbour transition
-        cooccurrence = config.get("cooccurrence", "diffusion")
-        self._L = graph_conditional(spec, gamma, cooccurrence)   # (n, n) log-conditional (numpy)
+        self._L = graph_conditional(spec)                        # (n, n) log-conditional (numpy)
 
         self.n_nodes = len(self._L)
         self.arity = 1
@@ -272,8 +271,8 @@ class HMMDataset(Dataset):
         spec = {"structure": config.get("structure"), **structure_kwargs}
         # The latent transition is any log-conditional the structure defines (tree ultrametric,
         # balanced product torus, log_line's log-metric, ...) — not restricted to an adjacency.
-        self._L = graph_conditional(spec, config.get("gamma", 0.8),
-                                    config.get("cooccurrence", "diffusion"))
+        # gamma / cooccurrence ride in structure_kwargs (graph_conditional reads them off the spec).
+        self._L = graph_conditional(spec)
         self.n_states = len(self._L)
         self.arity = 1
 
@@ -483,6 +482,17 @@ def walk_cooccur(A, gamma=0.8):
     return 0.5 * (J + J.T)
 
 
+def heat_cooccur(A, beta=0.8):
+    """Heat-kernel co-occurrence ``exp(beta * A)``. On a Cartesian-product graph (hypercube, torus,
+    grid) this factorizes into a Kronecker product of per-factor heat kernels — ``exp`` turns the
+    adjacency's Kronecker *sum* into a *product* — so the factors stay independent, the log-conditional
+    is additive over them, and only single-factor directions survive (no interaction harmonics). This
+    is the regime in which linear analogies emerge (Korchinski et al.); the walk resolvent, by
+    contrast, does not factorize and couples the factors."""
+    from scipy.linalg import expm
+    return expm(beta * np.asarray(A, dtype=np.float64))
+
+
 def logcond_from_sim(K):
     """Symmetric co-occurrence kernel -> row-normalized log-conditional ``log p(word|context)``."""
     K = np.asarray(K, dtype=np.float64)
@@ -586,8 +596,10 @@ def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
     """Log-conditional for a structure spec ``{'structure': name, **params}``. A structure with its
     own conditional (tree, log_line) uses it directly; otherwise ``cooccurrence`` turns the adjacency
     into a conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``, integrating multi-step
-    context), ``"geodesic"`` (shortest-path kernel ``gamma**d``, self-similar diagonal), or
-    ``"adjacency"`` (raw one-step neighbours, zero diagonal) — a ``product``/``stack`` builds its
+    context), ``"geodesic"`` (shortest-path kernel ``gamma**d``, self-similar diagonal),
+    ``"adjacency"`` (raw one-step neighbours, zero diagonal), or ``"heat"`` (heat kernel
+    ``exp(gamma*A)``, which keeps product factors independent → additive log-conditional → analogies) —
+    a ``product``/``stack`` builds its
     (Cartesian / block) adjacency and co-occurs that. ``gamma`` and ``cooccurrence`` may also be passed
     as spec keys (overriding the args), so one spec dict configures the task."""
     spec = dict(spec)
@@ -605,16 +617,21 @@ def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
 
 
 def adjacency_conditional(A, gamma=0.8, cooccurrence="diffusion"):
-    """Turn an adjacency into a log-conditional: ``"diffusion"`` (walk co-occurrence), ``"geodesic"``
-    (shortest-path kernel), or ``"adjacency"`` (raw one-step neighbours). The graph-walk view of a
-    structure — used directly by the HMM latent transition, whose states are the graph's nodes."""
+    """Turn an adjacency into a log-conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``),
+    ``"geodesic"`` (shortest-path kernel), ``"adjacency"`` (raw one-step neighbours), or ``"heat"``
+    (heat kernel ``exp(gamma * A)``, which preserves factor independence on product graphs → additive
+    log-conditional → linear analogies). ``gamma`` is the decay for diffusion/geodesic and the
+    diffusion time ``beta`` for heat. The graph-walk view of a structure — used directly by the HMM
+    latent transition, whose states are the graph's nodes."""
     if cooccurrence == "diffusion":
         return cooccur_logcond(A, gamma)
     if cooccurrence == "geodesic":
         return logcond_from_sim(geodesic_cooccur(A, gamma))
     if cooccurrence == "adjacency":
         return logcond_from_sim(A)
-    raise ValueError(f"Unknown cooccurrence {cooccurrence!r}; use diffusion | geodesic | adjacency")
+    if cooccurrence == "heat":
+        return logcond_from_sim(heat_cooccur(A, gamma))
+    raise ValueError(f"Unknown cooccurrence {cooccurrence!r}; use diffusion | geodesic | adjacency | heat")
 
 
 def structure_adjacency(spec):

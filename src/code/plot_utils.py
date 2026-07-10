@@ -525,6 +525,21 @@ def plot_embedding_panels(E_pred, embeddings, L, spec=None, cmap=None):
     return fig
 
 
+def plot_decoder_panels(D_pred, readouts, spec=None, cmap=None):
+    """The decoder mirror of `plot_embedding_panels`. Top: the predicted decoder ``D`` (each outcome
+    a point) beside each model's readout weights, laid out on the structure's ``view`` (see `_view`) —
+    for a graph task the outcomes live on the same manifold as the items, so every readout recovers it.
+    Bottom: each decoder's RDM. ``readouts``: {name: readout_weights (outcomes x features)}."""
+    names = ["predicted"] + list(readouts)
+    mats = [D_pred] + list(readouts.values())
+    fig = plt.figure(figsize=(2.7 * len(names), 5.9))
+    gs = fig.add_gridspec(2, len(names), hspace=0.25, wspace=0.3)
+    for j, (name, r) in enumerate(zip(names, mats)):
+        draw_embedding(fig, gs[0, j], r, spec, name, cmap)
+        rdm_heatmap(fig.add_subplot(gs[1, j]), r)
+    return fig
+
+
 def _tree_children(parents):
     """{node -> list of children} from a parent-index list (root parent = -1)."""
     ch = {}
@@ -659,16 +674,18 @@ def plot_rsa_curves(histories):
     return fig
 
 
-def plot_convergence_bars(scores):
-    """CKA/RSA to predicted per model. `scores`: {name: {"cka": .., "rsa": ..}}."""
+def plot_convergence_bars(scores, ylabel="similarity to predicted geometry",
+                          title="representational convergence across architectures"):
+    """CKA/RSA to a predicted target per model. `scores`: {name: {"cka": .., "rsa": ..}}. Used for
+    both the code (vs predicted geometry E) and the decoder (vs predicted decoder D)."""
     names = list(scores); x = np.arange(len(names)); w = 0.38
     fig, ax = plt.subplots(figsize=(7, 4.3))
     for off, key, color in [(-w / 2, "cka", SERIES[2]), (w / 2, "rsa", SERIES[1])]:
         ax.bar(x + off, [scores[n][key] for n in names], w, color=color,
                edgecolor="white", linewidth=1.2, label=key.upper())
-    ax.set(xticks=x, ylim=(0, 1.16), ylabel="similarity to predicted geometry")
+    ax.set(xticks=x, ylim=(0, 1.16), ylabel=ylabel)
     ax.set_xticklabels(names)
     ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.13), ncol=2)
-    ax.set_title("representational convergence across architectures", pad=30)
+    ax.set_title(title, pad=30)
     FIG.style_axes(ax)
     return fig

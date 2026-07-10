@@ -193,9 +193,11 @@ def train_inline(overrides, name=None, cache_dir=None):
 def graph_overrides(spec):
     """Hydra overrides selecting a graph structure from a spec dict, e.g.
     ``{"structure": "grid", "n": 6, "m": 6}`` or a composite
-    ``{"structure": "product", "factors": [{"structure": "ring", "n": 9}, ...]}``. Replaces the
-    setting's default ``structure_kwargs`` (deletes it, then re-adds this structure's params) so
-    switching structures needs no per-key dance: ``train_inline(graph_overrides(spec) + ["runner=klinear"])``."""
+    ``{"structure": "product", "factors": [{"structure": "ring", "n": 9}, ...]}``. Everything past the
+    structure name — shape params (n, factors, ...) and the co-occurrence knobs (gamma, cooccurrence) —
+    goes into ``structure_kwargs``, the full structure spec (``graph_conditional`` reads gamma/cooccurrence
+    off it). Replaces the setting's default ``structure_kwargs`` (deletes it, then re-adds), so switching
+    structures needs no per-key dance: ``train_inline(graph_overrides(spec) + ["runner=klinear"])``."""
     def literal(v):                                           # nested list/dict -> Hydra override literal
         if isinstance(v, dict):
             return "{" + ",".join(f"{k}:{literal(x)}" for k, x in v.items()) + "}"

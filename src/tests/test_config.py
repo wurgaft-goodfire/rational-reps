@@ -19,6 +19,17 @@ def test_clean_dirname_tidies_the_override_string():
     assert clean_dirname("setting=graph,~structure_kwargs") == "single_run"
 
 
+def test_graph_overrides_carries_kernel_params_in_structure_kwargs():
+    # The co-occurrence kernel (gamma / cooccurrence) is part of the structure spec, so it rides into
+    # structure_kwargs alongside the shape params — graph_conditional reads it off the spec. A spec
+    # asking for the heat kernel (e.g. a hypercube, for analogies) flows through unchanged.
+    from src.code.train import graph_overrides
+    ov = graph_overrides({"structure": "hypercube", "n": 3, "cooccurrence": "heat", "gamma": 0.5})
+    assert "structure=hypercube" in ov
+    assert {"+structure_kwargs.n=3", "+structure_kwargs.cooccurrence=heat",
+            "+structure_kwargs.gamma=0.5"}.issubset(ov)
+
+
 def test_set_seed_makes_all_rngs_deterministic():
     set_seed(123)
     a = (random.random(), np.random.rand(), torch.rand(1).item())

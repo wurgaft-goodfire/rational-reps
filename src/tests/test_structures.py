@@ -6,8 +6,8 @@ from src.code.data import graph_conditional as build_conditional
 from src.code.geometry import factor_logcond, predicted_geometry
 
 
-def _ES(spec, gamma=0.8):
-    _, E, _, S, _ = factor_logcond(build_conditional(spec, gamma))
+def _ES(spec, gamma=0.8, cooccurrence="diffusion"):
+    _, E, _, S, _ = factor_logcond(build_conditional(spec, gamma, cooccurrence))
     return E, S
 
 
@@ -53,8 +53,21 @@ def test_complete_graph_is_a_simplex():
     assert D[iu].std() / D[iu].mean() < 0.02                       # all items equidistant
 
 
+def test_heat_cooccurrence_kills_interaction_bands_on_hypercube():
+    # The heat kernel exp(beta*A) on a Cartesian-product graph factorizes into a Kronecker product of
+    # per-factor heat kernels, so the log-conditional is additive over bits: only the d single-attribute
+    # directions carry structure and every interaction (pairwise+) band vanishes.
+    n = 3
+    _, S = _ES({"structure": "hypercube", "n": n}, cooccurrence="heat")
+    assert (S[:n] > 1e-6 * S[0]).all()                             # d single-attribute directions
+    assert S[n] < 1e-6 * S[0]                                      # interaction bands are ~zero
+
+
 def test_hypercube_supports_analogies():
-    E = predicted_geometry(build_conditional({"structure": "hypercube", "n": 3}))
+    # Analogies require an independent-attribute (Kronecker-product) generative process: king - man +
+    # woman = queen holds only when the code is affine in the bits, i.e. no interaction harmonics. The
+    # heat kernel gives exactly that; the random-walk resolvent couples the bits and breaks it.
+    E = predicted_geometry(build_conditional({"structure": "hypercube", "n": 3}, cooccurrence="heat"))
     idx = lambda bits: sum(b << k for k, b in enumerate(bits))
     man, woman, king, queen = idx((0, 0, 0)), idx((0, 1, 0)), idx((1, 0, 0)), idx((1, 1, 0))
     pred = E[king] - E[man] + E[woman]                             # king - man + woman

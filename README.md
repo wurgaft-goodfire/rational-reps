@@ -124,6 +124,10 @@ Jupyter Lab), or execute one headless:
 uv run jupytext --to notebook --execute src/notebooks/<name>.py -o /tmp/out.ipynb   # run end-to-end; temp output
 ```
 
+The setup cell resolves the project root and `chdir`s to it, so notebooks find `conf/` and `src/`
+regardless of the kernel's working directory (a headless `--execute` launches the kernel in the
+output notebook's directory, which may be outside the repo).
+
 Keep notebooks thin: real logic belongs in `src/code/` (unit-tested); the notebook just calls those
 functions and renders/saves figures.
 

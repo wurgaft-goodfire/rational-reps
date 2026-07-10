@@ -21,10 +21,14 @@
 # For sweeps, use the CLI instead, e.g. `python -m src.code.train -m runner=klinear setting=graph structure=ring,chain`.
 
 # %%
-import sys
+import os, sys
+from pathlib import Path
 import numpy as np
-from pyprojroot import here
-sys.path.append(str(here()))
+
+# Project root, independent of the kernel's cwd (headless `jupytext --execute` can launch it outside
+# the repo): the uv venv sits at the repo root. chdir so Hydra resolves conf/, and add it to sys.path.
+ROOT = Path(sys.prefix).parent            # <repo>/.venv -> <repo>
+os.chdir(ROOT); sys.path.insert(0, str(ROOT))
 
 from src.code.data import graph_conditional
 from src.code.geometry import predicted_geometry
@@ -39,8 +43,11 @@ from src.code import plot_utils           # importing this applies the house plo
 # top Fourier pair, and the top-2 code lands on a circle.
 
 # %%
-# pick a structure here — everything below follows from it
-spec = {"structure": "product", "factors": [{"structure": "chain", "n": 15}, {"structure": "ring", "n": 15}]}
+# pick a structure here — everything below follows from it. `cooccurrence` is part of the spec
+# (diffusion | geodesic | adjacency | heat) and flows to both the predicted geometry and the trained
+# models; a product diffuses, but e.g. a hypercube wants "heat" so its bits stay independent (analogies).
+spec = {"structure": "product", "cooccurrence": "diffusion",
+        "factors": [{"structure": "chain", "n": 15}, {"structure": "ring", "n": 15}]}
 L = graph_conditional(spec)
 E_pred = predicted_geometry(L)
 fig_pred = plot_utils.plot_predicted_geometry(spec, L, E_pred)   # saved once we have a run config (below)
@@ -86,24 +93,26 @@ plot_utils.save_figure(fig_conv, plot_utils.figure_path(config, "convergence_bar
 # ## 4. The decoder is predicted too
 #
 # `factor_logcond` returns both the code `E` (compared above) **and** the decoder `D` — the readout
-# that maps code → output logits. Every architecture has a readout (k-linear's tensor, the MLP/RNN
-# final layer, the transformer's unembedding), and it should match the predicted decoder `D`: fitting
-# `softmax(readout · code) = p(·|x)` means `readout · codeᵀ ≈ L`, so the `(embedding, readout)` pair is
-# just a learned factorization of the conditional.
+# that maps code → output logits. Every architecture here has a *linear* readout (k-linear's tensor,
+# the MLP/RNN final layer, the transformer's unembedding), so its `(embedding, readout)` pair is a
+# learned factorization of the conditional: `code · readoutᵀ ≈ Lc`, exactly the SVD factorization
+# `E · D = Lc` the oracle predicts.
 #
-# `D` is compared at the task's true rank (dropping the `S=0` null directions), and only up to a linear
-# gauge, so **CCA** is the right scalar. For the *picture*, the k-linear head is linear, so each column
-# of `emb · readoutᵀ` is one outcome's **decoder function** `log p(x | item)` over the item grid — a
-# localized bump at that outcome's location. The first figure lays the predicted decoder functions
-# next to the learned ones (same picture); the bar chart shows every architecture's readout recovers
-# the predicted decoder (CCA ≈ 1).
+# That factorization has a **scale gauge**: `(code, readout) → (code·M, readout·M⁻ᵀ)` leaves the
+# product fixed. Trained from small init, gradient descent picks the *balanced* representative — the
+# two factors grow together, so each carries `√S` of the scale (the `codeᵀcode − readoutᵀreadout`
+# invariant stays ≈ 0). The oracle (`factor_logcond`) matches this: it splits the scale symmetrically,
+# `E = U·√S` and `D = √S·V`, so the predicted decoder already carries structure — no rescaling needed.
+# (The raw SVD instead dumps all of `S` into the code and leaves `D = V` a flat, structureless blob.)
+#
+# We score the match with **CKA** — the same metric as the code (§3), matched at the task's rank `r`.
+# The panels lay the predicted decoder beside each architecture's readout (outcomes on the same
+# manifold as the items); the bars show every readout recovers it.
 
 # %%
-import matplotlib.pyplot as plt
 from src.code.geometry import factor_logcond
-from src.code.eval import cca
 
-_, _, D_pred, S, _ = factor_logcond(L)          # decoder: (k, num_outcomes)
+_, _, D_pred, S, _ = factor_logcond(L)          # balanced decoder D = sqrt(S)·V, (k, num_outcomes)
 r = int((S > 1e-6).sum())                        # the conditional's true rank (~ the models' capacity)
 D_geom = D_pred[:r].T                            # decoder on the meaningful subspace (num_outcomes, r)
 n_out = D_geom.shape[0]                          # drop the S=0 null directions that carry no structure
@@ -116,47 +125,23 @@ def readout(model, arch):
          model.get_output_embeddings().weight)   # transformer unembedding
     return W.detach().cpu().numpy()[:n_out]
 
-# The readout equals the predicted decoder only up to a linear gauge (different from the encoder's),
-# so CCA is the right metric, matched at the task's rank r.
-cca_by_arch = {a: cca(readout(results[a]["model"], a), D_geom) for a in ARCHS}
+# CKA — the code's metric (§3) — matched at rank r; the oracle's balanced decoder carries scale.
+dec_scores = {a: {"cka": cka(readout(results[a]["model"], a), D_geom),
+                  "rsa": rsa(readout(results[a]["model"], a), D_geom)} for a in ARCHS}
 for a in ARCHS:
-    print(f"  readout vs predicted decoder D (CCA, rank {r}):  {a:12s} {cca_by_arch[a]:.3f}")
+    print(f"  readout vs predicted decoder D (rank {r}):  {a:12s} "
+          f"CKA={dec_scores[a]['cka']:.3f}  RSA={dec_scores[a]['rsa']:.3f}")
 
-# k-linear has a *linear* readout, so its (embedding, readout) pair reconstructs the conditional
-# exactly: softmax(emb @ readout.T) = p(.|x). Each *column* is one outcome's decoder function
-# log p(x | item); shown on the predicted 2-D embedding (works for any structure). Predicted and
-# learned are the same picture (both centered, since softmax ignores per-context constants).
-emb = results["klinear"]["model"].get_input_embeddings().weight.detach().cpu().numpy()[:n_out]
-Wk = readout(results["klinear"]["model"], "klinear")
-rc = lambda A: A - A.mean(1, keepdims=True)      # softmax ignores per-row (per-context) constants
-M_pred, M_lrn = rc(L), rc(emb @ Wk.T)
-XY = E_pred[:, :2]
-outs = [0, n_out // 4, n_out // 2, 3 * n_out // 4]
-rows = [("predicted decoder", M_pred), ("k-linear readout", M_lrn)]
+# The predicted decoder geometry beside each architecture's readout (outcomes on the same manifold as
+# items), decoder RDMs below — the decoder mirror of the code panels in §3.
+fig_dec = plot_utils.plot_decoder_panels(D_geom, {a: readout(results[a]["model"], a) for a in ARCHS}, spec=spec)
+plot_utils.save_figure(fig_dec, plot_utils.figure_path(config, "decoder_panels"))
 
-fig, axes = plt.subplots(2, len(outs), figsize=(2.5 * len(outs), 5.0))
-for c, x in enumerate(outs):
-    v = np.abs(M_pred[:, x]).max()
-    for row, (label, M) in enumerate(rows):
-        ax = axes[row, c]
-        ax.scatter(XY[:, 0], XY[:, 1], c=M[:, x], cmap=plot_utils.FIG.diverging_cmap, vmin=-v, vmax=v, s=25)
-        ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
-        if row == 0: ax.set_title(f"outcome {x}", fontsize=11)
-        if c == 0: ax.set_ylabel(label, fontsize=12)
-fig.suptitle("decoder functions  log p(x | item)  on the geometry: predicted vs. learned", y=1.01)
-fig.tight_layout()
-
-# cross-architecture: every readout recovers the predicted decoder, up to its own gauge.
-fig2, ax2 = plt.subplots(figsize=(4.2, 3.6))
-ax2.bar(range(len(ARCHS)), [cca_by_arch[a] for a in ARCHS], color=plot_utils.FIG.categorical)
-ax2.set_xticks(range(len(ARCHS))); ax2.set_xticklabels(ARCHS, rotation=20)
-ax2.set_ylim(0, 1.05); ax2.set_ylabel("CCA(readout, predicted D)")
-ax2.set_title(f"the decoder is predicted\nacross architectures (rank {r})")
-plot_utils.FIG.style_axes(ax2)
-fig2.tight_layout()
-
-plot_utils.save_figure(fig, plot_utils.figure_path(config, "decoder_functions"))
-plot_utils.save_figure(fig2, plot_utils.figure_path(config, "decoder_cca_by_arch"))
+# Every readout recovers the predicted decoder up to a rotation (CKA), the same bar as the code in §3.
+fig_dec_bars = plot_utils.plot_convergence_bars(
+    dec_scores, ylabel="similarity to predicted decoder D",
+    title="the decoder is predicted across architectures")
+plot_utils.save_figure(fig_dec_bars, plot_utils.figure_path(config, "decoder_convergence_bars"))
 
 # %%
 

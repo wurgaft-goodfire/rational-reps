@@ -21,7 +21,11 @@ def factor_logcond(L, drop_base_measure=False):
     unchanged (the base-measure mode is item-constant, so it cancels in RDM/CKA comparisons),
     so it is off by default (the demo_graphs co-occurrence factorization).
 
-    Returns ``(Lc, E, D, S, nu)``: ``E`` the code (singular-value-scaled) and ``D`` the decoder.
+    Returns ``(Lc, E, D, S, nu)``: the code ``E`` and decoder ``D``, each carrying the *balanced*
+    (symmetric) share of the scale ``sqrt(S)``, so ``E @ D = Lc`` still holds. This matches the
+    factorization gradient descent actually learns — from small init the two factors grow together
+    (the ``codeᵀcode - readoutᵀreadout`` invariant stays ~0), so each ends up with ``sqrt(S)`` rather
+    than the SVD's arbitrary all-scale-in-the-code convention (which leaves the decoder ``D = V`` flat).
     """
     L = np.asarray(L, dtype=np.float64)
     N, _ = L.shape
@@ -33,8 +37,9 @@ def factor_logcond(L, drop_base_measure=False):
         Lc = Lc - (w @ Lc)[None, :]                           # drop x-only base measure
     Lc = Lc - (Lc @ nu)[:, None]                              # drop per-row log-partition
     U, S, Vt = np.linalg.svd(np.sqrt(w)[:, None] * Lc * np.sqrt(nu)[None, :], full_matrices=False)
-    E = (U / np.sqrt(w)[:, None]) * S
-    D = Vt / np.sqrt(nu)[None, :]
+    rootS = np.sqrt(S)                                        # split the scale symmetrically (balanced)
+    E = (U / np.sqrt(w)[:, None]) * rootS
+    D = (rootS[:, None] * Vt) / np.sqrt(nu)[None, :]
     return Lc, E, D, S, nu
 
 
