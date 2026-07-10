@@ -7,6 +7,25 @@ from src.code.data import graph_conditional, stacked_conditional
 from src.code.geometry import predicted_geometry
 
 
+def test_two_ring_product_defaults_to_torus_view():
+    from src.code.plot_utils import _view
+    ring, chain = {"structure": "ring", "n": 10}, {"structure": "chain", "n": 8}
+    assert _view({"structure": "product", "factors": [ring, ring]}) == "torus"
+    assert _view({"structure": "product", "factors": [ring, chain]}) == "3d"   # cylinder, not a torus
+    assert _view({"structure": "product", "factors": [ring, ring], "view": "3d"}) == "3d"   # override
+
+
+def test_ring_ring_structure_draws_a_torus_not_a_cylinder():
+    # a torus is 4-D; drawn in 3-D it must be a donut (inner+outer radius), not a fixed-radius cylinder
+    from src.code.plot_utils import _structure_graph
+    _, pos = _structure_graph({"structure": "product",
+                               "factors": [{"structure": "ring", "n": 10}, {"structure": "ring", "n": 8}]})
+    assert pos.shape[1] == 3
+    radial = np.hypot(pos[:, 0], pos[:, 1])
+    assert radial.std() / radial.mean() > 0.1        # donut has a range of radii (a cylinder ~ 0)
+    assert np.ptp(pos[:, 2]) > 0                      # and height from the minor circle
+
+
 def test_product_structure_layout_is_order_independent():
     # chain (1-D) x ring (2-D) draws as a 3-D cylinder regardless of factor order — the earlier
     # code padded each factor to 2-D and truncated to 3 columns, dropping the ring's second axis

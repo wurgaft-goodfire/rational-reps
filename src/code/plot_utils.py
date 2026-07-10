@@ -118,12 +118,36 @@ _DEFAULT_VIEW = {"sphere": "3d", "hypercube": "3d", "complete": "3d", "product":
 
 def _view(spec):
     """The presentation view for a structure's geometry: ``spec['view']`` if set (a yaml-able
-    structure kwarg) else the per-structure default — ``"3d"`` for intrinsically-3-D structures
-    (sphere, hypercube, complete, ...), ``"ultrametric"`` for trees, ``"2d"`` otherwise. Values:
-    ``"2d"`` | ``"3d"`` (PCA scatters) | ``"ultrametric"`` | ``"simplex"`` | ``"pca"`` (tree; a 2-D scatter)."""
+    structure kwarg) else the per-structure default — ``"torus"`` for a product of two rings, ``"3d"``
+    for intrinsically-3-D structures (sphere, hypercube, complete, ...), ``"ultrametric"`` for trees,
+    ``"2d"`` otherwise. Values: ``"2d"`` | ``"3d"`` (PCA scatters) | ``"torus"`` (3-D donut) |
+    ``"ultrametric"`` | ``"simplex"`` | ``"pca"`` (tree; a 2-D scatter)."""
     if spec is None:
         return "2d"
-    return spec.get("view") or _DEFAULT_VIEW.get(spec.get("structure"), "2d")
+    if spec.get("view"):
+        return spec["view"]
+    if spec.get("structure") == "product":
+        facs = spec.get("factors", [])
+        if len(facs) == 2 and all(f["structure"] == "ring" for f in facs):
+            return "torus"
+        return "3d"
+    return _DEFAULT_VIEW.get(spec.get("structure"), "2d")
+
+
+def _torus_donut(r, spec):
+    """Map a representation of a ring x ring torus onto the classic 3-D donut: linearly fit ``r`` to
+    the two known ring angles (a linear readout, like the decoder probe), then place each item on the
+    torus surface. A rep that linearly holds the torus lands on a clean donut; a poor one distorts."""
+    facs = spec["factors"]; nA, nB = facs[0]["n"], facs[1]["n"]
+    i = np.repeat(np.arange(nA), nB); j = np.tile(np.arange(nB), nA)          # node = i*nB + j
+    th, ph = 2 * np.pi * i / nA, 2 * np.pi * j / nB
+    C = np.c_[np.cos(th), np.sin(th), np.cos(ph), np.sin(ph)]                 # canonical torus (4-D)
+    rc = np.asarray(r, float); rc = rc - rc.mean(0)
+    F = rc @ np.linalg.lstsq(rc, C, rcond=None)[0]                            # rep -> fitted (cosθ,sinθ,cosφ,sinφ)
+    th2, ph2 = np.arctan2(F[:, 1], F[:, 0]), np.arctan2(F[:, 3], F[:, 2])
+    Rmaj, rmin = 2.0, 0.9
+    return np.c_[(Rmaj + rmin * np.cos(ph2)) * np.cos(th2),
+                 (Rmaj + rmin * np.cos(ph2)) * np.sin(th2), rmin * np.sin(ph2)]
 
 
 def _shape_positions(name, p):
@@ -207,7 +231,18 @@ def _structure_graph(spec):
     if name == "tree":
         return _tree_graph(tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents")))
     if name in ("product", "stack"):
-        subs = [_structure_graph(f) for f in p["factors"]]
+        factors = p["factors"]
+        if name == "product" and len(factors) == 2 and all(f["structure"] == "ring" for f in factors):
+            # a torus is 4-D; draw it as the classic 3-D donut (the two ring angles on the surface),
+            # else a 3-D truncation collapses the minor circle and it reads as a cylinder.
+            nA, nB = factors[0]["n"], factors[1]["n"]
+            i = np.repeat(np.arange(nA), nB); j = np.tile(np.arange(nB), nA)   # node = i*nB + j
+            th, ph = 2 * np.pi * i / nA, 2 * np.pi * j / nB
+            Rmaj, rmin = 2.0, 0.9
+            pos = np.c_[(Rmaj + rmin * np.cos(ph)) * np.cos(th),
+                        (Rmaj + rmin * np.cos(ph)) * np.sin(th), rmin * np.sin(ph)]
+            return structure_adjacency(spec), pos
+        subs = [_structure_graph(f) for f in factors]
         A = structure_adjacency(spec)
         if name == "stack":                                   # lay factor blocks side by side
             blocks, xoff = [], 0.0
@@ -279,9 +314,14 @@ def scatter_geometry(ax, XY, title, cmap=None):
 
 
 def draw_embedding(fig, cell, r, spec, title, cmap=None):
-    """One embedding panel: a 2-D or 3-D PCA scatter per the structure's view (see `_view`). Tree
-    ultrametric/simplex views route separately in the callers."""
-    ndim = 3 if _view(spec) == "3d" else 2
+    """One embedding panel per the structure's view (see `_view`): a 3-D donut for a torus, else a
+    2-D or 3-D PCA scatter. Tree ultrametric/simplex views route separately in the callers."""
+    view = _view(spec)
+    if view == "torus":
+        ax = fig.add_subplot(cell, projection="3d")
+        scatter_geometry(ax, _torus_donut(r, spec), title, cmap)
+        return
+    ndim = 3 if view == "3d" else 2
     ax = fig.add_subplot(cell, projection="3d" if ndim == 3 else None)
     scatter_geometry(ax, _pca(r, ndim), title, cmap)
 
