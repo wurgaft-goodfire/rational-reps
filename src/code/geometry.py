@@ -103,37 +103,49 @@ def spectral_beliefs(B, b1, b_inf, obs):
     return out
 
 
-def hankel_forward_states(g, prefixes, suffixes, rank=None, tol=1e-9):
+def hankel_forward_states(g, prefixes, suffixes, rank=None, tol=1e-9, w=None, nu=None):
     """Spectral (Hankel) predictive-state basis for a PCFG's *string* distribution — the left-to-right
     analogue of ``spectral_hmm`` (which is the length-1 special case). Build the Hankel matrix
     ``H[u,v] = p(string = u·v)`` over prefix set ``prefixes`` and suffix set ``suffixes`` (each a
     sequence of terminal ids), using the exact inside chart. Its rank is the number of distinct
     predictive states; the SVD gives their canonical basis.
 
-    Returns ``(forward_state, info)`` where ``forward_state(w)`` maps any prefix ``w`` to its rank-``r``
+    ``w`` (prefix measure) and ``nu`` (suffix measure) weight the factorization correspondence-analysis
+    style (``√`` on each side of ``H``, as in ``factor_logcond``): the SVD then minimises a
+    ``w ⊗ nu``-weighted least-squares fit of the Hankel, concentrating the basis on the frequent
+    prefixes/suffixes the model's loss actually weights. Both default to uniform ``1/n``; pass
+    empirical frequencies to weight by how often each prefix/suffix occurs (e.g. PCFGs with non-uniform
+    sentence frequencies). The row weight ``w`` shapes which directions are principal but cancels from
+    the forward-state formula; ``nu`` enters the projection.
+
+    Returns ``(forward_state, info)`` where ``forward_state(w)`` maps any prefix to its rank-``r``
     canonical predictive state, and ``info`` holds ``H``, the singular values ``S``, and ``rank``.
     The forward state is the minimal sufficient statistic of the future given the past — i.e. the
     exact left-to-right belief, in the data-determined observable basis (up to rotation)."""
     from .data import pcfg_inside_chart
     _cache = {}
 
-    def sprob(w):
-        w = tuple(w)
-        if len(w) == 0:
+    def sprob(pref):
+        pref = tuple(pref)
+        if len(pref) == 0:
             return 0.0                                               # our grammars emit non-empty strings
-        if w not in _cache:
-            In = pcfg_inside_chart(np.asarray(w, dtype=int), g)
-            _cache[w] = float(g.pi @ In[(0, len(w) - 1)])
-        return _cache[w]
+        if pref not in _cache:
+            In = pcfg_inside_chart(np.asarray(pref, dtype=int), g)
+            _cache[pref] = float(g.pi @ In[(0, len(pref) - 1)])
+        return _cache[pref]
 
     suf = [list(v) for v in suffixes]
     H = np.array([[sprob(list(u) + v) for v in suf] for u in prefixes])
-    U, S, Vt = np.linalg.svd(H, full_matrices=False)
+    nP, nS = H.shape
+    w = np.full(nP, 1.0 / nP) if w is None else np.asarray(w, float) / np.sum(w)      # prefix measure
+    nu = np.full(nS, 1.0 / nS) if nu is None else np.asarray(nu, float) / np.sum(nu)  # suffix measure
+    M = np.sqrt(w)[:, None] * H * np.sqrt(nu)[None, :]              # correspondence-analysis weighting
+    U, S, Vt = np.linalg.svd(M, full_matrices=False)
     r = rank or int((S > tol * S[0]).sum())
-    proj = Vt[:r].T @ np.diag(1.0 / np.sqrt(S[:r]))                 # future-vector -> canonical state
+    proj = (np.sqrt(nu)[:, None] * Vt[:r].T) @ np.diag(1.0 / np.sqrt(S[:r]))   # future -> canonical state
 
-    def forward_state(w):
-        rw = np.array([sprob(list(w) + v) for v in suf])
+    def forward_state(pref):
+        rw = np.array([sprob(list(pref) + v) for v in suf])
         return rw @ proj
 
     return forward_state, {"H": H, "S": S, "rank": r}
