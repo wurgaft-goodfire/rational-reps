@@ -21,6 +21,8 @@ def init_dataset(config, overwrite_data: bool = False):
         return RelationalDataset(config)
     if config.setting == "hmm":
         return HMMDataset(config)
+    if config.setting == "lpcfg":
+        return LPCFGDataset(config)
     raise ValueError(f"Unsupported setting: {config.setting}")
 
 
@@ -367,6 +369,114 @@ class HMMDataset(Dataset):
         return _kl_metrics(eval_pred, return_all)
 
 
+##### Latent-variable PCFG dataset (latent states walk a *tree* + emit terminals) #####
+
+class LPCFGDataset(Dataset):
+    """The tree generalization of the HMM setting: latent states diffuse *down a tree* (branching
+    diffusion) rather than along a chain, and each preterminal emits an observable terminal. The
+    network sees only the flat terminal string; the tree skeleton, latent states, and constituent
+    boundaries are hidden. The Bayes-optimal next-token distribution (``lpcfg_next_token``, the
+    left-to-right prefix parser) and the per-position belief over the next emitter's latent state
+    are the objects the geometry oracle and analysis compare against — the analogue of the HMM's
+    forward algorithm. Sequence-only; identity emissions by default (terminal == leaf state)."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.rng = np.random.default_rng(config.random_seed)
+        self._want_eval_labels = True
+
+        from omegaconf import OmegaConf
+        gk = config.get("grammar_kwargs")
+        grammar_kwargs = OmegaConf.to_container(gk, resolve=True) if gk else {}
+        spec = {"grammar": config.get("grammar"), **grammar_kwargs}
+        self.g = build_grammar(spec)
+        self.m = len(self.g.pi)                                    # latent states
+        self.V = self.g.Em.shape[1]                               # terminal symbols
+        self.max_len = int(config.get("max_len", 24))             # max terminals per sentence
+        self.arity = 1
+
+        self.eos_token = self.V
+        self.start_token = self.V + 1
+        self.pad_token = self.V + 2
+        # outcome classes for the KL metric = terminals + EOS; item_tokens map full-vocab logits down.
+        self.item_tokens = torch.arange(self.V + 1)
+
+        # latent transition as a log-conditional the geometry oracle factors (branching diffusion on a
+        # graph => the graph's own conditional; identity emission => square, no faithfulness caveat).
+        self._L = np.log(self.g.S + 1e-12)
+
+    @property
+    def latent_conditional(self):
+        return self._L
+
+    @property
+    def num_dims(self):
+        return self.V + 1                                          # terminals + EOS
+
+    @property
+    def vocab_size(self):
+        return self.V + 3                                          # terminals + eos + start + pad
+
+    @property
+    def seq_len(self):
+        return self.max_len + 2                                    # start + max_len terminals + eos
+
+    def __len__(self):
+        return 1
+
+    def _batch_size(self):
+        return self.config.training_kwargs["batch_size"]
+
+    def _sample_sentence(self):
+        """Top-down tree sample; rejection to <= max_len terminals. Returns (terminals, leaf_states)."""
+        g = self.g
+        while True:
+            terms, states = [], []
+            ok = [True]
+
+            def rec(h):
+                if len(terms) > self.max_len:
+                    ok[0] = False; return
+                if self.rng.random() < g.p_branch[h]:
+                    rec(int(self.rng.choice(self.m, p=g.S[h])))
+                    rec(int(self.rng.choice(self.m, p=g.Tt[h])))
+                else:
+                    states.append(h); terms.append(int(self.rng.choice(self.V, p=g.Em[h])))
+
+            rec(int(self.rng.choice(self.m, p=g.pi)))
+            if ok[0] and 1 <= len(terms) <= self.max_len:
+                return terms, states
+
+    def __getitem__(self, i=None):
+        B = self._batch_size(); Lin = self.seq_len; Tpred = self.max_len + 1
+        input_ids = np.full((B, Lin), self.pad_token, dtype=np.int64)
+        input_ids[:, 0] = self.start_token
+        eval_labels = np.zeros((B, Tpred, self.num_dims), dtype=np.float32)
+        beliefs = np.zeros((B, Tpred, self.m), dtype=np.float32)   # for analysis (not used by model)
+        states_pad = np.full((B, Tpred), -1, dtype=np.int64)
+        for b in range(B):
+            terms, states = self._sample_sentence(); k = len(terms)
+            input_ids[b, 1:1 + k] = terms
+            input_ids[b, 1 + k] = self.eos_token
+            states_pad[b, :k] = states
+            if self._want_eval_labels:
+                dists, bel = lpcfg_next_token(np.array(terms, dtype=int), self.g)
+                eval_labels[b, :k + 1] = dists                    # rows 0..k = p(next | x[:t])
+                beliefs[b, :k + 1] = bel
+        input_ids = torch.from_numpy(input_ids).to(self.device)
+        labels = input_ids.clone()
+        labels[input_ids == self.pad_token] = -100                # ignore post-EOS padding in the LM loss
+        out = {"input_ids": input_ids, "labels": labels,
+               "eval_labels": torch.from_numpy(eval_labels).to(self.device)}
+        self.last_beliefs = torch.from_numpy(beliefs)             # side-channel for the notebook
+        self.last_states = torch.from_numpy(states_pad)
+        return out
+
+    def compute_metrics(self, eval_pred, return_all=True):
+        return _kl_metrics(eval_pred, return_all)
+
+
 def _kl_metrics(eval_pred, return_all=True):
     """KL(model || true) over the outcome distribution. Handles pointwise (logits (B,C)) and
     sequence (logits (B,T,C)) shapes; for causal sequences drop the final unmatched prediction."""
@@ -381,7 +491,12 @@ def _kl_metrics(eval_pred, return_all=True):
     log_probs = torch.log_softmax(logits, dim=-1)
     with torch.no_grad():
         loss = nn.KLDivLoss(reduction="none")(log_probs, labels).sum(dim=-1)
-        loss = loss.reshape(loss.shape[0], -1)
+        # Positions with an all-zero target row are padding (e.g. post-EOS in the PCFG); average the
+        # KL over valid predictions only, so trivial padded positions don't dilute the Bayes gap.
+        valid = labels.sum(dim=-1) > 0 if labels.ndim == logits.ndim else None
+        if valid is not None and not bool(valid.all()):
+            loss = loss[valid]
+        loss = loss.reshape(loss.shape[0] if loss.ndim else 1, -1)
     results = {"loss": loss.mean().item()}
     if return_all:
         results["all_loss"] = loss.detach().cpu()
@@ -858,3 +973,265 @@ def relation_tensor(spec):
     if name not in _RELATION_BUILDERS:
         raise ValueError(f"Unknown operation {name!r}; known: {sorted(_RELATION_BUILDERS)}")
     return _RELATION_BUILDERS[name](**params)
+
+# =====================================================================================
+# Latent-variable PCFG (L-PCFG): the tree generalization of the HMM setting.
+#
+# One in-terminal S and one preterminal, latent states h in [m]. A node in state h either
+# branches (prob p_branch[h]) into a left child (state ~ S[h]) and a right child (state ~ Tt[h]),
+# or emits a terminal (prob 1 - p_branch[h]) with distribution Em[h]. The HMM is the right-
+# branching special case; here the latent state diffuses *down a tree* instead of along a chain,
+# so two terminals are correlated through their lowest common ancestor (tree distance, not string
+# distance). Everything compiles to one internal parameterization (pi, p_branch, S, Tt, Em) — any
+# named grammar is absorbed into the latent state — so the sampler and the exact oracles never care
+# where the matrices came from. See ``.claude/P12-1024.pdf`` (Cohen et al. 2012).
+# =====================================================================================
+
+LPCFGGrammar = namedtuple("LPCFGGrammar", ["pi", "p_branch", "S", "Tt", "Em"])
+# pi (m,) root-state prior; p_branch (m,) branch-vs-emit prob per state; S/Tt (m,m) left/right child
+# state transitions (row-stochastic); Em (m,V) emission (row-stochastic; identity => terminals ARE
+# leaf states). Subcritical (mean offspring 2*p_branch < 1) so trees terminate a.s.
+
+
+def branching_diffusion_grammar(spec):
+    """Branching diffusion on a graph: latent states = graph nodes, each tree edge is one diffusion
+    step on the graph (the same row-normalized ``exp(graph_conditional)`` the HMM uses as its chain
+    transition, now wired into a tree). Identity emission by default (terminal == leaf state)."""
+    spec = dict(spec)
+    p_branch = spec.pop("p_branch", 0.4)
+    L = graph_conditional({"structure": spec.pop("structure"), **spec})
+    m = len(L)
+    P = np.exp(L); S = P / P.sum(1, keepdims=True)
+    pi = _stationary_dist(S)
+    return LPCFGGrammar(pi=pi, p_branch=np.full(m, float(p_branch)), S=S, Tt=S.copy(), Em=np.eye(m))
+
+
+def _stationary_dist(P, iters=2000):
+    v = np.full(P.shape[0], 1.0 / P.shape[0])
+    for _ in range(iters):
+        v = v @ P
+    return v / v.sum()
+
+
+_GRAMMAR_BUILDERS = {"branching_diffusion": branching_diffusion_grammar}
+
+
+def build_grammar(spec):
+    """Build an ``LPCFGGrammar`` from a spec ``{'grammar': name, **params}``."""
+    spec = dict(spec)
+    name = spec.pop("grammar")
+    if name not in _GRAMMAR_BUILDERS:
+        raise ValueError(f"Unknown grammar {name!r}; known: {sorted(_GRAMMAR_BUILDERS)}")
+    return _GRAMMAR_BUILDERS[name](spec)
+
+
+# ── Exact Bayes oracle: inside chart + left-to-right prefix / next-token (Stolcke-style) ──
+
+def lpcfg_inside_chart(x, g: LPCFGGrammar):
+    """Complete inside probabilities ``In[i,j][h] = p(state-h subtree yields x_i..x_j)`` for a
+    terminal sequence ``x``. Standard CKY over the latent-annotated binary grammar."""
+    e = 1.0 - g.p_branch
+    k = len(x)
+    In = {}
+    for i in range(k):
+        In[(i, i)] = e * g.Em[:, x[i]]
+    for length in range(2, k + 1):
+        for i in range(0, k - length + 1):
+            j = i + length - 1
+            acc = np.zeros(len(g.pi))
+            for split in range(i, j):
+                acc += (g.S @ In[(i, split)]) * (g.Tt @ In[(split + 1, j)])
+            In[(i, j)] = g.p_branch * acc
+    return In
+
+
+def lpcfg_prefix_chart(x, g: LPCFGGrammar, In):
+    """Prefix-inside ``PIn[i,j][h] = p(state-h subtree yields x_i..x_j as a *prefix* of its full
+    yield)``. ``R = (I - diag(p_branch) S)^-1`` resolves the left-spine descent: the prefix may end
+    arbitrarily deep in the left child (complete OR proper prefix, both already inside ``PIn``), with
+    every right sibling unconstrained. The split sum (k < j) handles the prefix continuing past a
+    *completed* left child into the right child."""
+    m = len(g.pi); k = len(x); pb = g.p_branch
+    R = np.linalg.inv(np.eye(m) - (pb[:, None] * g.S))
+    PIn = {}
+    for j in range(k):
+        for i in range(j, -1, -1):
+            acc = np.zeros(m)
+            for split in range(i, j):
+                acc += (g.S @ In[(i, split)]) * (g.Tt @ PIn[(split + 1, j)])
+            rhs = (In[(i, i)] if i == j else 0.0) + pb * acc
+            PIn[(i, j)] = R @ rhs
+    return PIn
+
+
+def lpcfg_next_token(x, g: LPCFGGrammar):
+    """Exact left-to-right Bayes predictions for a terminal sequence ``x`` (length k).
+
+    Returns ``(dists, beliefs)``:
+      - ``dists`` (k+1, V+1): row t = ``p(next | x[:t])`` over the V terminals plus a final EOS
+        column, for every prefix length t = 0..k (t=0 predicts the first terminal from the prior).
+      - ``beliefs`` (k+1, m): row t = ``p(state of the node that emits x_t | x[:t])`` — the fixed-
+        dimensional belief that lands on the latent geometry (the analogue of the HMM forward belief).
+    """
+    m = len(g.pi); V = g.Em.shape[1]; k = len(x); pb = g.p_branch; e = 1.0 - pb
+    R = np.linalg.inv(np.eye(m) - (pb[:, None] * g.S))
+    In = lpcfg_inside_chart(x, g)
+    PIn = lpcfg_prefix_chart(x, g, In) if k else {}
+
+    def _normalize(v):                                              # a distribution, or zeros if the
+        s = v.sum()                                                # prefix cannot continue (next is EOS)
+        return v / s if s > 0 else v
+    dists = np.zeros((k + 1, V + 1))
+    beliefs = np.zeros((k + 1, m))
+    # t = 0: first-emit state distribution from the prior (descend the left spine to the first emit).
+    b0 = g.pi @ (R * e[None, :])                                     # (m,) state of the first emitter
+    beliefs[0] = _normalize(b0)
+    dists[0, :V] = beliefs[0] @ g.Em                                 # no EOS: sentences are non-empty
+    for t in range(1, k + 1):
+        Z = g.pi @ PIn[(0, t - 1)]                                   # prefix probability p(x[:t])
+        eos = g.pi @ In[(0, t - 1)]                                  # prefix is a complete sentence
+        o = _lpcfg_boundary(x, t, g, In, R)                         # prefix-outside boundary vector
+        state = o * e                                                # state of the node emitting x_t
+        dists[t, :V] = (state @ g.Em) / Z
+        dists[t, V] = eos / Z
+        beliefs[t] = _normalize(state)                              # next-emitter posterior (0 if terminal)
+    return dists, beliefs
+
+
+def _lpcfg_boundary(x, t, g: LPCFGGrammar, In, R):
+    """Prefix-outside boundary vector ``o`` at position t: ``p(x[:t] w) = sum_h o[h] e[h] Em[h,w]``.
+    Back-substitutes the linear map ``P_i`` sending the appended symbol's base vector to
+    ``PIn_ext[i,t]`` (the prefix chart of ``x[:t]`` with a hypothetical symbol at index t)."""
+    m = len(g.pi); diag_pb = g.p_branch[:, None]
+    P = {t: R}                                                       # PIn_ext[t,t] = R @ u_w
+    for i in range(t - 1, -1, -1):
+        acc = np.zeros((m, m))
+        for split in range(i, t):
+            acc += (g.S @ In[(i, split)])[:, None] * (g.Tt @ P[split + 1])
+        P[i] = R @ (diag_pb * acc)
+    return g.pi @ P[0]
+
+
+# ── Classic context-free grammars, encoded in the binary-leaf latent-state form ──
+# Both use a single skeletal rule (branch S->S S, or emit a leaf); the counter / stack that a
+# regular chain cannot track is pushed into the latent state h. Transitions are deterministic
+# (one-hot rows, p_branch in {0,1}); the only randomness is the root prior (sentence length / bracket
+# types) and, for Dyck, the choice of the next nested bracket type. Bounded depth => finite trees.
+
+def _grammar_from_rules(states, leaves, rules, root_prior, V, emit):
+    """Assemble an ``LPCFGGrammar`` from named states. ``leaves`` maps a leaf-state name to its
+    terminal id (p_branch=0); ``rules`` maps an internal-state name to ``(left_name, right_name)``
+    or ``{left_name: p}`` distributions ``(left_dist, right_name_or_dist)`` (p_branch=1);
+    ``root_prior`` maps a state name to its prior mass; ``emit`` is unused padding for internals."""
+    idx = {name: i for i, name in enumerate(states)}
+    m = len(states)
+    pi = np.zeros(m); pb = np.zeros(m)
+    S = np.zeros((m, m)); Tt = np.zeros((m, m)); Em = np.full((m, V), 1.0 / V)
+    for name, term in leaves.items():
+        Em[idx[name]] = 0.0; Em[idx[name], term] = 1.0                # deterministic emission
+    for name, (left, right) in rules.items():
+        h = idx[name]; pb[h] = 1.0
+        for child, dist in ((S, left), (Tt, right)):
+            if isinstance(dist, dict):
+                for nm, p in dist.items():
+                    child[h, idx[nm]] += p
+            else:
+                child[h, idx[dist]] = 1.0
+    for name, p in root_prior.items():
+        pi[idx[name]] = p
+    pi /= pi.sum()
+    return LPCFGGrammar(pi=pi, p_branch=pb, S=S, Tt=Tt, Em=Em)
+
+
+def anbn_grammar(spec):
+    """a^n b^n (n ~ uniform on 1..D). Binary parse: S_n -> A (M_{n-1}), M_k -> S_k B, S_1 -> A B.
+    The prefix's sufficient statistic is the count of unmatched a's -> a *line* (chain) geometry
+    over depth, which no finite-state chain can represent."""
+    D = int(dict(spec).get("depth", 8))
+    a, b = 0, 1
+    states = ["A", "B"] + [f"S{n}" for n in range(1, D + 1)] + [f"M{k}" for k in range(1, D)]
+    leaves = {"A": a, "B": b}
+    rules = {"S1": ("A", "B")}
+    for n in range(2, D + 1):
+        rules[f"S{n}"] = ("A", f"M{n - 1}")
+    for k in range(1, D):
+        rules[f"M{k}"] = (f"S{k}", "B")
+    root = {f"S{n}": 1.0 for n in range(1, D + 1)}                    # uniform over lengths
+    return _grammar_from_rules(states, leaves, rules, root, V=2, emit=None)
+
+
+def dyck_grammar(spec):
+    """Bounded-depth nested Dyck-k: strings ``(_i1 (_i2 ... )_i2 )_i1`` up to depth D, each level's
+    bracket type chosen uniformly. The prefix's sufficient statistic is the *stack* of open bracket
+    types -- a node of the depth-D, branching-k tree -> the nested (ultrametric) tree geometry
+    (``tree_conditional(D, k)``). Terminals: open_i = i, close_i = k+i (V = 2k)."""
+    sp = dict(spec); k = int(sp.get("k", 2)); D = int(sp.get("depth", 4))
+    states = [f"Op{i}" for i in range(k)] + [f"Cl{i}" for i in range(k)]
+    leaves = {f"Op{i}": i for i in range(k)} | {f"Cl{i}": k + i for i in range(k)}
+    rules = {}
+
+    def add(stack):                                                  # stack: tuple of bracket types
+        d = len(stack); last = stack[-1]; g = "G" + "".join(map(str, stack))
+        if d == D:
+            rules[g] = (f"Op{last}", f"Cl{last}")                    # innermost: bare pair
+            states.append(g); return
+        body = "B" + "".join(map(str, stack))
+        rules[g] = (f"Op{last}", body)
+        rules[body] = ({f"G{''.join(map(str, stack + (j,)))}": 1.0 / k for j in range(k)}, f"Cl{last}")
+        states.extend([g, body])
+        for j in range(k):
+            add(stack + (j,))
+
+    for i in range(k):
+        add((i,))
+    root = {f"G{i}": 1.0 for i in range(k)}                          # uniform over first bracket type
+    return _grammar_from_rules(states, leaves, rules, root, V=2 * k, emit=None)
+
+
+_GRAMMAR_BUILDERS.update({"anbn": anbn_grammar, "dyck": dyck_grammar})
+
+
+def antbn_grammar(spec):
+    """a^n T b^n (n ~ uniform on 1..D): a^n b^n with an explicit trigger terminal T marking the
+    switch from the opening run to the closing run. S_n -> A (M_{n-1}), M_k -> S_k B, S_0 -> T.
+    Same unmatched-a counter as a^n b^n, but T makes the phase boundary a single observable event."""
+    D = int(dict(spec).get("depth", 8))
+    a, b, trig = 0, 1, 2
+    states = ["A", "B"] + [f"S{n}" for n in range(0, D + 1)] + [f"M{k}" for k in range(0, D)]
+    leaves = {"A": a, "B": b, "S0": trig}                            # S0 is the trigger leaf
+    rules = {}
+    for n in range(1, D + 1):
+        rules[f"S{n}"] = ("A", f"M{n - 1}")
+    for k in range(0, D):
+        rules[f"M{k}"] = (f"S{k}", "B")
+    root = {f"S{n}": 1.0 for n in range(1, D + 1)}                   # uniform over n (>=1)
+    return _grammar_from_rules(states, leaves, rules, root, V=3, emit=None)
+
+
+_GRAMMAR_BUILDERS["antbn"] = antbn_grammar
+
+
+def prefix_arith_grammar(spec):
+    """Prefix (Polish-notation) arithmetic — a tiny programming language of S-expressions:
+    ``E -> op E E`` (an operator applied to two sub-expressions) with prob ``p``, else ``E -> num``.
+    Strings like ``+ * 1 2 3`` (= ``(1*2)+3``). Binary-leaf form: E branches into (Op-leaf, R) and
+    R branches into (E, E); E otherwise emits a number. The left-to-right prefix belief is the
+    *arity debt* — the number of sub-expressions still owed — which does a random walk (op: +1,
+    num: -1) absorbed at 0 (the program is complete). Terminals: operators 0..n_op-1, numbers
+    n_op..n_op+n_num-1 (V = n_op + n_num)."""
+    sp = dict(spec)
+    n_op = int(sp.get("n_op", 2)); n_num = int(sp.get("n_num", 3)); p = float(sp.get("p", 0.4))
+    V = n_op + n_num
+    E, Op, R = 0, 1, 2                                               # latent states
+    pi = np.array([1.0, 0.0, 0.0])                                   # start at an expression E
+    p_branch = np.array([p, 0.0, 1.0])                              # E: apply-op w.p. p else num; R: always
+    S = np.zeros((3, 3)); Tt = np.zeros((3, 3))
+    S[E, Op] = 1.0; Tt[E, R] = 1.0                                   # E -> Op R   (operator, then the rest)
+    S[R, E] = 1.0; Tt[R, E] = 1.0                                    # R -> E E    (two sub-expressions)
+    Em = np.full((3, V), 1.0 / V)
+    Em[E] = 0.0; Em[E, n_op:] = 1.0 / n_num                          # E emits a number
+    Em[Op] = 0.0; Em[Op, :n_op] = 1.0 / n_op                         # Op emits an operator
+    return LPCFGGrammar(pi=pi, p_branch=p_branch, S=S, Tt=Tt, Em=Em)
+
+
+_GRAMMAR_BUILDERS["prefix_arith"] = prefix_arith_grammar

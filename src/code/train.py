@@ -116,6 +116,11 @@ def train(config):
     )
     trainer.add_callback(metrics_callback)
 
+    # Eval batches (with their expensive Bayes targets) are sampled once at evaluator construction
+    # above; the training dataloader doesn't use eval_labels, so skip computing them every step.
+    if hasattr(dataset, "_want_eval_labels"):
+        dataset._want_eval_labels = False
+
     trainer.train()
 
     if config.cfg.wandb.enabled:

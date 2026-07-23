@@ -101,3 +101,61 @@ def spectral_beliefs(B, b1, b_inf, obs):
             st = B[obs[r, t]] @ st; st = st / (b_inf @ st)
             out[r, t] = st
     return out
+
+
+def spectral_lpcfg(g):
+    """Spectral learning of a single-nonterminal latent-variable PCFG (Cohen et al. 2012), from the
+    grammar's *exact* observable moments — the tree analogue of ``spectral_hmm``.
+
+    The observable features are: inside tree -> its first terminal (``I[x,h] = p(first terminal x |
+    state h)``); outside tree -> the terminal following the span, plus an END marker (``J``, solved
+    from an exact outside linear system). ``Ω = I diag(γ) Jᵀ`` (Lemma 1); its top-``m`` left singular
+    vectors ``U`` fix the *data-determined* observable basis ``G = Uᵀ I``. The returned observable
+    operators (Theorem 2) drive the tensor inside algorithm (``spectral_inside``); by Lemma 2 the
+    inside vectors it computes equal the true inside terms up to the single invertible map ``G⁻¹`` —
+    so the representation is pinned to the observable basis, not an arbitrary latent parameterization.
+
+    Returns a dict with ``C`` (rule operator, a function ``y -> (m,m)``), ``c_inf`` (a function
+    ``terminal -> (m,)``), ``c1`` (root, ``(m,)``), and ``G`` (the observable basis map, for tests).
+    Requires the first-terminal feature to have rank ``m`` (holds when the alphabet is at least as
+    expressive as the state space, e.g. identity emissions with ``V = m``)."""
+    pi = np.asarray(g.pi, float); pb = np.asarray(g.p_branch, float); e = 1.0 - pb
+    S = np.asarray(g.S, float); Tt = np.asarray(g.Tt, float); Em = np.asarray(g.Em, float)
+    m = len(pi); V = Em.shape[1]
+    R = np.linalg.inv(np.eye(m) - pb[:, None] * S)                   # left-spine descent resolvent
+    LT = R @ (e[:, None] * Em)                                       # (m,V)  LT[h,x]=p(first terminal x|h)
+    I = LT.T                                                         # (V,m)  inside features
+    n = pi @ np.linalg.inv(np.eye(m) - pb[:, None] * (S + Tt))       # expected #nodes per state
+    gamma = n / n.sum()                                             # state dist at a random node
+    # outside feature J[:,h] = dist of the terminal following a state-h node (+ END at index V):
+    # a node is a left child (following = right sibling's first terminal), a right child (following =
+    # parent's following terminal — a fixed point), or the root (END). Weighted by expected counts.
+    W_R = (n * pb)[:, None] * Tt                                     # right-child edge weights
+    W_L = (n * pb)[:, None] * S                                      # left-child edge weights
+    Src = np.zeros((V + 1, m))
+    Src[:V, :] = (Tt @ LT).T @ W_L                                   # left child -> sibling first terminal
+    Src[V, :] = pi                                                   # root -> END
+    J = Src @ np.linalg.inv(np.diag(n) - W_R)                        # (V+1,m)
+    Omega = I @ (gamma[:, None] * J.T)                              # (V,V+1) = I diag(γ) Jᵀ
+    U = np.linalg.svd(Omega, full_matrices=False)[0][:, :m]          # observable subspace (rank m)
+    G = U.T @ I                                                     # (m,m) invertible basis map
+    Ginv = np.linalg.inv(G); GTtT = G @ Tt.T
+    def C(y):                                                       # observable rule operator (Thm 2)
+        d = (y @ G) @ S.T
+        return GTtT @ ((d * pb)[:, None] * Ginv)
+    def c_inf(x):                                                   # observable emission operator
+        return (e * Em[:, x]) @ Ginv
+    return {"C": C, "c_inf": c_inf, "c1": G @ pi, "G": G}
+
+
+def spectral_inside(ops, tree):
+    """Tensor inside algorithm (Cohen et al. Fig 2) on a skeletal ``tree`` (no latent states):
+    a leaf is ``("leaf", terminal)``, an internal node ``("node", left, right)``. Returns
+    ``(f_root, p)``: the root spectral inside vector (= true inside up to ``G⁻¹``) and ``p(tree)``."""
+    C, c_inf = ops["C"], ops["c_inf"]
+    def f(t):
+        if t[0] == "leaf":
+            return c_inf(t[1])
+        return f(t[2]) @ C(f(t[1]))                                  # f_i = f_right · C(f_left)
+    fr = f(tree)
+    return fr, float(fr @ ops["c1"])

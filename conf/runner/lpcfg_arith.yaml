@@ -1,0 +1,21 @@
+# @package _global_
+# Prefix (Polish-notation) arithmetic: a tiny language of S-expressions, E -> op E E | num.
+# The belief is the arity debt (sub-expressions still owed) — a random walk absorbed at 0.
+#   python -m src.code.train runner=lpcfg_arith
+defaults:
+  - override /setting: lpcfg
+  - override /model: transformer
+  - override /train: default
+  - _self_
+name: lpcfg_arith
+output_dir: ${run_dir}/checkpoints
+sample_mode: sequence
+grammar: prefix_arith
+grammar_kwargs:
+  n_op: 2                  # operators  (+ *)
+  n_num: 3                 # numbers    (1 2 3)
+  p: 0.3                   # P(apply an operator) — subcritical so programs terminate
+max_len: 32
+model_kwargs:
+  model_config: {hidden_size: 128, num_hidden_layers: 4, num_attention_heads: 4, intermediate_size: 512}
+training_kwargs: {learning_rate: 0.001, train_steps: 8000, context_length: 40}

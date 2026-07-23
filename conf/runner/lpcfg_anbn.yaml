@@ -1,0 +1,18 @@
+# @package _global_
+# a^n b^n: the prefix's sufficient statistic is the count of unmatched a's -> a line (chain) geometry
+# that no finite-state chain can track. python -m src.code.train runner=lpcfg_anbn
+defaults:
+  - override /setting: lpcfg
+  - override /model: transformer
+  - override /train: default
+  - _self_
+name: lpcfg_anbn
+output_dir: ${run_dir}/checkpoints
+sample_mode: sequence
+grammar: anbn
+grammar_kwargs:
+  depth: 8                 # n ~ uniform 1..8 => sentences up to a^8 b^8
+max_len: 16
+model_kwargs:
+  model_config: {hidden_size: 128, num_hidden_layers: 4, num_attention_heads: 4, intermediate_size: 512}
+training_kwargs: {learning_rate: 0.001, train_steps: 12000, context_length: 40}
