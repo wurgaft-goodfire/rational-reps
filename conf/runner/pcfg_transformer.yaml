@@ -1,14 +1,14 @@
 # @package _global_
-# L-PCFG experiment: a transformer parses the latent tree left-to-right. Belief tracking here needs
+# PCFG experiment: a transformer parses the latent tree left-to-right. Belief tracking here needs
 # depth (a 1-layer transformer cannot parse); sized deeper than the HMM preset.
-#   python -m src.code.train runner=lpcfg_transformer
+#   python -m src.code.train runner=pcfg_transformer
 defaults:
-  - override /setting: lpcfg
+  - override /setting: pcfg
   - override /model: transformer
   - override /train: default
   - _self_
 
-name: lpcfg_transformer
+name: pcfg_transformer
 output_dir: ${run_dir}/checkpoints
 sample_mode: sequence
 model_kwargs:

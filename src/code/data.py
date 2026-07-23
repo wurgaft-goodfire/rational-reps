@@ -21,8 +21,8 @@ def init_dataset(config, overwrite_data: bool = False):
         return RelationalDataset(config)
     if config.setting == "hmm":
         return HMMDataset(config)
-    if config.setting == "lpcfg":
-        return LPCFGDataset(config)
+    if config.setting == "pcfg":
+        return PCFGDataset(config)
     raise ValueError(f"Unsupported setting: {config.setting}")
 
 
@@ -369,13 +369,13 @@ class HMMDataset(Dataset):
         return _kl_metrics(eval_pred, return_all)
 
 
-##### Latent-variable PCFG dataset (latent states walk a *tree* + emit terminals) #####
+##### PCFG dataset (latent states walk a *tree* + emit terminals) #####
 
-class LPCFGDataset(Dataset):
+class PCFGDataset(Dataset):
     """The tree generalization of the HMM setting: latent states diffuse *down a tree* (branching
     diffusion) rather than along a chain, and each preterminal emits an observable terminal. The
     network sees only the flat terminal string; the tree skeleton, latent states, and constituent
-    boundaries are hidden. The Bayes-optimal next-token distribution (``lpcfg_next_token``, the
+    boundaries are hidden. The Bayes-optimal next-token distribution (``pcfg_next_token``, the
     left-to-right prefix parser) and the per-position belief over the next emitter's latent state
     are the objects the geometry oracle and analysis compare against — the analogue of the HMM's
     forward algorithm. Sequence-only; identity emissions by default (terminal == leaf state)."""
@@ -461,7 +461,7 @@ class LPCFGDataset(Dataset):
             input_ids[b, 1 + k] = self.eos_token
             states_pad[b, :k] = states
             if self._want_eval_labels:
-                dists, bel = lpcfg_next_token(np.array(terms, dtype=int), self.g)
+                dists, bel = pcfg_next_token(np.array(terms, dtype=int), self.g)
                 eval_labels[b, :k + 1] = dists                    # rows 0..k = p(next | x[:t])
                 beliefs[b, :k + 1] = bel
         input_ids = torch.from_numpy(input_ids).to(self.device)
@@ -975,7 +975,7 @@ def relation_tensor(spec):
     return _RELATION_BUILDERS[name](**params)
 
 # =====================================================================================
-# Latent-variable PCFG (L-PCFG): the tree generalization of the HMM setting.
+# PCFG (PCFG): the tree generalization of the HMM setting.
 #
 # One in-terminal S and one preterminal, latent states h in [m]. A node in state h either
 # branches (prob p_branch[h]) into a left child (state ~ S[h]) and a right child (state ~ Tt[h]),
@@ -987,7 +987,7 @@ def relation_tensor(spec):
 # where the matrices came from. See ``.claude/P12-1024.pdf`` (Cohen et al. 2012).
 # =====================================================================================
 
-LPCFGGrammar = namedtuple("LPCFGGrammar", ["pi", "p_branch", "S", "Tt", "Em"])
+PCFGGrammar = namedtuple("PCFGGrammar", ["pi", "p_branch", "S", "Tt", "Em"])
 # pi (m,) root-state prior; p_branch (m,) branch-vs-emit prob per state; S/Tt (m,m) left/right child
 # state transitions (row-stochastic); Em (m,V) emission (row-stochastic; identity => terminals ARE
 # leaf states). Subcritical (mean offspring 2*p_branch < 1) so trees terminate a.s.
@@ -1003,7 +1003,7 @@ def branching_diffusion_grammar(spec):
     m = len(L)
     P = np.exp(L); S = P / P.sum(1, keepdims=True)
     pi = _stationary_dist(S)
-    return LPCFGGrammar(pi=pi, p_branch=np.full(m, float(p_branch)), S=S, Tt=S.copy(), Em=np.eye(m))
+    return PCFGGrammar(pi=pi, p_branch=np.full(m, float(p_branch)), S=S, Tt=S.copy(), Em=np.eye(m))
 
 
 def _stationary_dist(P, iters=2000):
@@ -1017,7 +1017,7 @@ _GRAMMAR_BUILDERS = {"branching_diffusion": branching_diffusion_grammar}
 
 
 def build_grammar(spec):
-    """Build an ``LPCFGGrammar`` from a spec ``{'grammar': name, **params}``."""
+    """Build an ``PCFGGrammar`` from a spec ``{'grammar': name, **params}``."""
     spec = dict(spec)
     name = spec.pop("grammar")
     if name not in _GRAMMAR_BUILDERS:
@@ -1027,7 +1027,7 @@ def build_grammar(spec):
 
 # ── Exact Bayes oracle: inside chart + left-to-right prefix / next-token (Stolcke-style) ──
 
-def lpcfg_inside_chart(x, g: LPCFGGrammar):
+def pcfg_inside_chart(x, g: PCFGGrammar):
     """Complete inside probabilities ``In[i,j][h] = p(state-h subtree yields x_i..x_j)`` for a
     terminal sequence ``x``. Standard CKY over the latent-annotated binary grammar."""
     e = 1.0 - g.p_branch
@@ -1045,7 +1045,7 @@ def lpcfg_inside_chart(x, g: LPCFGGrammar):
     return In
 
 
-def lpcfg_prefix_chart(x, g: LPCFGGrammar, In):
+def pcfg_prefix_chart(x, g: PCFGGrammar, In):
     """Prefix-inside ``PIn[i,j][h] = p(state-h subtree yields x_i..x_j as a *prefix* of its full
     yield)``. ``R = (I - diag(p_branch) S)^-1`` resolves the left-spine descent: the prefix may end
     arbitrarily deep in the left child (complete OR proper prefix, both already inside ``PIn``), with
@@ -1064,7 +1064,7 @@ def lpcfg_prefix_chart(x, g: LPCFGGrammar, In):
     return PIn
 
 
-def lpcfg_next_token(x, g: LPCFGGrammar):
+def pcfg_next_token(x, g: PCFGGrammar):
     """Exact left-to-right Bayes predictions for a terminal sequence ``x`` (length k).
 
     Returns ``(dists, beliefs)``:
@@ -1075,8 +1075,8 @@ def lpcfg_next_token(x, g: LPCFGGrammar):
     """
     m = len(g.pi); V = g.Em.shape[1]; k = len(x); pb = g.p_branch; e = 1.0 - pb
     R = np.linalg.inv(np.eye(m) - (pb[:, None] * g.S))
-    In = lpcfg_inside_chart(x, g)
-    PIn = lpcfg_prefix_chart(x, g, In) if k else {}
+    In = pcfg_inside_chart(x, g)
+    PIn = pcfg_prefix_chart(x, g, In) if k else {}
 
     def _normalize(v):                                              # a distribution, or zeros if the
         s = v.sum()                                                # prefix cannot continue (next is EOS)
@@ -1090,7 +1090,7 @@ def lpcfg_next_token(x, g: LPCFGGrammar):
     for t in range(1, k + 1):
         Z = g.pi @ PIn[(0, t - 1)]                                   # prefix probability p(x[:t])
         eos = g.pi @ In[(0, t - 1)]                                  # prefix is a complete sentence
-        o = _lpcfg_boundary(x, t, g, In, R)                         # prefix-outside boundary vector
+        o = _pcfg_boundary(x, t, g, In, R)                         # prefix-outside boundary vector
         state = o * e                                                # state of the node emitting x_t
         dists[t, :V] = (state @ g.Em) / Z
         dists[t, V] = eos / Z
@@ -1098,7 +1098,7 @@ def lpcfg_next_token(x, g: LPCFGGrammar):
     return dists, beliefs
 
 
-def _lpcfg_boundary(x, t, g: LPCFGGrammar, In, R):
+def _pcfg_boundary(x, t, g: PCFGGrammar, In, R):
     """Prefix-outside boundary vector ``o`` at position t: ``p(x[:t] w) = sum_h o[h] e[h] Em[h,w]``.
     Back-substitutes the linear map ``P_i`` sending the appended symbol's base vector to
     ``PIn_ext[i,t]`` (the prefix chart of ``x[:t]`` with a hypothetical symbol at index t)."""
@@ -1119,7 +1119,7 @@ def _lpcfg_boundary(x, t, g: LPCFGGrammar, In, R):
 # types) and, for Dyck, the choice of the next nested bracket type. Bounded depth => finite trees.
 
 def _grammar_from_rules(states, leaves, rules, root_prior, V, emit):
-    """Assemble an ``LPCFGGrammar`` from named states. ``leaves`` maps a leaf-state name to its
+    """Assemble an ``PCFGGrammar`` from named states. ``leaves`` maps a leaf-state name to its
     terminal id (p_branch=0); ``rules`` maps an internal-state name to ``(left_name, right_name)``
     or ``{left_name: p}`` distributions ``(left_dist, right_name_or_dist)`` (p_branch=1);
     ``root_prior`` maps a state name to its prior mass; ``emit`` is unused padding for internals."""
@@ -1140,7 +1140,7 @@ def _grammar_from_rules(states, leaves, rules, root_prior, V, emit):
     for name, p in root_prior.items():
         pi[idx[name]] = p
     pi /= pi.sum()
-    return LPCFGGrammar(pi=pi, p_branch=pb, S=S, Tt=Tt, Em=Em)
+    return PCFGGrammar(pi=pi, p_branch=pb, S=S, Tt=Tt, Em=Em)
 
 
 def anbn_grammar(spec):
@@ -1231,7 +1231,7 @@ def prefix_arith_grammar(spec):
     Em = np.full((3, V), 1.0 / V)
     Em[E] = 0.0; Em[E, n_op:] = 1.0 / n_num                          # E emits a number
     Em[Op] = 0.0; Em[Op, :n_op] = 1.0 / n_op                         # Op emits an operator
-    return LPCFGGrammar(pi=pi, p_branch=p_branch, S=S, Tt=Tt, Em=Em)
+    return PCFGGrammar(pi=pi, p_branch=p_branch, S=S, Tt=Tt, Em=Em)
 
 
 _GRAMMAR_BUILDERS["prefix_arith"] = prefix_arith_grammar

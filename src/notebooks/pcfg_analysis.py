@@ -13,12 +13,12 @@
 # ---
 
 # %% [markdown]
-# # Latent-variable PCFG: the belief lives on the latent tree geometry
+# # PCFG: the belief lives on the latent tree geometry
 #
 # The tree generalization of the HMM notebook. Latent states diffuse *down a tree* (branching
 # diffusion on a ring); each leaf emits an observable terminal. The transformer sees only the flat
 # string and must parse it left-to-right. The Bayes-optimal per-position belief — the distribution
-# over the latent state that emits the *next* terminal (`lpcfg_next_token`, the left-to-right prefix
+# over the latent state that emits the *next* terminal (`pcfg_next_token`, the left-to-right prefix
 # parser) — lives on the same predicted ring geometry, but its trajectory now reflects the parse:
 # it drifts locally inside a constituent and *jumps* at constituent boundaries (a stack pop).
 
@@ -29,7 +29,7 @@ import numpy as np, torch
 ROOT = Path(sys.prefix).parent
 os.chdir(ROOT); sys.path.insert(0, str(ROOT))
 from src.code.geometry import predicted_geometry
-from src.code.data import lpcfg_next_token
+from src.code.data import pcfg_next_token
 from src.code.eval import cka, cca, rsa
 from src.code.train import train_inline
 from src.code import plot_utils
@@ -41,7 +41,7 @@ import matplotlib.pyplot as plt
 
 # %%
 model, ds, ev, hist, config = train_inline(
-    ['runner=lpcfg_transformer', 'name=lpcfg_smoke', 'training_kwargs.train_steps=2500',
+    ['runner=pcfg_transformer', 'name=pcfg_smoke', 'training_kwargs.train_steps=2500',
      'wandb.enabled=false', 'eval_kwargs.output_hidden_states=true'])
 m = ds.m
 E_lat = predicted_geometry(ds.latent_conditional)                      # predicted latent ring
@@ -53,7 +53,7 @@ maxk = max(len(s) for s in seqs)
 dists = np.zeros((B, maxk + 1, ds.num_dims)); beliefs = np.zeros((B, maxk + 1, m))
 lens = np.array([len(s) for s in seqs])
 for b, s in enumerate(seqs):
-    d, be = lpcfg_next_token(np.array(s, dtype=int), ds.g)
+    d, be = pcfg_next_token(np.array(s, dtype=int), ds.g)
     dists[b, :len(s) + 1] = d; beliefs[b, :len(s) + 1] = be
 
 # Build the token stream fed to the model, and read hidden states at the terminal positions.

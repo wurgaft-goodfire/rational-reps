@@ -1,13 +1,13 @@
 # @package _global_
 # Prefix (Polish-notation) arithmetic: a tiny language of S-expressions, E -> op E E | num.
 # The belief is the arity debt (sub-expressions still owed) — a random walk absorbed at 0.
-#   python -m src.code.train runner=lpcfg_arith
+#   python -m src.code.train runner=pcfg_arith
 defaults:
-  - override /setting: lpcfg
+  - override /setting: pcfg
   - override /model: transformer
   - override /train: default
   - _self_
-name: lpcfg_arith
+name: pcfg_arith
 output_dir: ${run_dir}/checkpoints
 sample_mode: sequence
 grammar: prefix_arith

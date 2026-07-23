@@ -1,13 +1,13 @@
 # @package _global_
 # Bounded-depth nested Dyck-k: the prefix's sufficient statistic is the stack of open bracket types
 # -- a node of the depth-D branching-k tree -> the nested (ultrametric) tree geometry.
-#   python -m src.code.train runner=lpcfg_dyck
+#   python -m src.code.train runner=pcfg_dyck
 defaults:
-  - override /setting: lpcfg
+  - override /setting: pcfg
   - override /model: transformer
   - override /train: default
   - _self_
-name: lpcfg_dyck
+name: pcfg_dyck
 output_dir: ${run_dir}/checkpoints
 sample_mode: sequence
 grammar: dyck

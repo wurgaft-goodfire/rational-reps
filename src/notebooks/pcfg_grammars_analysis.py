@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np, torch
 ROOT = Path(sys.prefix).parent
 os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-from src.code.data import lpcfg_next_token, tree_adjacency, walk_cooccur, logcond_from_sim
+from src.code.data import pcfg_next_token, tree_adjacency, walk_cooccur, logcond_from_sim
 from src.code.geometry import predicted_geometry
 from src.code.eval import cka, cca, rsa
 from src.code.train import train_inline
@@ -44,7 +44,7 @@ def load_and_probe(runner, name, key_fn):
     kid = {k: i for i, k in enumerate(keys)}
     H, B1hot, KEYS, SEQIDX, TT, kls, kl_marg_rows = [], [], [], [], [], [], []
     for b, s in enumerate(seqs):
-        d, _ = lpcfg_next_token(np.array(s, dtype=int), ds.g)
+        d, _ = pcfg_next_token(np.array(s, dtype=int), ds.g)
         for t in range(len(s) + 1):
             H.append(out['hidden_states'][-1][b, t].cpu().numpy())
             oneh = np.zeros(len(keys)); oneh[kid[key_fn(s[:t])]] = 1.0
@@ -125,7 +125,7 @@ def phase_colors(r, trigger=None):
 def anbn_key(prefix):                                               # exact belief = (phase, count)
     count = sum(1 for t in prefix if t == 0) - sum(1 for t in prefix if t == 1)
     return (1 if any(t == 1 for t in prefix) else 0, count)         # phase 1 once a b has appeared
-r = load_and_probe('lpcfg_anbn', 'lpcfg_anbn', anbn_key)
+r = load_and_probe('pcfg_anbn', 'pcfg_anbn', anbn_key)
 belief_vs_model(r, 'a^n b^n: hidden = belief trajectory up to a linear map', "anbn_belief_cca",
                 color=phase_colors(r, trigger=None), cmap='coolwarm', color_desc='phase',
                 legend=['opening (a-run)', 'closing (b-run)'])
@@ -138,7 +138,7 @@ belief_vs_model(r, 'a^n b^n: hidden = belief trajectory up to a linear map', "an
 def antbn_key(prefix):                                              # exact belief = (phase, count)
     count = sum(1 for t in prefix if t == 0) - sum(1 for t in prefix if t == 1)
     return (1 if any(t == 2 for t in prefix) else 0, count)         # phase 1 once T has appeared
-r = load_and_probe('lpcfg_antbn', 'lpcfg_antbn', antbn_key)
+r = load_and_probe('pcfg_antbn', 'pcfg_antbn', antbn_key)
 belief_vs_model(r, 'a^n T b^n: one belief trajectory, hidden = belief up to a linear map',
                 "antbn_belief_cca", color=phase_colors(r, trigger=2), cmap='viridis',
                 color_desc='phase', single_traj=True,
@@ -153,5 +153,5 @@ def dyck_key(prefix):
     for t in prefix:
         st.append(t) if t < K else st.pop()
     return tuple(st)
-r = load_and_probe('lpcfg_dyck', 'lpcfg_dyck', dyck_key)
+r = load_and_probe('pcfg_dyck', 'pcfg_dyck', dyck_key)
 belief_vs_model(r, f'Dyck-{K}: hidden = stack belief trajectory up to a linear map', "dyck_belief_cca")

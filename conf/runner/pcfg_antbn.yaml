@@ -1,13 +1,13 @@
 # @package _global_
 # a^n T b^n: a^n b^n with an explicit trigger terminal T at the phase boundary. The unmatched-a
 # counter is the belief; T makes the switch from opening to closing a single observable event.
-#   python -m src.code.train runner=lpcfg_antbn
+#   python -m src.code.train runner=pcfg_antbn
 defaults:
-  - override /setting: lpcfg
+  - override /setting: pcfg
   - override /model: transformer
   - override /train: default
   - _self_
-name: lpcfg_antbn
+name: pcfg_antbn
 output_dir: ${run_dir}/checkpoints
 sample_mode: sequence
 grammar: antbn
