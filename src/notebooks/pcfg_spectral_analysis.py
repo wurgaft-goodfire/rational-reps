@@ -126,3 +126,60 @@ r_antbn = analyze(["runner=pcfg_antbn", "grammar_kwargs.depth=6", "max_len=14",
 print(f"{'grammar':16s} {'rank':>5s} {'KL':>8s} {'CCA':>6s} {'CKA_spec':>9s} {'CKA_raw':>8s}")
 for nm, r in [("dyck", r_dyck), ("anbn", r_anbn), ("antbn", r_antbn)]:
     print(f"{nm:16s} {r['rank']:5d} {r['kl']:8.4f} {r['cca']:6.3f} {r['cka_spec']:9.3f} {r['cka_raw']:8.3f}")
+
+
+# %% [markdown]
+# ## What differs: same info (CCA=1), different variance geometry
+# CCA=1 but CKA is low because the transformer and the spectral SVD spread their variance over the
+# shared predictive-state subspace differently. Left/middle: the states in each representation's own
+# top-2 PCA (not aligned). Right: the variance spectrum — the spectral basis is balanced across all
+# predictive states, the transformer concentrates variance in a few directions (a compressed,
+# magnitude-dominated code). A rotation cannot fix a variance rescaling, so the rotational match is
+# near zero even though the information is identical.
+# %%
+from scipy.linalg import orthogonal_procrustes
+
+def geometry_diagnostic(overrides, name, label_fn, label_name, cmap="viridis"):
+    model, ds, ev, hist, config = train_inline(
+        list(overrides) + [f"name={name}", "wandb.enabled=false", "eval_kwargs.output_hidden_states=true"])
+    seqs = [ds._sample_sentence()[0] for _ in range(250)]
+    ids = np.full((len(seqs), ds.seq_len), ds.pad_token); ids[:, 0] = ds.start_token
+    for b, s in enumerate(seqs):
+        ids[b, 1:1 + len(s)] = s; ids[b, 1 + len(s)] = ds.eos_token
+    ids = torch.tensor(ids, dtype=torch.long, device=ds.device)
+    with torch.no_grad():
+        out = model(ids, output_hidden_states=True)
+    H, hists, labels = [], [], []
+    for b, s in enumerate(seqs):
+        for t in range(len(s) + 1):
+            H.append(out["hidden_states"][-1][b, t].cpu().numpy()); hists.append(tuple(s[:t]))
+            labels.append(label_fn(s[:t]))
+    H = np.array(H); labels = np.array(labels)
+    P = [u for u, _ in Counter(hists).most_common(120)]
+    S = [v for v, _ in Counter(tuple(s[t:]) for s in seqs for t in range(len(s) + 1)).most_common(120)]
+    fwd, info = hankel_forward_states(ds.g, P, S); F = np.array([fwd(h) for h in hists]); r = info["rank"]
+
+    def unit(X): Xc = X - X.mean(0); return Xc / np.linalg.norm(Xc)
+    def top(X, k): return (X - X.mean(0)) @ np.linalg.svd(X - X.mean(0), full_matrices=False)[2][:k].T
+    Hr, Fr = unit(top(H, r)), unit(top(F, r))
+    R, _ = orthogonal_procrustes(Hr, Fr)
+    r2_rot = 1 - np.linalg.norm(Hr @ R - Fr) ** 2 / np.linalg.norm(Fr) ** 2
+    svF = np.linalg.svd(F - F.mean(0), compute_uv=False)[:r]; svF /= svF.sum()
+    svH = np.linalg.svd(H - H.mean(0), compute_uv=False)[:r]; svH /= svH.sum()
+    print(f"[{name}] rank={r}  CCA={cca(H, F):.3f}  CKA={cka(H, F):.3f}  rotation-align R2={r2_rot:.3f}")
+
+    fig, ax = plt.subplots(1, 3, figsize=(14, 4.4))
+    for a, (C, ttl) in zip(ax[:2], [(top(F, 2), "spectral (own PCA)"), (top(H, 2), "transformer (own PCA)")]):
+        sc = a.scatter(C[:, 0], C[:, 1], c=labels, cmap=cmap, s=16, alpha=0.6)
+        a.set_aspect("equal"); plot_utils.FIG.clean(a); a.set_title(ttl)
+    ax[2].plot(range(1, r + 1), svF, "-o", ms=4, label="spectral")
+    ax[2].plot(range(1, r + 1), svH, "-s", ms=4, label="transformer")
+    ax[2].set_xlabel("component"); ax[2].set_ylabel("variance fraction")
+    ax[2].set_title("variance spectrum"); ax[2].legend(frameon=False); plot_utils.FIG.style_axes(ax[2])
+    fig.colorbar(sc, ax=ax[:2], fraction=0.02, pad=0.02, label=label_name)
+    fig.suptitle(f"{name}: same info (CCA={cca(H, F):.2f}) but different variance geometry "
+                 f"(CKA={cka(H, F):.2f}, rotation-R2={r2_rot:.2f})", y=1.02)
+    plot_utils.save_figure(fig, plot_utils.figure_path(config, "spectral_vs_transformer_geometry"))
+
+geometry_diagnostic(["runner=pcfg_antbn", "grammar_kwargs.depth=6", "max_len=14",
+                     "training_kwargs.train_steps=6000"], "pcfg_antbn_d6", anbn_count, "unmatched a")
