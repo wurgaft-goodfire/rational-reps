@@ -101,3 +101,39 @@ def spectral_beliefs(B, b1, b_inf, obs):
             st = B[obs[r, t]] @ st; st = st / (b_inf @ st)
             out[r, t] = st
     return out
+
+
+def hankel_forward_states(g, prefixes, suffixes, rank=None, tol=1e-9):
+    """Spectral (Hankel) predictive-state basis for a PCFG's *string* distribution — the left-to-right
+    analogue of ``spectral_hmm`` (which is the length-1 special case). Build the Hankel matrix
+    ``H[u,v] = p(string = u·v)`` over prefix set ``prefixes`` and suffix set ``suffixes`` (each a
+    sequence of terminal ids), using the exact inside chart. Its rank is the number of distinct
+    predictive states; the SVD gives their canonical basis.
+
+    Returns ``(forward_state, info)`` where ``forward_state(w)`` maps any prefix ``w`` to its rank-``r``
+    canonical predictive state, and ``info`` holds ``H``, the singular values ``S``, and ``rank``.
+    The forward state is the minimal sufficient statistic of the future given the past — i.e. the
+    exact left-to-right belief, in the data-determined observable basis (up to rotation)."""
+    from .data import pcfg_inside_chart
+    _cache = {}
+
+    def sprob(w):
+        w = tuple(w)
+        if len(w) == 0:
+            return 0.0                                               # our grammars emit non-empty strings
+        if w not in _cache:
+            In = pcfg_inside_chart(np.asarray(w, dtype=int), g)
+            _cache[w] = float(g.pi @ In[(0, len(w) - 1)])
+        return _cache[w]
+
+    suf = [list(v) for v in suffixes]
+    H = np.array([[sprob(list(u) + v) for v in suf] for u in prefixes])
+    U, S, Vt = np.linalg.svd(H, full_matrices=False)
+    r = rank or int((S > tol * S[0]).sum())
+    proj = Vt[:r].T @ np.diag(1.0 / np.sqrt(S[:r]))                 # future-vector -> canonical state
+
+    def forward_state(w):
+        rw = np.array([sprob(list(w) + v) for v in suf])
+        return rw @ proj
+
+    return forward_state, {"H": H, "S": S, "rank": r}

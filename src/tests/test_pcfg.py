@@ -227,6 +227,25 @@ def test_anbn_known_closed_form_values():
     assert np.isclose(g.pi @ In[(0, 1)], 1.0 / D)
 
 
+# ── Hankel predictive-state basis (string-level spectral) ───────────────────
+def test_hankel_forward_state_is_the_sufficient_statistic():
+    """The Hankel forward state (SVD of ``H[u,v]=p(uv)``) is the minimal sufficient statistic of the
+    future: it has finite rank, and the exact next-token distribution is a *linear* function of it."""
+    from src.code.geometry import hankel_forward_states
+    g = build_grammar({"grammar": "dyck", "k": 2, "depth": 3}); srng = np.random.default_rng(0)
+    seqs = [_sample(g, srng) for _ in range(300)]
+    P = sorted({tuple(s[:t]) for s in seqs for t in range(len(s) + 1)})
+    Suf = sorted({tuple(s[t:]) for s in seqs for t in range(len(s) + 1)})
+    fwd, info = hankel_forward_states(g, P, Suf)
+    assert 1 < info["rank"] < len(P)                         # finite, non-trivial predictive rank
+    hists = [tuple(s[:t]) for s in seqs[:60] for t in range(len(s) + 1)]
+    F = np.array([fwd(h) for h in hists])
+    D = np.array([pcfg_next_token(np.array(h, dtype=int), g)[0][len(h)] for h in hists])
+    W = np.linalg.lstsq(np.c_[F, np.ones(len(F))], D, rcond=None)[0]
+    r2 = 1 - ((D - np.c_[F, np.ones(len(F))] @ W) ** 2).sum() / ((D - D.mean(0)) ** 2).sum()
+    assert r2 > 0.999                                        # next-token dist is linear in the forward state
+
+
 # ── dataset ──────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("name,kw", GRAMMARS)
 def test_dataset_batch_contract(name, kw):
