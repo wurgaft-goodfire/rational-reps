@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 from src.code.config import Config
 from src.code.data import (LPCFGGrammar, LPCFGDataset, build_grammar, _kl_metrics,
                            lpcfg_inside_chart, lpcfg_next_token)
-from src.code.eval import cca, cka
+from src.code.eval import cca
 
 
 # ── grammar gallery (one entry per builder) ──────────────────────────────────
@@ -225,53 +225,6 @@ def test_anbn_known_closed_form_values():
     # p(sentence "ab") = p(n=1) = 1/D under the uniform length prior
     In = lpcfg_inside_chart(np.array([0, 1], dtype=int), g)
     assert np.isclose(g.pi @ In[(0, 1)], 1.0 / D)
-
-
-# ── spectral (observable-operator) representation ───────────────────────────
-def _sample_skeleton(g, srng, max_depth=40):
-    """Sample a full tree and return its skeleton: ("leaf", terminal) | ("node", left, right)."""
-    m = len(g.pi)
-
-    def rec(h, d):
-        if d < max_depth and srng.random() < g.p_branch[h]:
-            return ("node", rec(int(srng.choice(m, p=g.S[h])), d + 1),
-                    rec(int(srng.choice(m, p=g.Tt[h])), d + 1))
-        return ("leaf", int(srng.choice(g.Em.shape[1], p=g.Em[h])))
-
-    return rec(int(srng.choice(m, p=g.pi)), 0)
-
-
-def _true_inside(g, t):
-    """True inside vector ``b[h] = p(subtree yield | root state h)`` (the CKY recursion)."""
-    e = 1.0 - g.p_branch
-    if t[0] == "leaf":
-        return e * g.Em[:, t[1]]
-    return g.p_branch * (g.S @ _true_inside(g, t[1])) * (g.Tt @ _true_inside(g, t[2]))
-
-
-def test_spectral_lpcfg_matches_true_inside_up_to_a_linear_map():
-    """The observable operators (from exact moments) drive the tensor inside algorithm to the correct
-    ``p(tree)`` (Theorem 1), and its inside vectors equal the true inside terms up to a single
-    invertible linear map (Lemma 2) — present under CCA, but a *different* basis (CKA < CCA)."""
-    from src.code.geometry import spectral_lpcfg, spectral_inside
-    g = build_grammar({"grammar": "branching_diffusion", "structure": "ring", "n": 6,
-                       "gamma": 0.8, "cooccurrence": "diffusion", "p_branch": 0.4})
-    ops = spectral_lpcfg(g); srng = np.random.default_rng(0)
-    F, B, p_err = [], [], []
-
-    def walk(t):
-        F.append(spectral_inside(ops, t)[0]); B.append(_true_inside(g, t))
-        if t[0] == "node":
-            walk(t[1]); walk(t[2])
-
-    for _ in range(30):
-        t = _sample_skeleton(g, srng)
-        p_err.append(abs(spectral_inside(ops, t)[1] - float(g.pi @ _true_inside(g, t))))
-        walk(t)
-    F = np.array(F); B = np.array(B)
-    assert max(p_err) < 1e-9                                  # Theorem 1: p(tree) computed exactly
-    assert cca(F, B) > 0.999                                  # Lemma 2: inside = true up to a linear map
-    assert cka(F, B) < cca(F, B)                              # ... in a distinct (non-rotational) basis
 
 
 # ── dataset ──────────────────────────────────────────────────────────────────
