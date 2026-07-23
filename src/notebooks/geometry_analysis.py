@@ -46,8 +46,8 @@ from src.code import plot_utils           # importing this applies the house plo
 # pick a structure here — everything below follows from it. `cooccurrence` is part of the spec
 # (diffusion | geodesic | adjacency | heat) and flows to both the predicted geometry and the trained
 # models; a product diffuses, but e.g. a hypercube wants "heat" so its bits stay independent (analogies).
-spec = {"structure": "product", "cooccurrence": "diffusion",
-        "factors": [{"structure": "chain", "n": 15}, {"structure": "ring", "n": 15}]}
+spec = {"structure": "chain", "cooccurrence": "diffusion",
+        "n": 15}
 L = graph_conditional(spec)
 E_pred = predicted_geometry(L)
 fig_pred = plot_utils.plot_predicted_geometry(spec, L, E_pred)   # saved once we have a run config (below)

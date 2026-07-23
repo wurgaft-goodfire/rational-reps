@@ -5,7 +5,7 @@
 setting: hmm
 structure: ring          # latent graph shape
 structure_kwargs:        # the full latent-structure spec: shape params + the transition kernel
-  n: 3                  # number of latent states
+  n: 12                 # number of latent states (a ring big enough to read as a circle)
   gamma: 0.8             # latent diffusion decay
   cooccurrence: diffusion  # latent transition: diffusion | geodesic | adjacency | heat
 emission: bump           # emission shape placement: bump (graph-distance kernel) | permuted (template)

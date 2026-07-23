@@ -29,8 +29,8 @@ import numpy as np, torch
 # the repo): the uv venv sits at the repo root. chdir so Hydra resolves conf/, and add it to sys.path.
 ROOT = Path(sys.prefix).parent            # <repo>/.venv -> <repo>
 os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-from src.code.geometry import predicted_geometry, spectral_hmm, spectral_beliefs
-from src.code.eval import cka, cca
+from src.code.geometry import predicted_geometry, spectral_hmm, spectral_beliefs, factor_logcond
+from src.code.eval import cka, cca, rsa
 from src.code.train import train_inline
 from src.code import plot_utils
 import matplotlib.pyplot as plt
@@ -233,5 +233,27 @@ fig.suptitle('forward & spectral aligned TOWARD the network (color = latent stat
              'map, but under rotation only spectral does -> the network implements the spectral computation', y=1.0, fontsize=11)
 fig.tight_layout()
 plot_utils.save_figure(fig, plot_utils.figure_path(config, "align_theories"))
+
+# %% [markdown]
+# ## 5. The output readout recovers the observable (emission) geometry
+#
+# The belief lives in the hidden; the **unembedding** turns it into the next-token distribution:
+# `softmax(W_out · h_t) = p(x_{t+1} | x_{1:t}) = belief_t @ M` with `M = T @ Em` (propagate one step,
+# then emit). So `W_out` is the HMM's **decoder** — the mirror of §4 of the graph notebook. In the
+# sharp-belief limit `W_out[x] · h(s) ≈ log M[s, x]`, so the symbol readout geometry recovers the
+# predicted symbol decoder — factorized from `log M` with the balanced `√S` oracle. Bump emissions put
+# each symbol on a state, so both land on the latent ring; CKA scores the match (the code's metric).
+
+# %%
+M = (ds.T @ ds.Em).cpu().numpy()                                      # p(next symbol | current state)
+_, _, D_sym, S_sym, _ = factor_logcond(np.log(M + 1e-12))            # symbol decoder, balanced sqrt(S)
+r = int((S_sym > 1e-6).sum()); D_sym = D_sym[:r].T                    # (n_symbols, r)
+W_out = model.get_output_embeddings().weight.detach().cpu().numpy()[:ds.n_symbols]   # unembedding over symbols
+print(f'unembedding vs predicted symbol decoder:  CKA = {cka(W_out, D_sym):.3f}  '
+      f'RSA = {rsa(W_out, D_sym):.3f}  CCA = {cca(W_out, D_sym):.3f}')
+
+sym_spec = {"structure": "ring", "n": ds.n_symbols}                  # bump: symbols sit on the latent ring
+fig_dec = plot_utils.plot_decoder_panels(D_sym, {"transformer": W_out}, spec=sym_spec)
+plot_utils.save_figure(fig_dec, plot_utils.figure_path(config, "emission_decoder_panels"))
 
 # %%
