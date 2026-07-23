@@ -63,19 +63,25 @@ def analyze(overrides, name, label_fn, label_name, cmap="viridis", n_seq=250, ba
             kls.append(float((d[t] * (np.log(d[t] + 1e-9) - np.log(pm[b, t] + 1e-9))).sum()))
     H = np.array(H)
 
-    # spectral (Hankel) predictive-state basis, from the exact string probabilities
-    P = [u for u, _ in Counter(hists).most_common(basis_cap)]
-    S = [v for v, _ in Counter(tuple(s[t:]) for s in seqs for t in range(len(s) + 1)).most_common(basis_cap)]
+    # spectral (Hankel) predictive-state basis, from the exact string probabilities. The joint
+    # H[u,v]=p(uv) is already implicitly measure-weighted (like the HMM's joint P21); we also build a
+    # version reweighted by empirical prefix/suffix frequency (the loss's own weighting).
+    Pc = Counter(hists); Sc = Counter(tuple(s[t:]) for s in seqs for t in range(len(s) + 1))
+    P = [u for u, _ in Pc.most_common(basis_cap)]; S = [v for v, _ in Sc.most_common(basis_cap)]
     fwd, info = hankel_forward_states(ds.g, P, S)
     F = np.array([fwd(h) for h in hists])                            # canonical predictive state per position
+    fwd_w, _ = hankel_forward_states(ds.g, P, S, w=np.array([Pc[u] for u in P], float),
+                                     nu=np.array([Sc[v] for v in S], float))
+    Fw = np.array([fwd_w(h) for h in hists])                         # frequency-weighted basis
 
     # raw baseline basis = one-hot of the hand sufficient statistic (counter / stack)
     labs = sorted(set(labels)); lid = {k: i for i, k in enumerate(labs)}
     Braw = np.eye(len(labs))[[lid[l] for l in labels]]
 
-    print(f"[{name}] Hankel rank = {info['rank']:3d}   KL(bayes||model) = {np.mean(kls):.4f}")
-    print(f"        CCA(hidden, spectral) = {cca(H, F):.3f}   "
-          f"CKA(hidden, spectral) = {cka(H, F):.3f}   CKA(hidden, raw one-hot) = {cka(H, Braw):.3f}")
+    print(f"[{name}] Hankel rank = {info['rank']:3d}   KL(bayes||model) = {np.mean(kls):.4f}   "
+          f"CCA(hidden, spectral) = {cca(H, F):.3f}")
+    print(f"        CKA vs: spectral(joint) = {cka(H, F):.3f}   spectral(freq-weighted) = {cka(H, Fw):.3f}"
+          f"   raw one-hot = {cka(H, Braw):.3f}")
 
     # geometry: top-2 CCA canonical variates (whitened, paired) of spectral state vs transformer —
     # if the hidden holds the predictive state the two panels coincide.
@@ -93,7 +99,8 @@ def analyze(overrides, name, label_fn, label_name, cmap="viridis", n_seq=250, ba
     fig.suptitle(f"{name}: transformer = spectral predictive state up to a linear map "
                  f"(rank {info['rank']}, CCA {cca(H, F):.2f})", y=1.0)
     plot_utils.save_figure(fig, plot_utils.figure_path(config, "spectral_predictive_state"))
-    return dict(rank=info["rank"], cca=cca(H, F), cka_spec=cka(H, F), cka_raw=cka(H, Braw), kl=np.mean(kls))
+    return dict(rank=info["rank"], cca=cca(H, F), cka_spec=cka(H, F), cka_w=cka(H, Fw),
+                cka_raw=cka(H, Braw), kl=np.mean(kls))
 
 
 # %% [markdown]
@@ -123,9 +130,10 @@ r_antbn = analyze(["runner=pcfg_antbn", "grammar_kwargs.depth=6", "max_len=14",
 # %% [markdown]
 # ## Summary
 # %%
-print(f"{'grammar':16s} {'rank':>5s} {'KL':>8s} {'CCA':>6s} {'CKA_spec':>9s} {'CKA_raw':>8s}")
+print(f"{'grammar':16s} {'rank':>5s} {'KL':>8s} {'CCA':>6s} {'CKA_joint':>10s} {'CKA_freqw':>10s} {'CKA_raw':>8s}")
 for nm, r in [("dyck", r_dyck), ("anbn", r_anbn), ("antbn", r_antbn)]:
-    print(f"{nm:16s} {r['rank']:5d} {r['kl']:8.4f} {r['cca']:6.3f} {r['cka_spec']:9.3f} {r['cka_raw']:8.3f}")
+    print(f"{nm:16s} {r['rank']:5d} {r['kl']:8.4f} {r['cca']:6.3f} {r['cka_spec']:10.3f} "
+          f"{r['cka_w']:10.3f} {r['cka_raw']:8.3f}")
 
 
 # %% [markdown]
