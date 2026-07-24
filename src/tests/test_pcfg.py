@@ -15,18 +15,15 @@ from src.code.eval import cca
 
 # ── grammar gallery (one entry per builder) ──────────────────────────────────
 GRAMMARS = [
-    ("branching_diffusion", {"structure": "ring", "n": 8, "gamma": 0.8,
-                             "cooccurrence": "diffusion", "p_branch": 0.4}),
     ("anbn", {"depth": 5}),
-    ("antbn", {"depth": 5}),
     ("dyck", {"k": 2, "depth": 3}),
-    ("prefix_arith", {"n_op": 2, "n_num": 3, "p": 0.3}),
+    ("mini_nl", {"max_adj": 2}),
+    ("mini_pl", {"depth": 3}),
 ]
 
 
-def _cfg(grammar="branching_diffusion", grammar_kwargs=None, max_len=24, seed=0):
-    gk = grammar_kwargs or {"structure": "ring", "n": 8, "gamma": 0.8,
-                            "cooccurrence": "diffusion", "p_branch": 0.4}
+def _cfg(grammar="dyck", grammar_kwargs=None, max_len=24, seed=0):
+    gk = grammar_kwargs or {"k": 2, "depth": 3}
     return Config(OmegaConf.create({
         "setting": "pcfg", "grammar": grammar, "grammar_kwargs": gk, "max_len": max_len,
         "sample_mode": "sequence", "random_seed": seed,
@@ -128,11 +125,6 @@ def _is_anbn(s):
     return na >= 1 and na == nb and s == [0] * na + [1] * nb
 
 
-def _is_antbn(s):
-    na = sum(t == 0 for t in s); nb = sum(t == 1 for t in s); nt = sum(t == 2 for t in s)
-    return na >= 1 and nt == 1 and na == nb and s == [0] * na + [2] + [1] * nb
-
-
 def _is_dyck(s, k=2):
     st = []
     for t in s:
@@ -145,27 +137,20 @@ def _is_dyck(s, k=2):
     return len(st) == 0 and len(s) >= 2
 
 
-def _is_prefix_arith(s, n_op=2):
-    debt = 1
-    for i, t in enumerate(s):
-        debt += 1 if t < n_op else -1
-        if debt < 0:
-            return False
-        if debt == 0:
-            return i == len(s) - 1                            # completes exactly at the end
-    return debt == 0
-
-
 @pytest.mark.parametrize("name,kw,checker", [
     ("anbn", {"depth": 6}, _is_anbn),
-    ("antbn", {"depth": 6}, _is_antbn),
     ("dyck", {"k": 2, "depth": 4}, lambda s: _is_dyck(s, 2)),
-    ("prefix_arith", {"n_op": 2, "n_num": 3, "p": 0.3}, lambda s: _is_prefix_arith(s, 2)),
+    ("mini_nl", {"max_adj": 2}, None),
+    ("mini_pl", {"depth": 3}, None),
 ])
 def test_sampled_strings_are_valid_language_members(name, kw, checker):
     g = build_grammar({"grammar": name, **kw}); srng = np.random.default_rng(0)
-    for _ in range(300):
-        assert checker(_sample(g, srng))
+    for _ in range(200):
+        s = _sample(g, srng)
+        In = pcfg_inside_chart(np.array(s, dtype=int), g)             # every sampled string has positive
+        assert g.pi @ In[(0, len(s) - 1)] > 0                         # probability under the exact chart
+        if checker is not None:
+            assert checker(s)                                         # and matches its closed-form language
 
 
 # ── exact oracle vs brute force / Monte-Carlo ───────────────────────────────
@@ -201,9 +186,8 @@ def test_next_token_rows_are_distributions(name, kw):
 
 
 def test_next_token_matches_monte_carlo():
-    """Sampler and oracle are independent implementations; they must agree on a realistic grammar."""
-    g = build_grammar({"grammar": "branching_diffusion", "structure": "ring", "n": 6,
-                       "gamma": 0.8, "cooccurrence": "diffusion", "p_branch": 0.35})
+    """Sampler and oracle are independent implementations; they must agree on a branching grammar."""
+    g = build_grammar({"grammar": "mini_nl", "max_adj": 2})
     srng = np.random.default_rng(1); N = 40000
     seqs = [_sample(g, srng) for _ in range(N)]
     # well-sampled prefixes only (deeper prefixes are covered exactly by the brute-force test).
@@ -263,8 +247,8 @@ def test_dataset_batch_contract(name, kw):
 
 
 def test_dataset_vocab_and_token_layout():
-    ds = PCFGDataset(_cfg("prefix_arith", {"n_op": 2, "n_num": 3, "p": 0.3}))
-    assert ds.V == 5                                          # 2 operators + 3 numbers
+    ds = PCFGDataset(_cfg("mini_nl", {"max_adj": 2}))
+    assert ds.V == 5                                          # det, adj, noun, verb, prep
     assert ds.num_dims == 6 and ds.vocab_size == 8           # terminals+EOS ; terminals+eos+start+pad
     assert ds.eos_token == 5 and ds.start_token == 6 and ds.pad_token == 7
     assert ds.item_tokens.tolist() == list(range(6))         # maps logits -> terminals + EOS
@@ -288,10 +272,10 @@ def test_kl_metrics_averages_over_valid_positions_only():
 
 # ── integration: a transformer recovers the belief ──────────────────────────
 @pytest.mark.slow
-def test_transformer_recovers_antbn_belief():
+def test_transformer_recovers_anbn_belief():
     from src.code.train import train_inline
     model, ds, ev, hist, config = train_inline(
-        ["runner=pcfg_antbn", "name=test_antbn", "wandb.enabled=false", "overwrite=true",
+        ["runner=pcfg_anbn", "name=test_anbn", "wandb.enabled=false", "overwrite=true",
          "eval_kwargs.output_hidden_states=true", "grammar_kwargs.depth=4", "max_len=9",
          "training_kwargs.train_steps=2000"])
     seqs = [ds._sample_sentence()[0] for _ in range(150)]

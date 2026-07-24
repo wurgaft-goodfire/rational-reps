@@ -13,8 +13,8 @@ sample_mode: sequence
 grammar: dyck
 grammar_kwargs:
   k: 2                     # bracket types
-  depth: 3                 # max nesting depth => stack tree has 2+4+8 = 14 nodes
-max_len: 6
+  depth: 4                 # max nesting depth => stack tree has 2+4+8+16 = 30 nodes (depth 5 fails to train)
+max_len: 8
 model_kwargs:
   model_config: {hidden_size: 128, num_hidden_layers: 4, num_attention_heads: 4, intermediate_size: 512}
-training_kwargs: {learning_rate: 0.001, train_steps: 8000, context_length: 40}
+training_kwargs: {learning_rate: 0.001, train_steps: 12000, context_length: 40}

@@ -1,15 +1,13 @@
 # @package _global_
-# PCFG: latent states diffuse DOWN A TREE (branching diffusion on a graph) and each
-# leaf emits an observable terminal. The tree generalization of the HMM (which diffuses along a
-# chain). The network sees only the flat terminal string; the parse, latent states, and constituent
-# boundaries are hidden and must be inferred to predict the next token.
+# PCFG: latent states expand down a *parse tree* (the tree generalization of the HMM's chain) and each
+# leaf emits an observable terminal. The network sees only the flat terminal string; the parse, latent
+# states, and constituent boundaries are hidden and must be inferred to predict the next token. The
+# grammar is one of the structured cases (anbn / dyck / mini_nl / mini_pl); this default is dyck, but
+# every runner overrides `grammar` + `grammar_kwargs`.
 setting: pcfg
-grammar: branching_diffusion
+grammar: dyck
 grammar_kwargs:
-  structure: ring         # latent graph shape (ring reads as a circle, like the HMM)
-  n: 12                   # number of latent states
-  gamma: 0.8              # latent diffusion decay (per tree edge)
-  cooccurrence: diffusion
-  p_branch: 0.4           # branch-vs-emit prob (subcritical: 2*p_branch < 1, trees terminate a.s.)
-max_len: 24               # max terminals per sentence (rejection-sampled)
+  k: 2                     # bracket types
+  depth: 3                 # max nesting depth
+max_len: 6
 sample_mode: sequence

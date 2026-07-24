@@ -993,27 +993,7 @@ PCFGGrammar = namedtuple("PCFGGrammar", ["pi", "p_branch", "S", "Tt", "Em"])
 # leaf states). Subcritical (mean offspring 2*p_branch < 1) so trees terminate a.s.
 
 
-def branching_diffusion_grammar(spec):
-    """Branching diffusion on a graph: latent states = graph nodes, each tree edge is one diffusion
-    step on the graph (the same row-normalized ``exp(graph_conditional)`` the HMM uses as its chain
-    transition, now wired into a tree). Identity emission by default (terminal == leaf state)."""
-    spec = dict(spec)
-    p_branch = spec.pop("p_branch", 0.4)
-    L = graph_conditional({"structure": spec.pop("structure"), **spec})
-    m = len(L)
-    P = np.exp(L); S = P / P.sum(1, keepdims=True)
-    pi = _stationary_dist(S)
-    return PCFGGrammar(pi=pi, p_branch=np.full(m, float(p_branch)), S=S, Tt=S.copy(), Em=np.eye(m))
-
-
-def _stationary_dist(P, iters=2000):
-    v = np.full(P.shape[0], 1.0 / P.shape[0])
-    for _ in range(iters):
-        v = v @ P
-    return v / v.sum()
-
-
-_GRAMMAR_BUILDERS = {"branching_diffusion": branching_diffusion_grammar}
+_GRAMMAR_BUILDERS = {}                                            # populated after each builder below
 
 
 def build_grammar(spec):
@@ -1188,50 +1168,56 @@ def dyck_grammar(spec):
     return _grammar_from_rules(states, leaves, rules, root, V=2 * k, emit=None)
 
 
-_GRAMMAR_BUILDERS.update({"anbn": anbn_grammar, "dyck": dyck_grammar})
+def mini_nl_grammar(spec):
+    """Miniature phrase-structure grammar over POS terminals (det, adj, noun, verb, prep). Binarized:
+    S -> NP VP; NP -> Det Nom; Nom -> noun | Adj Nom (bounded to ``max_adj`` adjectives); VP -> V |
+    V NP | V NP PP; PP -> Prep NP. The prefix's sufficient statistic is the partial parse (which
+    constituents are still open) -- a *soft* (probabilistic) branching geometry, in contrast to the
+    hard matched-delimiter stacks of dyck / mini_pl. Terminals: det, adj, noun, verb, prep (V = 5)."""
+    n_adj = int(dict(spec).get("max_adj", 2))
+    det, adj, noun, verb, prep = range(5)
+    leaves = {"Det": det, "Adj": adj, "Noun": noun, "Verb": verb, "Prep": prep}
+    states = list(leaves); rules = {}
+
+    def nom(level):                                                  # noun-phrase tail: noun, or adjective + tail
+        return "Noun" if level >= n_adj else {"Noun": 0.6, f"Adj{level}": 0.4}
+    for level in range(n_adj):
+        rules[f"Adj{level}"] = ("Adj", nom(level + 1)); states.append(f"Adj{level}")
+    rules["NP"] = ("Det", nom(0))
+    rules["VObj"] = ("Verb", "NP")                                   # transitive: verb + object
+    rules["VObjPP"] = ("Verb", "VPP"); rules["VPP"] = ("NP", "PP")   # verb + object + prepositional phrase
+    rules["PP"] = ("Prep", "NP")
+    rules["S"] = ("NP", {"Verb": 0.4, "VObj": 0.4, "VObjPP": 0.2})   # intransitive / transitive / + PP
+    states += ["NP", "VObj", "VObjPP", "VPP", "PP", "S"]
+    return _grammar_from_rules(states, leaves, rules, {"S": 1.0}, V=5, emit=None)
 
 
-def antbn_grammar(spec):
-    """a^n T b^n (n ~ uniform on 1..D): a^n b^n with an explicit trigger terminal T marking the
-    switch from the opening run to the closing run. S_n -> A (M_{n-1}), M_k -> S_k B, S_0 -> T.
-    Same unmatched-a counter as a^n b^n, but T makes the phase boundary a single observable event."""
-    D = int(dict(spec).get("depth", 8))
-    a, b, trig = 0, 1, 2
-    states = ["A", "B"] + [f"S{n}" for n in range(0, D + 1)] + [f"M{k}" for k in range(0, D)]
-    leaves = {"A": a, "B": b, "S0": trig}                            # S0 is the trigger leaf
-    rules = {}
-    for n in range(1, D + 1):
-        rules[f"S{n}"] = ("A", f"M{n - 1}")
-    for k in range(0, D):
-        rules[f"M{k}"] = (f"S{k}", "B")
-    root = {f"S{n}": 1.0 for n in range(1, D + 1)}                   # uniform over n (>=1)
-    return _grammar_from_rules(states, leaves, rules, root, V=3, emit=None)
+def mini_pl_grammar(spec):
+    """Miniature control-flow language. Statements nest to depth ``D``: an atomic assignment ``asgn``,
+    ``if cond then S end``, ``while cond do S end``, or a sequence ``asgn ; S``. The prefix's
+    sufficient statistic is the *stack of open if/while constructs* times the *phase within the current
+    construct* (expecting the condition / the then|do keyword / the body / the closing end) -- a
+    ``stack (x) phase`` geometry. Terminals: asgn, if, then, while, do, end, cond, semi (V = 8)."""
+    D = int(dict(spec).get("depth", 3))
+    asgn, iftok, then, whiletok, do, end, cond, semi = range(8)
+    leaves = {"Asgn": asgn, "If": iftok, "Then": then, "While": whiletok, "Do": do,
+              "End": end, "Cond": cond, "Semi": semi}
+    states = list(leaves); rules = {}
+
+    def stmt(d):                                                     # statement choices at nesting budget d
+        if d >= D:
+            return {"Asgn": 1.0}                                     # budget exhausted: atomic only
+        return {"Asgn": 0.4, f"IF{d}": 0.25, f"WH{d}": 0.2, f"SEQ{d}": 0.15}
+    for d in range(D):
+        rules[f"IF{d}"] = ("If", f"IF{d}a"); rules[f"IF{d}a"] = ("Cond", f"IF{d}b")
+        rules[f"IF{d}b"] = ("Then", f"IF{d}c"); rules[f"IF{d}c"] = (stmt(d + 1), "End")
+        rules[f"WH{d}"] = ("While", f"WH{d}a"); rules[f"WH{d}a"] = ("Cond", f"WH{d}b")
+        rules[f"WH{d}b"] = ("Do", f"WH{d}c"); rules[f"WH{d}c"] = (stmt(d + 1), "End")
+        rules[f"SEQ{d}"] = ("Asgn", f"SEQ{d}a"); rules[f"SEQ{d}a"] = ("Semi", stmt(d + 1))
+        states += [f"IF{d}", f"IF{d}a", f"IF{d}b", f"IF{d}c",
+                   f"WH{d}", f"WH{d}a", f"WH{d}b", f"WH{d}c", f"SEQ{d}", f"SEQ{d}a"]
+    return _grammar_from_rules(states, leaves, rules, stmt(0), V=8, emit=None)
 
 
-_GRAMMAR_BUILDERS["antbn"] = antbn_grammar
-
-
-def prefix_arith_grammar(spec):
-    """Prefix (Polish-notation) arithmetic — a tiny programming language of S-expressions:
-    ``E -> op E E`` (an operator applied to two sub-expressions) with prob ``p``, else ``E -> num``.
-    Strings like ``+ * 1 2 3`` (= ``(1*2)+3``). Binary-leaf form: E branches into (Op-leaf, R) and
-    R branches into (E, E); E otherwise emits a number. The left-to-right prefix belief is the
-    *arity debt* — the number of sub-expressions still owed — which does a random walk (op: +1,
-    num: -1) absorbed at 0 (the program is complete). Terminals: operators 0..n_op-1, numbers
-    n_op..n_op+n_num-1 (V = n_op + n_num)."""
-    sp = dict(spec)
-    n_op = int(sp.get("n_op", 2)); n_num = int(sp.get("n_num", 3)); p = float(sp.get("p", 0.4))
-    V = n_op + n_num
-    E, Op, R = 0, 1, 2                                               # latent states
-    pi = np.array([1.0, 0.0, 0.0])                                   # start at an expression E
-    p_branch = np.array([p, 0.0, 1.0])                              # E: apply-op w.p. p else num; R: always
-    S = np.zeros((3, 3)); Tt = np.zeros((3, 3))
-    S[E, Op] = 1.0; Tt[E, R] = 1.0                                   # E -> Op R   (operator, then the rest)
-    S[R, E] = 1.0; Tt[R, E] = 1.0                                    # R -> E E    (two sub-expressions)
-    Em = np.full((3, V), 1.0 / V)
-    Em[E] = 0.0; Em[E, n_op:] = 1.0 / n_num                          # E emits a number
-    Em[Op] = 0.0; Em[Op, :n_op] = 1.0 / n_op                         # Op emits an operator
-    return PCFGGrammar(pi=pi, p_branch=p_branch, S=S, Tt=Tt, Em=Em)
-
-
-_GRAMMAR_BUILDERS["prefix_arith"] = prefix_arith_grammar
+_GRAMMAR_BUILDERS.update({"anbn": anbn_grammar, "dyck": dyck_grammar,
+                          "mini_nl": mini_nl_grammar, "mini_pl": mini_pl_grammar})

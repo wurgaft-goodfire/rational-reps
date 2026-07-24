@@ -11,8 +11,8 @@ output_dir: ${run_dir}/checkpoints
 sample_mode: sequence
 grammar: anbn
 grammar_kwargs:
-  depth: 8                 # n ~ uniform 1..8 => sentences up to a^8 b^8
-max_len: 16
+  depth: 12                # n ~ uniform 1..12 => sentences up to a^12 b^12
+max_len: 24
 model_kwargs:
   model_config: {hidden_size: 128, num_hidden_layers: 4, num_attention_heads: 4, intermediate_size: 512}
-training_kwargs: {learning_rate: 0.001, train_steps: 12000, context_length: 40}
+training_kwargs: {learning_rate: 0.001, train_steps: 12000, context_length: 48}
