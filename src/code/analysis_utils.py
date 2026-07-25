@@ -5,6 +5,7 @@
 import os
 import sys
 
+import numpy as np
 import pandas as pd
 import torch
 from pyprojroot import here
@@ -115,3 +116,76 @@ def _load_wandb(experiment_name, entity=None, project=None) -> pd.DataFrame:
                          "step": record.get("_step"), **metrics})
 
     return pd.DataFrame(rows).reset_index(drop=True)
+
+
+#########################
+# Representation-analysis helpers (notebook-side: alignment, held-out decoding, controls)
+#########################
+
+def align_representations(X, ref, method="rotation", rank=None):
+    """Align ``X`` to ``ref`` and score the fit; returns ``(aligned, R2)`` with ``aligned`` in
+    ``ref``'s own space/units (directly overlayable on ``ref``).
+
+    ``"linear"``: affine least squares ``X -> ref`` — the CCA-level fit any invertible map achieves.
+    ``"rotation"``: center + unit-Frobenius-norm both, PCA-truncate ``X`` to ``rank`` (default: the
+    ref dimension), orthogonal Procrustes, then restore ref's scale/mean. A rotation cannot stretch,
+    so this scores basis-level agreement (the geometry CKA sees) — the discriminating comparison
+    when two candidate representations differ only by an invertible linear map."""
+    from scipy.linalg import orthogonal_procrustes
+    X = np.asarray(X, dtype=np.float64); ref = np.asarray(ref, dtype=np.float64)
+    if method == "linear":
+        Xa = np.c_[X, np.ones(len(X))]
+        pred = Xa @ np.linalg.lstsq(Xa, ref, rcond=None)[0]
+        r2 = 1 - ((pred - ref) ** 2).sum() / ((ref - ref.mean(0)) ** 2).sum()
+        return pred, float(r2)
+    if method == "rotation":
+        refc = ref - ref.mean(0); refn = refc / np.linalg.norm(refc)
+        Xc = X - X.mean(0)
+        Xr = Xc @ np.linalg.svd(Xc, full_matrices=False)[2][:rank or ref.shape[1]].T
+        Xr = Xr / np.linalg.norm(Xr)
+        R, _ = orthogonal_procrustes(Xr, refn)
+        r2 = 1 - np.linalg.norm(Xr @ R - refn) ** 2 / np.linalg.norm(refn) ** 2
+        return (Xr @ R) * np.linalg.norm(refc) + ref.mean(0), float(r2)
+    raise ValueError(f"unknown method {method!r} (expected 'linear' or 'rotation')")
+
+
+def _ridge_fit_r2(Xtr, Ytr, Xte, Yte, alpha):
+    """Ridge-regress ``Y`` on standardized ``X`` (bias unregularized); return R² on the test split."""
+    mu, sd = Xtr.mean(0), Xtr.std(0) + 1e-8
+    Xtr = np.c_[(Xtr - mu) / sd, np.ones(len(Xtr))]
+    Xte = np.c_[(Xte - mu) / sd, np.ones(len(Xte))]
+    A = Xtr.T @ Xtr + alpha * np.eye(Xtr.shape[1]); A[-1, -1] -= alpha
+    W = np.linalg.solve(A, Xtr.T @ Ytr)
+    ss_res = ((Yte - Xte @ W) ** 2).sum()
+    ss_tot = ((Yte - Yte.mean(0)) ** 2).sum()
+    return float(1 - ss_res / ss_tot)
+
+
+def heldout_decode_r2(H, F, groups, train_frac=0.6, seed=0, alpha=1.0, train_mask=None):
+    """R² of a linear map ``H -> F`` fit on a train split of *distinct prefix groups* and evaluated on
+    held-out groups. Because a causal hidden is identical for every occurrence of a prefix, splitting
+    by group keeps test prefixes wholly unseen. A wide hidden that merely *spans* F on the training
+    prefixes (random features, an untrained net) does not yield a single linear map that generalizes to
+    unseen prefixes; a genuine linear representation of the predictive state does. Pass ``train_mask``
+    to use a custom split (e.g. train on short prefixes, test on long — length extrapolation)."""
+    H = np.asarray(H, float); F = np.asarray(F, float); groups = np.asarray(groups)
+    if train_mask is None:
+        ids = np.unique(groups)
+        rng = np.random.default_rng(seed); rng.shuffle(ids)
+        train_ids = set(ids[:int(round(train_frac * len(ids)))].tolist())
+        train_mask = np.array([g in train_ids for g in groups])
+    train_mask = np.asarray(train_mask, bool)
+    return _ridge_fit_r2(H[train_mask], F[train_mask], H[~train_mask], F[~train_mask], alpha)
+
+
+def untrained_twin(config, dataset):
+    """A fresh model with the run's architecture but random (pre-training) weights. If the predictive
+    state were merely 'linearly fittable' by a wide hidden, this random model would match the trained
+    one under CCA; it does not — that gap is what makes CCA≈1 a real result, not a capacity artefact."""
+    from omegaconf import open_dict
+    from .models import init_model
+    mc = config.cfg.model_kwargs.model_config
+    with open_dict(mc):
+        mc.vocab_size = dataset.vocab_size
+        mc.max_position_embeddings = dataset.seq_len
+    return init_model(config)

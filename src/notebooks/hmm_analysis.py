@@ -13,7 +13,7 @@
 # ---
 
 # %% [markdown]
-# ## 3. The belief is recovered in the deep representation
+# ## The belief is recovered in the deep representation
 #
 # A single token is uninformative about the state, so the belief is reconstructed only in the deep
 # reps as context accumulates. We compare the **belief-state trajectory** (per-position forward-
@@ -31,6 +31,7 @@ ROOT = Path(sys.prefix).parent            # <repo>/.venv -> <repo>
 os.chdir(ROOT); sys.path.insert(0, str(ROOT))
 from src.code.geometry import predicted_geometry, spectral_hmm, spectral_beliefs, factor_logcond
 from src.code.eval import cka, cca, rsa
+from src.code.analysis_utils import align_representations, heldout_decode_r2
 from src.code.train import train_inline
 from src.code import plot_utils
 import matplotlib.pyplot as plt
@@ -42,7 +43,7 @@ import matplotlib.pyplot as plt
 # We train once and sample a fixed set of sequences everything below reuses.
 
 # %%
-model, ds, ev, hist, config = train_inline(['runner=hmm_transformer', 'eval_kwargs.output_hidden_states=true'])  # emission=bump
+model, ds, ev, hist, config = train_inline(['runner=hmm_transformer'])  # emission=bump
 n = ds.n_states
 E_lat = predicted_geometry(ds.latent_conditional)                     # predicted latent ring
 
@@ -92,28 +93,19 @@ print(f'KL(bayes || model) = {kl(p_bayes, p_model):.4f}   (marginal baseline '
 # hidden state linearly to the belief ring (colored by the true state).
 
 # %%
-ntr = int(0.8*len(H)); lam = 1e-2                                     # linear probe hidden -> belief
-Xtr = np.c_[H[:ntr], np.ones(ntr)]; Xte = np.c_[H[ntr:], np.ones(len(H)-ntr)]
-W = np.linalg.solve(Xtr.T@Xtr + lam*np.eye(Xtr.shape[1]), Xtr.T@belf[:ntr]); pred = Xte@W
-R2 = 1 - ((belf[ntr:]-pred)**2).sum() / ((belf[ntr:]-belf[ntr:].mean(0))**2).sum()
+R2 = heldout_decode_r2(H, belf, groups=np.arange(len(H)))             # linear probe hidden -> belief
 print(f'belief linearly represented:  probe R2 = {R2:.3f}   CCA(hidden, belief trajectory) = {cca(H, belf):.3f}')
 
 # Compare the belief-state TRAJECTORY: forward-algorithm belief vs the network's hidden, per position.
 # Both shown as the 2-D belief-ring coordinate (belief-weighted ring position); network mapped by a
 # single linear readout. If the network tracks the belief, the two trajectories coincide.
-bcode = (belf @ E_lat[:, :2]).reshape(B, L, 2)                        # forward-algorithm belief traj
-Wc = np.linalg.lstsq(np.c_[H, np.ones(len(H))], belf @ E_lat[:, :2], rcond=None)[0]
-ncode = (np.c_[H, np.ones(len(H))] @ Wc).reshape(B, L, 2)             # network hidden, mapped
-fig, ax = plt.subplots(1, 2, figsize=(9, 4.4))
-for a, seq in zip(ax, [0, 1]):
-    a.plot(bcode[seq, :, 0], bcode[seq, :, 1], '-', color='0.8', lw=1, zorder=0)
-    a.scatter(bcode[seq, :, 0], bcode[seq, :, 1], c=range(L), cmap='viridis', s=34, zorder=1, label='belief (forward algo)')
-    a.scatter(ncode[seq, :, 0], ncode[seq, :, 1], c=range(L), cmap='viridis', marker='x', s=30, lw=1.4, zorder=2, label='network hidden')
-    a.set_aspect('equal'); plot_utils.FIG.clean(a); a.set_title(f'sequence {seq}')
-ax[0].legend(frameon=False, fontsize=9, loc='upper center', bbox_to_anchor=(0.5, -0.02))
-fig.suptitle(f'the network hidden tracks the belief trajectory over the context '
-             f'(CCA = {cca(H, belf):.2f}; color = time)', y=1.02)
-fig.tight_layout()
+bcode = belf @ E_lat[:, :2]                                           # forward-algorithm belief traj
+ncode, _ = align_representations(H, bcode, method='linear')           # network hidden, mapped
+fig = plot_utils.plot_trajectory_overlay(
+    bcode.reshape(B, L, 2), ncode.reshape(B, L, 2), seqs=(0, 1),
+    labels=('belief (forward algo)', 'network hidden'),
+    suptitle=f'the network hidden tracks the belief trajectory over the context '
+             f'(CCA = {cca(H, belf):.2f}; color = time)')
 plot_utils.save_figure(fig, plot_utils.figure_path(config, "belief_trajectory"))
 
 # %% [markdown]
@@ -149,38 +141,17 @@ print('\n-> high CKA to the spectral basis but not to forward/whitened: the netw
 # its variance is off any 2-D plane) — not because the two disagree.
 
 # %%
-from numpy.linalg import svd as _svd, norm as _norm
-from scipy.linalg import orthogonal_procrustes
-
-# rotation-only alignment (justified by the high CKA above): top-n PCA of the hidden, then an
-# orthogonal Procrustes rotation onto the spectral belief. Center + unit-norm both first, since a
-# rotation cannot fix a scale mismatch (the hidden is far larger than the O(1) belief vector).
-Sc = spec - spec.mean(0); Sc /= _norm(Sc)
-Hn = (H - H.mean(0)) @ _svd(H - H.mean(0), full_matrices=False)[2][:n].T; Hn /= _norm(Hn)
-Rrot, _ = orthogonal_procrustes(Hn, Sc); Hrot = Hn @ Rrot
-r2 = 1 - _norm(Hrot - Sc) ** 2 / _norm(Sc) ** 2
-
-# viewing plane = ring plane of the state-averaged spectral belief (the noisy per-token cloud has no
-# cleaner 2-D view: the spectral ring is genuinely non-planar).
-means = np.stack([Sc[st == k].mean(0) for k in range(n)])
-A = _svd(means - means.mean(0), full_matrices=False)[2][:2]
-pS = (Sc @ A.T).reshape(B, L, 2); pT = (Hrot @ A.T).reshape(B, L, 2)
-
-fig, ax = plt.subplots(1, 3, figsize=(12.5, 4.3))
-for a, seq in zip(ax[:2], [0, 2]):
-    a.plot(pS[seq, :, 0], pS[seq, :, 1], '-', color='0.8', lw=1, zorder=0)
-    a.scatter(pS[seq, :, 0], pS[seq, :, 1], c=range(L), cmap='viridis', s=40, zorder=1, label='spectral algorithm')
-    a.scatter(pT[seq, :, 0], pT[seq, :, 1], c=range(L), cmap='viridis', marker='x', s=34, lw=1.6, zorder=2, label='transformer (rotated)')
-    a.set_aspect('equal'); plot_utils.FIG.clean(a); a.set_title(f'belief path, sequence {seq}')
-ax[0].legend(frameon=False, fontsize=9, loc='upper center', bbox_to_anchor=(0.5, -0.02))
-ax[2].scatter(Sc.ravel(), Hrot.ravel(), s=4, alpha=0.15, color=plot_utils.FIG.colors['blue'], edgecolors='none')
-lim = [min(Sc.min(), Hrot.min()), max(Sc.max(), Hrot.max())]
-ax[2].plot(lim, lim, '--', color='0.4', lw=1)
-ax[2].set_xlabel('spectral belief (aligned)'); ax[2].set_ylabel('transformer (rotated)')
-ax[2].set_title(f'coordinate-wise match\n(rotation only; R2 = {r2:.2f})')
-plot_utils.FIG.style_axes(ax[2]); ax[2].set_aspect('equal')
-fig.suptitle(f'the transformer belief path is the spectral algorithm up to a rotation (CKA = {cka(H, spec):.2f})', y=1.02)
-fig.tight_layout()
+# rotation-only alignment (justified by the high CKA above): a rotation cannot stretch, so overlaying
+# the rotated hidden on the spectral path is the honest no-fitting comparison. Viewing plane = ring
+# plane of the state-averaged spectral belief (the noisy per-token cloud has no cleaner 2-D view).
+Hrot, r2 = align_representations(H, spec, method='rotation', rank=n)
+A = plot_utils.class_mean_axes(spec - spec.mean(0), st)
+pS = ((spec - spec.mean(0)) @ A.T).reshape(B, L, 2)
+pT = ((Hrot - spec.mean(0)) @ A.T).reshape(B, L, 2)
+fig = plot_utils.plot_trajectory_overlay(
+    pS, pT, seqs=(0, 2), labels=('spectral algorithm', 'transformer (rotated)'),
+    parity=(spec.ravel(), Hrot.ravel(), f'rotation only; R2 = {r2:.2f}'),
+    suptitle=f'the transformer belief path is the spectral algorithm up to a rotation (CKA = {cka(H, spec):.2f})')
 plot_utils.save_figure(fig, plot_utils.figure_path(config, "spectral_belief_path"))
 
 # %% [markdown]
@@ -199,39 +170,14 @@ plot_utils.save_figure(fig, plot_utils.figure_path(config, "spectral_belief_path
 #   the belief in the spectral (observable-operator) basis specifically.
 
 # %%
-from numpy.linalg import svd as _svd, norm as _norm, lstsq as _lstsq
-from scipy.linalg import orthogonal_procrustes
-
-def _unit(A): A = A - A.mean(0); return A / _norm(A)
-# reference = the trained network (top-n PCA of the hidden), unit-normed; the two theories align to IT
-Hn = _unit(H) @ _svd(_unit(H), full_matrices=False)[2][:n].T; Hn /= _norm(Hn)
-meansH = np.stack([Hn[st == k].mean(0) for k in range(n)])
-axesH = _svd(meansH - meansH.mean(0), full_matrices=False)[2][:2]     # the network's own ring plane
-def _view(C): C = C - C.mean(0); return C / C.std()                   # comparable panel scale
-
-def _cca(Y):                             # best linear map Y -> network; R2 of reconstructing the network
-    Ya = np.c_[Y, np.ones(len(Y))]; P = Ya @ _lstsq(Ya, Hn, rcond=None)[0]
-    return P @ axesH.T, 1 - _norm(P - Hn) ** 2 / _norm(Hn - Hn.mean(0)) ** 2
-def _rot(Y):                             # rotation-only Y -> network
-    Yr = _unit(Y) @ _svd(_unit(Y), full_matrices=False)[2][:n].T; Yr /= _norm(Yr)
-    R, _ = orthogonal_procrustes(Yr, Hn); P = Yr @ R
-    return P @ axesH.T, 1 - _norm(P - Hn) ** 2 / _norm(Hn) ** 2
-
-cols = [('model (transformer)', None), ('forward algorithm', belf), ('spectral algorithm', spec)]
-rows = [('aligned to model\nby CCA (linear)', _cca), ('aligned to model\nby rotation', _rot)]
-fig, ax = plt.subplots(2, 3, figsize=(11.5, 8))
-for r, (rlab, fn) in enumerate(rows):
-    for c, (clab, Y) in enumerate(cols):
-        coords, r2 = (Hn @ axesH.T, 1.0) if Y is None else fn(Y)     # model column = reference
-        a = ax[r, c]; coords = _view(coords)
-        a.scatter(coords[:, 0], coords[:, 1], s=6, c=st, cmap=plot_utils.FIG.cyclic_cmap, alpha=0.5, edgecolors='none')
-        a.set_aspect('equal'); plot_utils.FIG.clean(a)
-        if r == 0: a.set_title(clab, fontsize=13, pad=8)
-        if c == 0: a.set_ylabel(rlab, fontsize=12)
-        a.text(0.5, -0.04, f'R2 = {r2:.2f}', transform=a.transAxes, ha='center', va='top', fontsize=11)
-fig.suptitle('forward & spectral aligned TOWARD the network (color = latent state): both match under a linear '
-             'map, but under rotation only spectral does -> the network implements the spectral computation', y=1.0, fontsize=11)
-fig.tight_layout()
+# reference = the trained network (top-n PCA of the hidden); the two theories align to IT, viewed in
+# the network's own ring plane (class means over the true latent state).
+fig = plot_utils.plot_alignment_grid(
+    H, {'forward algorithm': belf, 'spectral algorithm': spec},
+    methods=('linear', 'rotation'), rank=n, colors=st, view='class_means',
+    ref_label='model (transformer)',
+    suptitle='forward & spectral aligned TOWARD the network (color = latent state): both match under a linear '
+             'map, but under rotation only spectral does -> the network implements the spectral computation')
 plot_utils.save_figure(fig, plot_utils.figure_path(config, "align_theories"))
 
 # %% [markdown]

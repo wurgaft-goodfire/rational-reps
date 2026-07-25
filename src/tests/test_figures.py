@@ -54,3 +54,41 @@ def test_save_figure_infers_format_from_extension(tmp_path):
 
     assert Path(png).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"   # PNG magic, not PDF bytes in a .png
     assert Path(pdf).read_bytes()[:5] == b"%PDF-"
+
+
+def test_plot_alignment_grid_annotates_discriminating_r2():
+    import numpy as np
+    from src.code.plot_utils import plot_alignment_grid
+    rng = np.random.default_rng(0)
+    th = rng.uniform(0, 2 * np.pi, 300)
+    ref = np.c_[np.cos(th), np.sin(th)]
+    Q = np.linalg.qr(rng.normal(size=(2, 2)))[0]
+    good = ref @ Q                                        # matches under rotation
+    bad = rng.normal(size=(300, 2))                       # matches under neither
+
+    fig = plot_alignment_grid(ref, {"good": good, "bad": bad}, methods=("rotation",), colors=th)
+    axes = [a for a in fig.axes if a.get_label() != "<colorbar>"]
+    assert len(axes) == 3                                 # reference + two candidates, one method row
+    r2s = [float(t.get_text().split("=")[1]) for a in axes for t in a.texts if "R2" in t.get_text()]
+    assert r2s[0] == 1.0 and r2s[1] > 0.99 and r2s[2] < 0.5
+    plt.close(fig)
+
+    fig = plot_alignment_grid(ref, {"good": good}, methods=("linear", "rotation"), colors=th)
+    axes = [a for a in fig.axes if a.get_label() != "<colorbar>"]
+    assert len(axes) == 4                                 # 2 methods x (reference + 1 candidate)
+    plt.close(fig)
+
+
+def test_plot_trajectory_overlay_panels_and_parity():
+    import numpy as np
+    from src.code.plot_utils import plot_trajectory_overlay
+    rng = np.random.default_rng(0)
+    A = rng.normal(size=(4, 10, 2)); B = A + 0.05 * rng.normal(size=A.shape)
+
+    fig = plot_trajectory_overlay(A, B, seqs=(0, 2), labels=("belief", "network"))
+    assert len(fig.axes) == 2                             # one panel per requested sequence
+    plt.close(fig)
+
+    fig = plot_trajectory_overlay(A, B, seqs=(0,), parity=(A.ravel(), B.ravel(), "rotation only"))
+    assert len(fig.axes) == 2                             # sequence panel + parity panel
+    plt.close(fig)

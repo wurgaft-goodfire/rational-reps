@@ -35,13 +35,12 @@ from pathlib import Path
 import numpy as np, torch
 ROOT = Path(sys.prefix).parent
 os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-from src.code.data import pcfg_next_token
+from src.code.data import pcfg_next_token, anbn_count, dyck_stack, pl_nesting
 from src.code.eval import cka, cca
 from src.code.train import train_inline
-from src.code.pcfg_analysis import (anbn_count, dyck_stack, pl_nesting, heldout_decode_r2, untrained_twin)
+from src.code.analysis_utils import heldout_decode_r2, untrained_twin
 from src.code import plot_utils
 import matplotlib.pyplot as plt
-from scipy.linalg import orthogonal_procrustes
 
 N_SEQ = 600
 ALPHA = 100.0                                                    # ridge strength for the held-out decode
@@ -96,23 +95,12 @@ def analyze(runner, name, label_fn, label_name, cmap):
     # 3-panel belief geometry: predicted | trained (rotation-aligned) | untrained (rotation-aligned).
     # Rotation-only (Procrustes) alignment respects CKA — a high-CKA match overlays the belief, a low
     # one cannot — so the untrained panel visibly fails to reproduce the belief's organization.
-    def scores(X, r=6):
-        Xc = X - X.mean(0); Xc = Xc / (np.linalg.norm(Xc) + 1e-9)
-        U, S, _ = np.linalg.svd(Xc, full_matrices=False); return (U * S)[:, :r]
-    ref = scores(B)
-    def align(X):
-        s = scores(X); R, _ = orthogonal_procrustes(s, ref); return (s @ R)[:, :2]
-    panels = [(ref[:, :2], "predicted belief"), (align(H), f"transformer (CKA {cka_tr:.2f})"),
-              (align(Hun), f"untrained (CKA {cka_un:.2f})")]
-    fig, ax = plt.subplots(1, 3, figsize=(13.5, 4.4))
-    for a, (C, ttl) in zip(ax, panels):
-        sc = a.scatter(C[:, 0], C[:, 1], c=labels, cmap=cmap, s=18, alpha=0.8)
-        c0 = np.median(C, 0); rad = np.percentile(np.abs(C - c0), 98) * 1.15 + 1e-9   # crop outliers
-        a.set_xlim(c0[0] - rad, c0[0] + rad); a.set_ylim(c0[1] - rad, c0[1] + rad)
-        a.set_aspect("equal"); plot_utils.FIG.clean(a); a.set_title(ttl)
-    cb = fig.colorbar(sc, ax=ax, fraction=0.02, pad=0.02); cb.set_label(label_name)
-    fig.suptitle(f"{name} (layer {layer}): transformer represents the predicted belief geometry "
-                 f"(learned — untrained twin does not)", y=1.02)
+    fig = plot_utils.plot_alignment_grid(
+        B, {f"transformer (CKA {cka_tr:.2f})": H, f"untrained (CKA {cka_un:.2f})": Hun},
+        methods=("rotation",), rank=6, colors=labels, cmap=cmap,
+        ref_label="predicted belief", colorbar_label=label_name,
+        suptitle=f"{name} (layer {layer}): transformer represents the predicted belief geometry "
+                 f"(learned — untrained twin does not)")
     plot_utils.save_figure(fig, plot_utils.figure_path(config, f"belief_{name}"))
     plt.show()
     return m

@@ -217,11 +217,8 @@ def _tree_graph(parents):
 
 def _structure_graph(spec):
     """(adjacency, node positions) for drawing any structure's latent graph (2-D or 3-D)."""
-    from .data import structure_adjacency, chain, tree_parents
+    from .data import structure_adjacency, tree_parents
     name = spec["structure"]; p = {k: v for k, v in spec.items() if k != "structure"}
-    if name == "log_line":
-        n = p.get("n", 30)
-        return chain(n), np.c_[np.log1p(np.arange(n)), np.zeros(n)]
     if name == "tree":
         return _tree_graph(tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents")))
     if name in ("product", "stack"):
@@ -287,7 +284,7 @@ def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None, labe
             for (x, y), lab in zip(pos[:, :2], labels):
                 ax.text(x, y, lab, fontsize=6, ha="center", va="bottom", zorder=3)
         d0, d1 = np.ptp(pos[:, 0]), np.ptp(pos[:, 1])
-        if min(d0, d1) < 0.1 * max(d0, d1):               # ~1-D (chain / log line): fill, don't squash
+        if min(d0, d1) < 0.1 * max(d0, d1):               # ~1-D (chain): fill, don't squash
             pad = 0.25 * max(d0, d1)
             ax.set_ylim(pos[:, 1].min() - pad, pos[:, 1].max() + pad); ax.margins(x=0.05)
         else:
@@ -688,4 +685,104 @@ def plot_convergence_bars(scores, ylabel="similarity to predicted geometry",
     ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.13), ncol=2)
     ax.set_title(title, pad=30)
     FIG.style_axes(ax)
+    return fig
+
+
+# ── unified belief-representation figures (shared by the HMM and PCFG notebooks) ──
+
+def class_mean_axes(X, labels):
+    """Top-2 plane of the class means of ``X`` — a stable 2-D view for a labeled point cloud
+    (per-point clouds are noisy; the mean structure defines the plane)."""
+    X = np.asarray(X, float); labels = np.asarray(labels)
+    means = np.stack([X[labels == k].mean(0) for k in np.unique(labels)])
+    return np.linalg.svd(means - means.mean(0), full_matrices=False)[2][:2]
+
+
+def plot_alignment_grid(reference, candidates, methods=("linear", "rotation"), rank=None,
+                        colors=None, cmap=None, ref_label="reference", view="pca",
+                        colorbar_label=None, suptitle=None, panel=3.8):
+    """Grid of scatter panels comparing representations to a ``reference``: rows = alignment
+    methods, columns = [reference] + ``candidates`` (dict name -> (N, d) array). Each candidate is
+    aligned to the reference (``align_representations``) and drawn in the reference's 2-D view
+    plane with its R² annotated — 'linear' is the fit any invertible map achieves, 'rotation' the
+    basis-level fit CKA sees, so the two rows together separate same-basis from merely-decodable.
+
+    ``rank`` PCA-truncates the reference (and each candidate before rotation) — pass it when the
+    reference is a wide cloud (a hidden state) rather than a low-dim geometry. ``view`` picks the
+    display plane: ``"pca"`` (reference's top-2) or ``"class_means"`` (``class_mean_axes`` of the
+    reference under ``colors`` as labels — stable when per-point clouds are noisy).
+    ``colors`` colors every panel's points (a label per row of the reference)."""
+    from .analysis_utils import align_representations
+    reference = np.asarray(reference, float)
+    refc = reference - reference.mean(0)
+    if rank:
+        reference = refc @ np.linalg.svd(refc, full_matrices=False)[2][:rank].T
+        refc = reference - reference.mean(0)
+    if view == "class_means":
+        view_axes = class_mean_axes(refc, np.asarray(colors))
+    else:
+        view_axes = np.linalg.svd(refc, full_matrices=False)[2][:2]
+
+    cols = [(ref_label, None)] + list(candidates.items())
+    fig, ax = plt.subplots(len(methods), len(cols), figsize=(panel * len(cols), (panel + 0.6) * len(methods)),
+                           squeeze=False)
+    for r, method in enumerate(methods):
+        for c, (name, Y) in enumerate(cols):
+            if Y is None:
+                coords, r2 = refc @ view_axes.T, 1.0
+            else:
+                aligned, r2 = align_representations(Y, reference, method=method, rank=rank)
+                coords = (aligned - reference.mean(0)) @ view_axes.T
+            a = ax[r, c]
+            sc = a.scatter(coords[:, 0], coords[:, 1], c=colors, cmap=cmap or FIG.cyclic_cmap,
+                           s=10, alpha=0.6, edgecolors="none")
+            c0 = np.median(coords, 0)
+            rad = np.percentile(np.abs(coords - c0), 98).max() * 1.15 + 1e-9      # crop outliers
+            a.set_xlim(c0[0] - rad, c0[0] + rad); a.set_ylim(c0[1] - rad, c0[1] + rad)
+            a.set_aspect("equal"); FIG.clean(a)
+            if r == 0:
+                a.set_title(name, fontsize=13, pad=8)
+            if c == 0:
+                a.set_ylabel(f"aligned by {method}", fontsize=12)
+            a.text(0.5, -0.04, f"R2 = {r2:.2f}", transform=a.transAxes, ha="center", va="top", fontsize=11)
+    if colorbar_label is not None:
+        cb = fig.colorbar(sc, ax=ax, fraction=0.02, pad=0.02); cb.set_label(colorbar_label)
+    if suptitle:
+        fig.suptitle(suptitle, y=1.02)
+    if colorbar_label is None:
+        fig.tight_layout()
+    return fig
+
+
+def plot_trajectory_overlay(ref_traj, other_traj, seqs=(0, 1), labels=("reference", "model"),
+                            parity=None, suptitle=None, panel=4.3):
+    """Per-sequence 2-D belief-path overlays: ``ref_traj`` / ``other_traj`` are (B, L, 2) — the
+    reference path is drawn as dots on a connecting line, the other as crosses, both colored by
+    position, one panel per index in ``seqs``. ``parity=(x, y, label)`` appends a coordinate-wise
+    y=x panel (the rotation-only parity check)."""
+    ref_traj = np.asarray(ref_traj, float); other_traj = np.asarray(other_traj, float)
+    L = ref_traj.shape[1]
+    n_panels = len(seqs) + (parity is not None)
+    fig, ax = plt.subplots(1, n_panels, figsize=(panel * n_panels, panel), squeeze=False)
+    ax = ax[0]
+    for a, seq in zip(ax, seqs):
+        a.plot(ref_traj[seq, :, 0], ref_traj[seq, :, 1], "-", color="0.8", lw=1, zorder=0)
+        a.scatter(ref_traj[seq, :, 0], ref_traj[seq, :, 1], c=range(L), cmap="viridis", s=38,
+                  zorder=1, label=labels[0])
+        a.scatter(other_traj[seq, :, 0], other_traj[seq, :, 1], c=range(L), cmap="viridis",
+                  marker="x", s=32, lw=1.5, zorder=2, label=labels[1])
+        a.set_aspect("equal"); FIG.clean(a); a.set_title(f"sequence {seq}")
+    ax[0].legend(frameon=False, fontsize=9, loc="upper center", bbox_to_anchor=(0.5, -0.02))
+    if parity is not None:
+        x, y, label = parity
+        a = ax[-1]
+        a.scatter(x, y, s=4, alpha=0.15, color=FIG.colors["blue"], edgecolors="none")
+        lim = [min(np.min(x), np.min(y)), max(np.max(x), np.max(y))]
+        a.plot(lim, lim, "--", color="0.4", lw=1)
+        a.set_xlabel(labels[0]); a.set_ylabel(labels[1])
+        a.set_title(f"coordinate-wise match\n({label})")
+        FIG.style_axes(a); a.set_aspect("equal")
+    if suptitle:
+        fig.suptitle(suptitle, y=1.02)
+    fig.tight_layout()
     return fig
