@@ -141,14 +141,26 @@ def train(config):
     }
 
 
+def _run_key(cfg):
+    """The config content that identifies a run: everything except machine-local bookkeeping."""
+    c = OmegaConf.to_container(cfg, resolve=True)
+    for k in ("cache_dir", "run_dir", "output_dir", "data_path", "eval_cache_dir", "overwrite", "wandb"):
+        c.pop(k, None)
+    return c
+
+
 def _run_exists(config):
-    """Write config_resolved and report whether a completed run is already on disk. Honors
-    ``overwrite``: when set, wipes the output dir and returns False so training re-runs."""
-    config.to_yaml(os.path.join(config.run_dir, "config_resolved.yaml"))
+    """Write config_resolved and report whether a completed run of the *same resolved config* is
+    already on disk (a yaml edit changes the task but not the run dir); a stale or ``overwrite=true``
+    run is wiped so training re-runs."""
+    resolved_path = os.path.join(config.run_dir, "config_resolved.yaml")
+    stale = os.path.exists(resolved_path) and _run_key(OmegaConf.load(resolved_path)) != _run_key(config.cfg)
+    config.to_yaml(resolved_path)
     if os.path.exists(config.output_dir) and len(os.listdir(config.output_dir)) > 0:
-        if not config.cfg.overwrite:
+        if not config.cfg.overwrite and not stale:
             return True
-        print(f"overwrite=true: cleaning output directory {config.output_dir}")
+        reason = "overwrite=true" if config.cfg.overwrite else "resolved config changed"
+        print(f"{reason}: cleaning output directory {config.output_dir}")
         shutil.rmtree(config.output_dir)
         os.makedirs(config.output_dir, exist_ok=True)
     return False

@@ -15,8 +15,8 @@ def test_clean_dirname_tidies_the_override_string():
     assert clean_dirname(od) == "structure=product,factors=[chain(n=15),ring(n=15)]"
     assert clean_dirname("+structure_kwargs.n=12,setting=graph,structure=ring,~structure_kwargs") == \
         "structure=ring,n=12"
-    assert clean_dirname("") == "single_run"           # no distinguishing overrides
-    assert clean_dirname("setting=graph,~structure_kwargs") == "single_run"
+    assert clean_dirname("") == "default_run"           # no distinguishing overrides
+    assert clean_dirname("setting=graph,~structure_kwargs") == "default_run"
 
 
 def test_graph_overrides_carries_kernel_params_in_structure_kwargs():

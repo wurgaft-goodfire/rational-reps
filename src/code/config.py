@@ -12,7 +12,7 @@ def clean_dirname(override_dirname):
     bookkeeping noise (``~key`` deletions, the redundant ``setting=`` already in the path), strips the
     ``+`` / ``structure_kwargs.`` prefixes, compresses factor dicts (``{structure:ring,n:15}`` ->
     ``ring(n=15)``), and puts ``structure`` first. Hashes a suffix if it would overflow the filesystem
-    name limit. Empty (no distinguishing overrides) -> ``single_run``."""
+    name limit. Empty (no distinguishing overrides) -> ``default_run``."""
     # split on top-level commas only — factor values like [{structure:ring,n:15},...] carry their own
     items, depth, cur = [], 0, ""
     for ch in str(override_dirname):
@@ -29,7 +29,7 @@ def clean_dirname(override_dirname):
             continue
         parts.append(item.lstrip("+").replace("structure_kwargs.", ""))
     if not parts:
-        return "single_run"
+        return "default_run"
     parts.sort(key=lambda s: (not s.startswith("structure="), s))     # structure first, then the rest
     name = re.sub(r"\{structure:([^,}]+)(?:,([^}]*))?\}",
                   lambda m: m.group(1) + (f"({m.group(2)})" if m.group(2) else ""), ",".join(parts))
