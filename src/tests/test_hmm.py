@@ -13,10 +13,10 @@ from src.code.eval import cka
 
 
 def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0, structure="ring", structure_kwargs=None):
+    kwargs = {"n": n} if structure_kwargs is None else structure_kwargs
     return Config(OmegaConf.create({
         "setting": "hmm", "structure": structure,
-        "structure_kwargs": {"n": n} if structure_kwargs is None else structure_kwargs,
-        "gamma": 0.8, "cooccurrence": "diffusion",
+        "structure_kwargs": {"gamma": 0.8, "cooccurrence": "diffusion", **kwargs},
         "emission": emission, "emission_sigma": sigma, "n_symbols": M,
         "sample_mode": "sequence", "random_seed": seed,
         "model_kwargs": {"model_type": "transformer"},
@@ -28,12 +28,12 @@ def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0, structure="ring", struc
 @pytest.mark.parametrize("structure,kwargs", [
     ("ring", {"n": 12}), ("chain", {"n": 12}), ("grid", {"n": 4, "m": 4}),
     ("sphere", {"n": 30}), ("communities", {"n": 6, "k": 3}), ("hypercube", {"n": 4}),
-    ("complete", {"n": 10}), ("tree", {"n": 3, "k": 2}), ("log_line", {"n": 12}),
+    ("complete", {"n": 10}), ("tree", {"n": 3, "k": 2}),
     ("product", {"factors": [{"structure": "ring", "n": 6}, {"structure": "ring", "n": 4}]}),
 ])
 def test_every_structure_works_as_hmm_latent(structure, kwargs):
     # Every structure yields an adjacency + conditional, so any of them can be the HMM latent graph
-    # (tree/log_line/product included, not only the plain graphs).
+    # (tree/product included, not only the plain graphs).
     ds = HMMDataset(_cfg(structure=structure, structure_kwargs=kwargs))
     x = ds[0]["input_ids"][:, 1:]                              # drop the start token
     b = ds.forward_algorithm(x)
@@ -75,6 +75,40 @@ def _belief_geometry_cka(sigma):
 def test_informative_emissions_recover_latent_geometry_in_belief_space():
     assert _belief_geometry_cka(sigma=0.8) > 0.9             # sharp emissions -> belief is the ring
     assert _belief_geometry_cka(sigma=0.8) > _belief_geometry_cka(sigma=8.0) + 0.2   # >> aliased
+
+
+def test_shipped_hmm_config_has_learnable_signal():
+    """Guardrail on the *shipped* config, not a hand-rolled one: the Bayes-optimal next-token
+    predictor must beat the stationary baseline by a clear margin. This is the invariant an
+    over-wide emission (or any silent data-pipeline change) breaks first — beliefs never leave
+    the prior, KL(bayes || stationary) -> 0, and training 'converges' to a constant."""
+    from hydra import compose, initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+    from pyprojroot import here
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
+        cfg = compose(config_name="config", overrides=["runner=hmm_transformer"])
+    ds = HMMDataset(Config(cfg))
+    bayes = ds[0]["eval_labels"]                               # (B, L, M) forward-algorithm targets
+    stationary = ds.pi @ ds.Em
+    kl = (bayes * (bayes / stationary).log()).sum(-1)
+    assert kl[:, 1:].mean() > 0.05                             # past the first token, context matters
+
+
+def test_bump_emissions_are_gaussian_in_hop_distance():
+    """The HMM treats every structure as its adjacency graph: bump emissions are a Gaussian in
+    hop (geodesic) distance, so sigma means 'hops aliased' — not an embedding artifact."""
+    ds = HMMDataset(_cfg(sigma=1.0, n=12))
+    hops = np.minimum(np.arange(12), 12 - np.arange(12)).astype(float)
+    expected = np.exp(-hops ** 2 / 2.0); expected /= expected.sum()
+    np.testing.assert_allclose(ds.Em[0].cpu().numpy(), expected, atol=1e-6)
+
+    # tree: states are all nodes of the tree graph; hops through the tree order the aliasing.
+    # DFS pre-order for n=2,k=2: 0 root, 1 (2 3) subtree, 4 (5 6) subtree.
+    ds = HMMDataset(_cfg(structure="tree", structure_kwargs={"n": 2, "k": 2}))
+    assert ds.n_states == 7
+    Em = ds.Em.cpu().numpy()
+    assert Em[2, 1] > Em[2, 3] > Em[2, 5]                      # leaf 2: parent (1 hop) > sibling (2) > cousin (4)
 
 
 def test_bump_and_permuted_emissions_have_uniform_per_state_entropy():

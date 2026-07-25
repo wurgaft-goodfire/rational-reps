@@ -8,7 +8,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from .config import Config
-from .geometry import predicted_geometry
 
 ##### Init dataset #####
 def init_dataset(config, overwrite_data: bool = False):
@@ -245,17 +244,16 @@ class RelationalDataset(Dataset):
 ##### Hidden-Markov dataset (latent graph walk + emissions) #####
 
 class HMMDataset(Dataset):
-    """Latent states walk a transition given by any log-conditional the structure defines (``_L``);
-    each state emits an observable token. The network sees only tokens, so the latent geometry lives
-    in the belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the token embedding. Every state is
-    given the *same* emission shape (uniform per-state distinguishability -> even belief coverage);
-    ``emission`` picks how the shape is placed and ``emission_sigma`` its width (small -> sharp/high
-    SNR, large -> aliased):
+    """Latent states walk the structure's adjacency graph (co-occurred into a transition via
+    ``adjacency_conditional``); each state emits an observable token. The network sees only tokens,
+    so the latent geometry lives in the belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the
+    token embedding. Every state is given the *same* emission shape (uniform per-state
+    distinguishability -> even belief coverage); ``emission`` picks how the shape is placed and
+    ``emission_sigma`` its width (small -> sharp/high SNR, large -> aliased):
 
-    - ``bump``: a localized kernel over the *latent geometry*, ``Em[k,j] ~ exp(-d(k,j)^2 / 2 sigma^2)``
-      with ``d`` the distance in the predicted geometry (in units of nearest-neighbour spacing, so
-      ``sigma`` is scale-free). Works for any conditional, not only an adjacency; symbols correspond to
-      states, so ``M = n_states``, and on a symmetric geometry (ring, torus, ...) every state is a shift.
+    - ``bump``: a Gaussian in hop distance on the graph, ``Em[k,j] ~ exp(-d(k,j)^2 / 2 sigma^2)``,
+      so ``sigma`` reads as 'how many hops does an emission alias'. Symbols correspond to states
+      (``M = n_states``), and on a vertex-transitive graph (ring, torus, ...) every state is a shift.
     - ``permuted``: one peaked template distribution over the ``M`` symbols, independently permuted
       per state -- identical entropy, different symbols (``n_symbols < n_states`` forces aliasing).
 
@@ -271,10 +269,10 @@ class HMMDataset(Dataset):
         sk = config.get("structure_kwargs")
         structure_kwargs = OmegaConf.to_container(sk, resolve=True) if sk else {}
         spec = {"structure": config.get("structure"), **structure_kwargs}
-        # The latent transition is any log-conditional the structure defines (tree ultrametric,
-        # balanced product torus, log_line's log-metric, ...) — not restricted to an adjacency.
-        # gamma / cooccurrence ride in structure_kwargs (graph_conditional reads them off the spec).
-        self._L = graph_conditional(spec)
+        # The HMM treats every structure as its adjacency graph: the latent walks the graph's nodes
+        # (tree included — all nodes are states, not only leaves), so the transition and the bump
+        # emission share one geometry. gamma / cooccurrence are required structure_kwargs.
+        self._L = adjacency_conditional(structure_adjacency(spec), spec["gamma"], spec["cooccurrence"])
         self.n_states = len(self._L)
         self.arity = 1
 
@@ -286,12 +284,9 @@ class HMMDataset(Dataset):
         emission = config.get("emission", "bump")
         sigma = float(config.get("emission_sigma", 1.0))
         if emission == "bump":
-            # localized kernel over the latent geometry (any conditional, not just an adjacency);
-            # symbols correspond to states (M = n_states)
-            E = predicted_geometry(self._L)
-            D = np.sqrt(((E[:, None] - E[None]) ** 2).sum(-1))
-            nn = np.sort(D + np.eye(len(D)) * D.max(), axis=1)[:, 1].mean()   # mean nearest-neighbour spacing
-            D = D / nn                                                        # sigma in neighbour-spacing units
+            # Gaussian in hop distance on the structure's graph; symbols correspond to states
+            # (M = n_states), so sigma reads directly as 'how many hops does an emission alias'
+            D = structure_distance(spec)
             Em = np.exp(-(D ** 2) / (2 * sigma ** 2)); self.n_symbols = self.n_states
             self.Em = torch.tensor(Em / Em.sum(1, keepdims=True), dtype=torch.float32, device=self.device)
         elif emission == "permuted":
@@ -393,7 +388,7 @@ class PCFGDataset(Dataset):
         self.g = build_grammar(spec)
         self.m = len(self.g.pi)                                    # latent states
         self.V = self.g.Em.shape[1]                               # terminal symbols
-        self.max_len = int(config.get("max_len", 24))             # max terminals per sentence
+        self.max_len = int(config.cfg.max_len)                    # max terminals per sentence (required)
         self.arity = 1
 
         self.eos_token = self.V
@@ -666,33 +661,21 @@ def tree_adjacency(parents):
     return A
 
 
-def log_line_conditional(n=30, lam=2.0):
-    """A 1-D line with a logarithmic metric (Weber/Fechner): large magnitudes compress."""
-    x = np.log1p(np.arange(n)); dist = np.abs(x[:, None] - x[None])
-    return logcond_from_sim(np.exp(-lam * dist))
-
-
 def _tree_graph(n=2, k=2, parents=None, **_):
     """Tree adjacency over *all* nodes (balanced depth-n branch-k, or an explicit ``parents`` list).
     ``**_`` swallows conditional-only keys (gamma / leaves_only)."""
     return tree_adjacency(tree_parents(n, k, parents))
 
 
-def _line_graph(n=30, **_):
-    """log_line's graph is a plain line — the log-metric lives in its conditional, not its edges."""
-    return chain(n)
-
-
 # One structure = one graph. Every structure builds an adjacency (used by the HMM latent walk and by
-# drawing); a structure may additionally define its own conditional (tree's ultrametric, log_line's
-# log-distance kernel), which overrides the generic adjacency->cooccurrence derivation.
+# drawing); a structure may additionally define its own conditional (tree's ultrametric), which
+# overrides the generic adjacency->cooccurrence derivation.
 _Structure = namedtuple("_Structure", ["adjacency", "conditional"], defaults=[None])
 _STRUCTURES = {
     "ring": _Structure(ring), "chain": _Structure(chain), "grid": _Structure(grid),
     "sphere": _Structure(sphere), "communities": _Structure(communities),
     "hypercube": _Structure(hypercube), "complete": _Structure(complete),
     "tree": _Structure(_tree_graph, tree_conditional),
-    "log_line": _Structure(_line_graph, log_line_conditional),
 }
 
 
@@ -709,7 +692,7 @@ def _build_adjacency(name, params):
 
 def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
     """Log-conditional for a structure spec ``{'structure': name, **params}``. A structure with its
-    own conditional (tree, log_line) uses it directly; otherwise ``cooccurrence`` turns the adjacency
+    own conditional (tree) uses it directly; otherwise ``cooccurrence`` turns the adjacency
     into a conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``, integrating multi-step
     context), ``"geodesic"`` (shortest-path kernel ``gamma**d``, self-similar diagonal),
     ``"adjacency"`` (raw one-step neighbours, zero diagonal), or ``"heat"`` (heat kernel
@@ -724,7 +707,7 @@ def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
     spec.pop("view", None)                                    # 'view' is presentation-only (plotting)
     struct = _STRUCTURES.get(name)
     if struct is not None and struct.conditional is not None:
-        # pass the task gamma only to conditionals that take it (tree does; log_line uses lam)
+        # pass the task gamma only to conditionals that take it (tree does)
         if "gamma" in inspect.signature(struct.conditional).parameters:
             spec.setdefault("gamma", gamma)
         return struct.conditional(**spec)
@@ -751,10 +734,17 @@ def adjacency_conditional(A, gamma=0.8, cooccurrence="diffusion"):
 
 def structure_adjacency(spec):
     """Adjacency matrix of a structure's graph — for the HMM latent walk and for drawing. Every
-    structure has one (tree/log_line included); their special conditionals live in graph_conditional.
+    structure has one (tree included); its special conditional lives in graph_conditional.
     Strips the task-level keys (gamma / cooccurrence)."""
     params = {k: v for k, v in dict(spec).items() if k not in ("structure", "gamma", "cooccurrence")}
     return _build_adjacency(spec["structure"], params)
+
+
+def structure_distance(spec):
+    """Hop (geodesic) distance matrix of a structure's graph — one scale-free metric for every
+    structure, straight from its adjacency (the HMM bump emission's ``sigma`` is in hops)."""
+    from scipy.sparse.csgraph import shortest_path
+    return shortest_path(structure_adjacency(spec) > 0, directed=False, unweighted=True)
 
 
 def stacked_conditional(specs, mode="union", gamma=0.8):
@@ -1221,3 +1211,38 @@ def mini_pl_grammar(spec):
 
 _GRAMMAR_BUILDERS.update({"anbn": anbn_grammar, "dyck": dyck_grammar,
                           "mini_nl": mini_nl_grammar, "mini_pl": mini_pl_grammar})
+
+
+# ── interpretable prefix labels: each grammar's hand sufficient statistic (for coloring analyses) ──
+
+def anbn_count(prefix):
+    """Unmatched a's after ``prefix`` (a = 0, b = 1) — the a^n b^n counter."""
+    return sum(t == 0 for t in prefix) - sum(t == 1 for t in prefix)
+
+
+def dyck_stack(prefix, k=2):
+    """Stack of open bracket types after ``prefix`` (open i is ``i < k``; a close pops)."""
+    st = []
+    for t in prefix:
+        st.append(t) if t < k else st.pop()
+    return tuple(st)
+
+
+def pl_stack_phase(prefix):
+    """``(stack, phase)`` for the control-flow language: constructs pushed on ``if``/``while`` and
+    popped on ``end``; phase = the last token seen (which keyword the parser is between)."""
+    iftok, then, whiletok, do, end = 1, 2, 3, 4, 5
+    st = []
+    for t in prefix:
+        if t == iftok:
+            st.append("if")
+        elif t == whiletok:
+            st.append("while")
+        elif t == end:
+            st.pop()
+    return tuple(st), (prefix[-1] if len(prefix) else -1)
+
+
+def pl_nesting(prefix):
+    """Control-construct nesting depth — the scalar view of :func:`pl_stack_phase`."""
+    return len(pl_stack_phase(prefix)[0])

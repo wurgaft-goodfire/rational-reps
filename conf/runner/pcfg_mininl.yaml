@@ -16,4 +16,4 @@ grammar_kwargs:
 max_len: 18
 model_kwargs:
   model_config: {hidden_size: 128, num_hidden_layers: 4, num_attention_heads: 4, intermediate_size: 512}
-training_kwargs: {learning_rate: 0.001, train_steps: 12000, context_length: 40}
+training_kwargs: {learning_rate: 0.001, train_steps: 12000}

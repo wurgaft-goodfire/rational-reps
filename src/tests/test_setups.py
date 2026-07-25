@@ -134,7 +134,7 @@ def test_structure_graph_layouts_for_all_structures():
         {"structure": "grid", "n": 4, "m": 4}, {"structure": "complete", "n": 5},
         {"structure": "sphere", "n": 40, "k": 6}, {"structure": "hypercube", "n": 3},
         {"structure": "communities", "k": 3, "n": 8},
-        {"structure": "tree", "n": 3, "k": 2}, {"structure": "log_line", "n": 15},
+        {"structure": "tree", "n": 3, "k": 2},
         {"structure": "product", "factors": [{"structure": "ring", "n": 8}, {"structure": "chain", "n": 5}]},
         {"structure": "stack", "factors": [{"structure": "ring", "n": 8}, {"structure": "ring", "n": 8}]},
     ]

@@ -301,3 +301,59 @@ def test_transformer_recovers_anbn_belief():
     kl_marg = np.mean([float((r * (np.log(r + 1e-9) - np.log(np.mean(marg, 0) + 1e-9))).sum()) for r in marg])
     assert cca(H, Bel) > 0.9                                  # belief linearly present in the hidden
     assert np.mean(kls) < 0.5 * kl_marg                       # and behavior well below the marginal baseline
+
+
+@pytest.mark.parametrize("runner", ["pcfg_anbn", "pcfg_dyck", "pcfg_mininl", "pcfg_minipl"])
+def test_shipped_pcfg_config_has_hierarchical_signal(runner):
+    """Guardrail on the *shipped* runner configs: the Bayes predictor must beat a bigram baseline
+    by a clear margin — a Markov-solvable grammar would make the hierarchy claims vacuous (the
+    PCFG analog of the HMM's Bayes-equals-stationary failure)."""
+    from hydra import compose, initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+    from pyprojroot import here
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
+        cfg = compose(config_name="config", overrides=[f"runner={runner}"])
+    cfg.training_kwargs.batch_size = 1024
+    ds = PCFGDataset(Config(cfg))
+    b = ds[0]
+    bayes = b["eval_labels"].cpu().numpy()
+    ids = b["input_ids"].cpu().numpy()
+    T, C = bayes.shape[1], bayes.shape[2]
+    valid = bayes.sum(-1) > 0.5
+
+    nxt = ids[:, 1:T + 1].copy(); nxt[nxt == ds.eos_token] = C - 1   # outcome class = terminal | EOS
+    prev = ids[:, 0:T]                                               # conditioning token (start at t=0)
+    bigram = np.full((ds.vocab_size, C), 1e-9)
+    np.add.at(bigram, (prev[valid], nxt[valid]), 1)
+    bigram /= bigram.sum(1, keepdims=True)
+
+    kl = (bayes[valid] * (np.log(bayes[valid] + 1e-9) - np.log(bigram[prev[valid]] + 1e-9))).sum(-1)
+    assert kl.mean() > 0.05                                          # structure beyond one-step stats
+
+
+from src.code.data import anbn_count, dyck_stack, pl_stack_phase, pl_nesting
+
+
+# ── interpretable prefix labels (each grammar's hand sufficient statistic) ──
+def test_anbn_count_is_unmatched_a():
+    assert anbn_count([]) == 0
+    assert anbn_count([0, 0, 0]) == 3                       # aaa -> 3 unmatched
+    assert anbn_count([0, 0, 1]) == 1                       # aab -> 1 unmatched
+    assert anbn_count([0, 0, 1, 1]) == 0                    # aabb -> balanced
+
+
+def test_dyck_stack_tracks_open_brackets():
+    assert dyck_stack([], k=2) == ()
+    assert dyck_stack([0, 1], k=2) == (0, 1)                # two opens
+    assert dyck_stack([0, 1, 3], k=2) == (0,)              # close type-1 -> pop
+    assert dyck_stack([0, 1, 3, 2], k=2) == ()             # close type-0 -> empty
+
+
+def test_pl_stack_phase_pushes_if_while_pops_end():
+    # if(1) cond(6) then(2) while(3) cond(6) do(4) asgn(0) end(5)
+    pre = [1, 6, 2, 3, 6, 4, 0, 5]
+    stack, phase = pl_stack_phase(pre)
+    assert stack == ("if",)                                 # inner while closed, outer if still open
+    assert phase == 5                                       # just saw `end`
+    assert pl_nesting([1, 6, 2, 1, 6, 2, 0]) == 2           # two nested ifs open

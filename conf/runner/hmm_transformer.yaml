@@ -1,7 +1,7 @@
 # @package _global_
-# HMM experiment: latent states walk a graph, emitting observable tokens. Belief-tracking needs a
-# bigger transformer + longer training than the fully-observed graph tasks (the default tiny model
-# under-fits and never reaches Bayes). Sized to reach Bayes-optimal on the belief-tracking task.
+# HMM experiment: latent states walk a graph, emitting observable tokens. A single layer with a
+# single head reaches Bayes on belief-tracking (matching 2L/4H on KL, belief probe, and spectral
+# CKA) — it just needs more width + training steps than the fully-observed graph tasks.
 #   python -m src.code.train runner=hmm_transformer
 defaults:
   - override /setting: hmm
@@ -17,9 +17,11 @@ sample_mode: sequence
 model_kwargs:
   model_config:
     hidden_size: 128
-    num_hidden_layers: 2
-    num_attention_heads: 4
+    num_hidden_layers: 1
+    num_attention_heads: 1
     intermediate_size: 512
+eval_kwargs:
+  output_hidden_states: true
 training_kwargs:
   learning_rate: 0.001
   train_steps: 10000

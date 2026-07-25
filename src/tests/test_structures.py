@@ -123,12 +123,6 @@ def test_tree_is_orthogonal_direct_sum_of_simplices():
     assert np.abs(dirs(top) @ dirs(within).T).max() < 0.05  # orthogonal direct sum
 
 
-def test_log_line_compresses_large_magnitudes():
-    E = predicted_geometry(build_conditional({"structure": "log_line", "n": 30}))
-    gaps = np.abs(np.diff(E[:, 0]))
-    assert gaps[0] > 5 * gaps[-1]                                   # Weber: small numbers spread, large bunch
-
-
 def test_view_defaults_per_structure_and_override():
     from src.code.plot_utils import _view
     assert _view({"structure": "complete", "n": 6}) == "3d"          # a simplex -> 3-D
@@ -145,13 +139,20 @@ def test_view_kwarg_is_presentation_only_and_never_reaches_builders():
     assert structure_adjacency({"structure": "ring", "n": 8, "view": "3d"}).shape == (8, 8)
 
 
-def test_structure_adjacency_supports_tree_and_log_line():
+def test_structure_adjacency_supports_tree():
     # Unified on adjacency: every structure yields an adjacency, so the HMM latent walk and the
-    # structure-drawing path accept tree/log_line too — not just the graph-conditional path.
+    # structure-drawing path accept the tree too — not just the graph-conditional path.
     from src.code.data import structure_adjacency
     A_tree = structure_adjacency({"structure": "tree", "n": 2, "k": 3})   # all nodes: 1 + 3 + 9 = 13
     assert A_tree.shape == (13, 13)
     assert np.allclose(A_tree, A_tree.T) and A_tree.sum() > 0             # symmetric tree edges
-    A_line = structure_adjacency({"structure": "log_line", "n": 8})       # log_line's graph is a line
-    assert A_line.shape == (8, 8)
-    assert A_line[np.arange(7), np.arange(1, 8)].sum() == 7               # consecutive-node edges
+
+
+def test_structure_distance_is_hop_distance_on_the_adjacency():
+    # One metric for every structure: geodesic hops on its adjacency graph (task-level keys stripped).
+    from src.code.data import structure_distance
+    D = structure_distance({"structure": "ring", "n": 12, "gamma": 0.8, "cooccurrence": "diffusion"})
+    hops = np.abs(np.arange(12)[:, None] - np.arange(12)[None])
+    assert np.array_equal(D, np.minimum(hops, 12 - hops))
+    D = structure_distance({"structure": "tree", "n": 2, "k": 2})   # all 7 nodes, hops through the tree
+    assert D.shape == (7, 7) and D[2, 1] == 1 and D[2, 3] == 2 and D[2, 5] == 4
