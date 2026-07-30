@@ -11,6 +11,7 @@ This is research code. Correctness, succinctness, and clarity take priority over
 - **No defensive validation** at internal boundaries. Trust that callers pass correct inputs; only validate at the outermost entry point (CLI args, config files).
 - **Integration tests may load real models.** A test that runs an actual forward pass is more trustworthy than one that mocks the model.
 - **Comments explain the current state of the code, not its chronology and development** (that's what git is for). No "(removed) …", "previously …", or "now uses …" notes.
+- **Succinct docstrings.** One to three lines: what it computes and the shapes. Derivations, empirical findings, and caveats belong in notebook markdown, not docstrings.
 
 # Development approach
 

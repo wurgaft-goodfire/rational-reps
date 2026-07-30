@@ -150,8 +150,15 @@ def align_representations(X, ref, method="rotation", rank=None):
 
 
 def _ridge_fit_r2(Xtr, Ytr, Xte, Yte, alpha):
-    """Ridge-regress ``Y`` on standardized ``X`` (bias unregularized); return R² on the test split."""
-    mu, sd = Xtr.mean(0), Xtr.std(0) + 1e-8
+    """Ridge-regress ``Y`` on standardized ``X`` (bias unregularized); return R² on the test split.
+
+    Units with no usable variance on the train split are dropped: standardizing them would turn
+    their flat noise into an O(1) regressor and multiply any held-out excursion by the same huge
+    factor. A saturated unit is unidentifiable here, not informative."""
+    sd0 = Xtr.std(0)
+    keep = sd0 > 1e-6 * sd0.max()
+    Xtr, Xte = Xtr[:, keep], Xte[:, keep]
+    mu, sd = Xtr.mean(0), Xtr.std(0)
     Xtr = np.c_[(Xtr - mu) / sd, np.ones(len(Xtr))]
     Xte = np.c_[(Xte - mu) / sd, np.ones(len(Xte))]
     A = Xtr.T @ Xtr + alpha * np.eye(Xtr.shape[1]); A[-1, -1] -= alpha

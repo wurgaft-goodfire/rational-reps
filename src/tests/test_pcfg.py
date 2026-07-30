@@ -230,6 +230,25 @@ def test_hankel_forward_state_is_the_sufficient_statistic():
     assert r2 > 0.999                                        # next-token dist is linear in the forward state
 
 
+def test_predictive_states_are_sufficient_for_every_observed_prefix():
+    """``pcfg_predictive_states`` returns the Hankel forward state at each *distinct* prefix of a
+    corpus. Being the minimal sufficient statistic of the future, the exact next-token distribution
+    must be a linear function of it — the property the network's hidden state is tested against."""
+    from src.code.geometry import pcfg_predictive_states
+    g = build_grammar({"grammar": "dyck", "k": 2, "depth": 3}); srng = np.random.default_rng(0)
+    seqs = [_sample(g, srng) for _ in range(200)]
+    prefixes, F, info = pcfg_predictive_states(g, seqs, max_tests=40)
+    assert prefixes == sorted({tuple(s[:t]) for s in seqs for t in range(len(s) + 1)})
+    assert F.shape == (len(prefixes), len(info["tests"]) + 1)
+    assert [tuple(seqs[b][:t]) for b, t in info["loc"]] == prefixes   # rows index the hidden states
+    D = np.array([pcfg_next_token(np.array(p, dtype=int), g)[0][len(p)] for p in prefixes])
+    Fa = np.c_[F, np.ones(len(F))]
+    r2 = 1 - ((D - Fa @ np.linalg.lstsq(Fa, D, rcond=None)[0]) ** 2).sum() / ((D - D.mean(0)) ** 2).sum()
+    assert r2 > 0.999
+    # the tests separate every predictive state: rank stops growing once they are long enough
+    assert pcfg_predictive_states(g, seqs, test_len=5, max_tests=40)[2]["rank"] == info["rank"]
+
+
 # ── dataset ──────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("name,kw", GRAMMARS)
 def test_dataset_batch_contract(name, kw):
@@ -330,6 +349,33 @@ def test_shipped_pcfg_config_has_hierarchical_signal(runner):
 
     kl = (bayes[valid] * (np.log(bayes[valid] + 1e-9) - np.log(bigram[prev[valid]] + 1e-9))).sum(-1)
     assert kl.mean() > 0.05                                          # structure beyond one-step stats
+
+
+@pytest.mark.parametrize("runner", ["pcfg_anbn_rnn", "pcfg_dyck_rnn", "pcfg_mininl_rnn", "pcfg_minipl_rnn"])
+def test_shipped_pcfg_rnn_runner_forward_contract(runner):
+    """The GRU runners compose, size from the dataset, and expose per-position hidden states —
+    the contract the belief-decoding analysis reads (recurrent state at every prefix position)."""
+    from hydra import compose, initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+    from omegaconf import open_dict
+    from pyprojroot import here
+    from src.code.models import init_model
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
+        cfg = compose(config_name="config", overrides=[f"runner={runner}"])
+    cfg.training_kwargs.batch_size = 8
+    config = Config(cfg)
+    ds = PCFGDataset(config)
+    mc = config.cfg.model_kwargs.model_config
+    with open_dict(mc):
+        mc.vocab_size = ds.vocab_size; mc.num_classes = ds.num_dims; mc.arity = ds.arity
+    model = init_model(config)
+    b = ds[0]
+    out = model(b["input_ids"].to(ds.device), labels=b["labels"].to(ds.device),
+                output_hidden_states=True)
+    assert out["hidden_states"][-1].shape == (8, ds.seq_len, mc.hidden_size)
+    assert out["logits"].shape == (8, ds.seq_len, ds.vocab_size)
+    assert torch.isfinite(out["loss"])
 
 
 from src.code.data import anbn_count, dyck_stack, pl_stack_phase, pl_nesting

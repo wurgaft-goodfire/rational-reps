@@ -1,0 +1,19 @@
+# @package _global_
+# Miniature control-flow language with a GRU: the recurrent state must carry the stack of open
+# constructs times the intra-construct phase.
+#   python -m src.code.train runner=pcfg_minipl_rnn
+defaults:
+  - override /setting: pcfg
+  - override /model: rnn
+  - override /train: default
+  - _self_
+name: pcfg_minipl_rnn
+output_dir: ${run_dir}/checkpoints
+sample_mode: sequence
+grammar: mini_pl
+grammar_kwargs:
+  depth: 3                 # max control-construct nesting depth
+max_len: 24
+model_kwargs:
+  model_config: {embed_dim: 32, hidden_size: 128, num_layers: 1}
+training_kwargs: {learning_rate: 0.001, train_steps: 12000}

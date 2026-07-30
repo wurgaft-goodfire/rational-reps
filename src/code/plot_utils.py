@@ -336,12 +336,14 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None):
     scatter_geometry(ax, _pca(r, ndim), title, cmap)
 
 
-def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", ylabel=r"item  $\theta$"):
-    """Diverging heatmap of the (centered) conditional the geometry is read off (square, borderless,
-    with axis labels)."""
+def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", ylabel=r"item  $\theta$",
+                        aspect="equal"):
+    """Diverging heatmap of the (centered) conditional the geometry is read off (borderless, with
+    axis labels). Pass ``aspect="auto"`` for far-from-square conditionals (e.g. many items, few
+    outcomes), which an equal aspect would collapse to a sliver."""
     Ld = np.asarray(L) - np.asarray(L).mean()
     lim = np.percentile(np.abs(Ld), 98)
-    ax.imshow(Ld, cmap=FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect="equal")
+    ax.imshow(Ld, cmap=FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect=aspect)
     FIG.clean(ax); ax.set_anchor("N")                     # drop ticks + spines, pin to top
     ax.set(title=title, xlabel=xlabel, ylabel=ylabel)     # keep just the axis labels
 
@@ -751,6 +753,27 @@ def plot_alignment_grid(reference, candidates, methods=("linear", "rotation"), r
         fig.suptitle(suptitle, y=1.02)
     if colorbar_label is None:
         fig.tight_layout()
+    return fig
+
+
+def plot_prediction_pair(reference, prediction, name, colors, method="linear", cmap=None,
+                         panel=3.8, ref_label="transformer"):
+    """The prediction's own 2-D cloud (top-2 PCA) beside ``reference`` aligned into that plane
+    (``method``: 'linear' = CCA-level, 'rotation' = CKA-level), R2 annotated; shared axes and
+    coloring."""
+    from .analysis_utils import align_representations
+    Y = np.asarray(prediction, float); Yc = Y - Y.mean(0)
+    Y2 = Yc @ np.linalg.svd(Yc, full_matrices=False)[2][:2].T
+    mapped, r2 = align_representations(np.asarray(reference, float), Y2, method=method)
+    fig, ax = plt.subplots(1, 2, figsize=(panel * 2, panel + 0.6))
+    for a, (pts, title) in zip(ax, [(Y2, name), (mapped, f"{ref_label} in {name} space")]):
+        a.scatter(pts[:, 0], pts[:, 1], c=colors, cmap=cmap or FIG.cyclic_cmap, s=10,
+                  alpha=0.6, edgecolors="none")
+        a.set_aspect("equal"); FIG.clean(a); a.set_title(title, fontsize=13, pad=8)
+    ax[1].set_xlim(*ax[0].get_xlim()); ax[1].set_ylim(*ax[0].get_ylim())
+    ax[1].text(0.5, -0.04, f"R2 = {r2:.2f}", transform=ax[1].transAxes,
+               ha="center", va="top", fontsize=11)
+    fig.tight_layout()
     return fig
 
 

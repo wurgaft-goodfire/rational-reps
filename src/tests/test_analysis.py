@@ -64,6 +64,24 @@ def test_heldout_decode_r2_recovers_linear_map_and_respects_groups():
     assert heldout_decode_r2(H, rng.normal(size=(80, 3)), groups, seed=0) < 0.3
 
 
+def test_heldout_decode_r2_ignores_units_flat_on_the_train_split():
+    """A saturated unit (tanh-flat over the training prefixes, moving only on a held-out one) carries
+    no fitted information: standardizing it by its ~0 train std turns that flat noise into an O(1)
+    regressor, then multiplies the held-out excursion by the same huge factor and wrecks R². Such
+    units must be dropped, not rescaled."""
+    import numpy as np
+    from src.code.analysis_utils import heldout_decode_r2
+    rng = np.random.default_rng(0)
+    F = rng.normal(size=(80, 3))
+    groups = np.arange(80)
+    train_mask = np.arange(80) < 60
+    flat = 1e-9 * rng.normal(size=80); flat[-1] = 50.0       # flat on train, excursion on one test row
+    H = F @ rng.normal(size=(3, 16))
+    clean = heldout_decode_r2(H, F, groups, train_mask=train_mask)
+    assert clean > 0.95
+    assert heldout_decode_r2(np.c_[H, flat], F, groups, train_mask=train_mask) > clean - 0.01
+
+
 # ── untrained-model control (shape only; the CCA gap is a notebook/slow check) ──
 def test_untrained_twin_matches_architecture():
     import torch

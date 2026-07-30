@@ -147,10 +147,12 @@ class RNNReadout(_ReadoutBase):
                           num_layers=config.num_layers, batch_first=True)
         self.head = nn.Linear(config.hidden_size, config.vocab_size)   # next-token over the vocab
 
-    def forward(self, input_ids, labels=None, **kwargs):
+    def forward(self, input_ids, labels=None, output_hidden_states=False, **kwargs):
         h, _ = self.rnn(self.embedding(input_ids))          # (B, T, hidden)
         logits = self.head(h)
         out = {"logits": logits}
+        if output_hidden_states:                            # the recurrent state at every position
+            out["hidden_states"] = (h,)
         if labels is not None:                              # causal next-token loss (shift)
             out["loss"] = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
                                           labels[:, 1:].reshape(-1))

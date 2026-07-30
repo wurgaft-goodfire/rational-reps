@@ -92,3 +92,17 @@ def test_plot_trajectory_overlay_panels_and_parity():
     fig = plot_trajectory_overlay(A, B, seqs=(0,), parity=(A.ravel(), B.ravel(), "rotation only"))
     assert len(fig.axes) == 2                             # sequence panel + parity panel
     plt.close(fig)
+
+
+def test_plot_prediction_pair_is_a_two_panel_row():
+    import numpy as np
+    from src.code.plot_utils import plot_prediction_pair
+    rng = np.random.default_rng(0)
+    Y = rng.normal(size=(200, 5))
+    H = np.c_[Y, rng.normal(size=(200, 7))]               # reference contains Y linearly
+    for method in ("linear", "rotation"):
+        fig = plot_prediction_pair(H, Y, "belief", colors=np.arange(200) % 4, method=method)
+        assert len(fig.axes) == 2                         # [prediction, aligned reference]
+        r2s = [t.get_text() for a in fig.axes for t in a.texts if "R2" in t.get_text()]
+        assert len(r2s) == 1
+        plt.close(fig)

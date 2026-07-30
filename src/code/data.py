@@ -20,6 +20,8 @@ def init_dataset(config, overwrite_data: bool = False):
         return RelationalDataset(config)
     if config.setting == "hmm":
         return HMMDataset(config)
+    if config.setting == "dirichlet-categorical":
+        return DirichletCategoricalDataset(config)
     if config.setting == "pcfg":
         return PCFGDataset(config)
     raise ValueError(f"Unsupported setting: {config.setting}")
@@ -359,6 +361,76 @@ class HMMDataset(Dataset):
             b = b / b.sum(-1, keepdim=True)
             out.append(b.clone())
         return torch.stack(out, 1)                                # (B, L, n_states)
+
+    def compute_metrics(self, eval_pred, return_all=True):
+        return _kl_metrics(eval_pred, return_all)
+
+
+##### Dirichlet-categorical dataset (exchangeable in-context inference over observables) #####
+
+class DirichletCategoricalDataset(Dataset):
+    """Each sequence draws ``theta ~ Dir(alpha)`` and emits iid tokens ``x_t ~ Cat(theta)``; the
+    Bayes-optimal next-token distribution is the posterior predictive ``(alpha + c_t)/(alpha_0 + t)``
+    and the predicted representation is its centered log (``logit_code``). Sequence-only."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.rng = torch.Generator(device=self.device); self.rng.manual_seed(config.random_seed)
+        # torch.distributions.Dirichlet takes no generator; numpy keeps theta draws reproducible
+        self.np_rng = np.random.default_rng(config.random_seed)
+        self.K = int(config.get("n_categories"))
+        self.alpha = torch.full((self.K,), float(config.get("alpha")), device=self.device)
+        self.arity = 1
+        self.item_tokens = torch.arange(self.K)                   # emission symbols = outcome classes
+        self.start_token = self.K                                 # extra token to begin a sequence
+
+    @property
+    def num_dims(self):
+        return self.K
+
+    @property
+    def vocab_size(self):
+        return self.K + 1                                         # categories + start token
+
+    @property
+    def seq_len(self):
+        return self.config.training_kwargs["context_length"] + 1
+
+    def __len__(self):
+        return 1
+
+    def _batch_size(self):
+        return self.config.training_kwargs["batch_size"]
+
+    def __getitem__(self, i=None):
+        B, L = self._batch_size(), self.config.training_kwargs["context_length"]
+        theta = torch.tensor(self.np_rng.dirichlet(self.alpha.cpu().numpy(), size=B),
+                             dtype=torch.float32, device=self.device)
+        x = torch.multinomial(theta, L, replacement=True, generator=self.rng)   # (B, L) iid | theta
+
+        start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
+        input_ids = torch.cat([start, x], dim=1)                  # (B, L+1)
+        # Bayes-optimal next-token distributions: prior mean for x_1, posterior predictive after
+        pred = self.posterior_predictive(x)                       # p(x_{t+1} | x_{1:t}), t = 1..L
+        prior = (self.alpha / self.alpha.sum()).expand(B, 1, -1)
+        eval_labels = torch.cat([prior, pred[:, :-1]], dim=1)     # (B, L, K)
+        return {"input_ids": input_ids, "labels": input_ids.clone(), "eval_labels": eval_labels}
+
+    def counts(self, obs):
+        """Cumulative per-category counts of ``x_{1:t}`` at every position t — the belief state
+        (with ``alpha``, the posterior Dirichlet parameters). obs: (B, L) -> (B, L, K)."""
+        return torch.cumsum(nn.functional.one_hot(obs, self.K).float(), dim=1)
+
+    def posterior_predictive(self, obs):
+        """``(alpha + counts_t) / (alpha_0 + t)``: the posterior predictive after ``x_{1:t}``."""
+        n = self.alpha + self.counts(obs)
+        return n / n.sum(-1, keepdim=True)
+
+    def logit_code(self, obs):
+        """Centered log posterior predictive (float64): the predicted in-context code. (B,L) -> (B,L,K)."""
+        g = self.posterior_predictive(obs).double().log()
+        return g - g.mean(-1, keepdim=True)
 
     def compute_metrics(self, eval_pred, return_all=True):
         return _kl_metrics(eval_pred, return_all)

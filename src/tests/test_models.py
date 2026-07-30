@@ -47,6 +47,16 @@ def test_rnn_is_a_causal_lm():
     assert model.item_reps(torch.arange(12), start_token=12).shape == (12, 16)   # GRU hidden
 
 
+def test_rnn_exposes_per_position_hidden_states():
+    # hidden_states = (recurrent state,) — read at every position exactly like a transformer's
+    # residual stream. Embeddings are excluded: they are input, not state, and their width differs
+    # from the hidden (the eval path stacks layers into one equal-width tensor).
+    model = RNNReadout(_cfg(arity=1))
+    out = model(torch.randint(0, 12, (5, 7)), output_hidden_states=True)
+    assert [tuple(h.shape) for h in out["hidden_states"]] == [(5, 7, 16)]
+    assert "hidden_states" not in model(torch.randint(0, 12, (5, 7)))
+
+
 def test_registry_covers_the_ladder():
     assert set(READOUT_CLASSES) == {"klinear", "mlp", "rnn"}
 

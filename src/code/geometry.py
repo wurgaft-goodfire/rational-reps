@@ -149,3 +149,49 @@ def hankel_forward_states(g, prefixes, suffixes, rank=None, tol=1e-9, w=None, nu
         return rw @ proj
 
     return forward_state, {"H": H, "S": S, "rank": r}
+
+
+def pcfg_predictive_states(g, seqs, test_len=4, max_tests=60):
+    """Exact predictive state at every *distinct* prefix of a corpus, as ``(prefixes, F, info)``.
+
+    The predictive state is the vector of predictions for a set of **tests** (the PSR object):
+    ``F[u, v] = p(the continuation begins with v | prefix u)``, plus a final column for the test
+    "the sentence ends here". Two prefixes share a predictive state exactly when their test
+    predictions agree, and the next-token distribution is literally the length-1 test columns — so
+    a model that predicts optimally *and* cannot re-read the prefix must carry this vector.
+
+    This is a strictly stronger object than the next-emitter belief, which marginalizes over one
+    latent node and so forgets the rest of the stack (for ``anbn`` that belief is rank 2). Unlike
+    the whitened Hankel basis of ``hankel_forward_states`` it needs no rank/tolerance choice: no
+    ``1/√S`` factor to amplify near-null directions. Tests are the ``max_tests`` most frequent
+    observed continuation-prefixes of length ``1..test_len``; ``info["rank"]`` is the numeric rank
+    of ``F``, which saturates in ``test_len`` once the tests separate every predictive state.
+    ``info["loc"]`` holds each prefix's first ``(sequence, position)`` occurrence, so a caller can
+    index model hidden states in the same row order as ``F``."""
+    from collections import Counter
+    from .data import pcfg_inside_chart, pcfg_prefix_chart
+    _cache = {}
+
+    def charts(x):
+        x = tuple(x)
+        if x not in _cache:
+            In = pcfg_inside_chart(np.asarray(x, dtype=int), g)
+            PIn = pcfg_prefix_chart(np.asarray(x, dtype=int), g, In)
+            _cache[x] = (float(g.pi @ PIn[(0, len(x) - 1)]), float(g.pi @ In[(0, len(x) - 1)]))
+        return _cache[x]                                             # (p(prefix x), p(sentence == x))
+
+    first = {}
+    for b, s in enumerate(seqs):
+        for t in range(len(s) + 1):
+            first.setdefault(tuple(s[:t]), (b, t))
+    prefixes = sorted(first)
+    counts = Counter(tuple(s[t:t + k]) for s in seqs for t in range(len(s))
+                     for k in range(1, test_len + 1) if t + k <= len(s))
+    tests = [v for v, _ in counts.most_common(max_tests)]
+    F = np.empty((len(prefixes), len(tests) + 1))
+    for i, u in enumerate(prefixes):
+        Zu = 1.0 if not u else charts(u)[0]
+        F[i, :-1] = [charts(u + v)[0] / Zu for v in tests]
+        F[i, -1] = (charts(u)[1] / Zu) if u else 0.0                 # sentences are non-empty
+    return prefixes, F, {"tests": tests, "rank": int(np.linalg.matrix_rank(F)),
+                         "loc": np.array([first[u] for u in prefixes])}
