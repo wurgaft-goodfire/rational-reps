@@ -8,11 +8,9 @@ from omegaconf import DictConfig, OmegaConf
 
 
 def clean_dirname(override_dirname):
-    """Turn Hydra's raw ``override_dirname`` into a tidy, config-keyed run/figure dir name. Drops the
-    bookkeeping noise (``~key`` deletions, the redundant ``setting=`` already in the path), strips the
-    ``+`` / ``structure_kwargs.`` prefixes, compresses factor dicts (``{structure:ring,n:15}`` ->
-    ``ring(n=15)``), and puts ``structure`` first. Hashes a suffix if it would overflow the filesystem
-    name limit. Empty (no distinguishing overrides) -> ``default_run``."""
+    """Turn Hydra's raw ``override_dirname`` into a tidy, config-keyed run/figure dir name: drops
+    bookkeeping noise, compresses factor dicts, puts ``structure`` first, hashes overlong names.
+    Empty (no distinguishing overrides) -> ``default_run``."""
     # split on top-level commas only — factor values like [{structure:ring,n:15},...] carry their own
     items, depth, cur = [], 0, ""
     for ch in str(override_dirname):

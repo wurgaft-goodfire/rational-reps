@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-"""Publication plotting. `FigureGenerator` carries the house style — large Avenir fonts plus the
-demo_graphs visual language (twilight/vlag colormaps, nearest-interpolation heatmaps, borderless
-manifold panels) — and the geometry-analysis helpers render through it (structure -> conditional
--> embedding), matching src/notebooks/demo_graphs.ipynb.
-"""
+"""Publication plotting: `FigureGenerator` carries the house style (large Avenir fonts, twilight/vlag
+colormaps, borderless manifold panels) and the geometry-analysis helpers render through it."""
 import itertools
 from pathlib import Path
 
@@ -89,12 +86,9 @@ def save_figure(fig, filepath, **kwargs):
 
 
 def figure_path(config, name, ext="png"):
-    """Path for a figure under the gitignored cache, in the experiment's ``figures/`` dir beside its
-    per-model run dirs — ``{cache_dir}/{setting}/{override_dirname}/figures/``. The run dir is
-    ``.../{override_dirname}/{model}``, so its parent is the experiment dir shared by every model on
-    that structure; comparison figures live there and switching structures needs no renaming. Defaults
-    to PNG (viewable everywhere); pass ``ext="pdf"`` for a paper-final vector figure. Creates the parent
-    dir so ``save_figure`` can write immediately."""
+    """Path for a figure under the gitignored cache — ``{cache_dir}/{setting}/{override_dirname}/
+    figures/{name}.{ext}``, shared by every model on that structure. Creates the parent dir;
+    pass ``ext="pdf"`` for a paper-final vector figure."""
     path = Path(config.run_dir).parent / "figures" / f"{name}.{ext}"   # run_dir = .../{override}/{model}
     path.parent.mkdir(parents=True, exist_ok=True)
     return str(path)
@@ -116,10 +110,8 @@ _DEFAULT_VIEW = {"sphere": "3d", "hypercube": "3d", "complete": "3d", "product":
 
 
 def _view(spec):
-    """The presentation view for a structure's geometry: ``spec['view']`` if set (a yaml-able
-    structure kwarg) else the per-structure default — ``"torus"`` for a product of two rings, ``"3d"``
-    for intrinsically-3-D structures (sphere, hypercube, complete, ...), ``"ultrametric"`` for trees,
-    ``"2d"`` otherwise. Values: ``"2d"`` | ``"3d"`` (PCA scatters) | ``"torus"`` (3-D donut) |
+    """The presentation view for a structure's geometry: ``spec['view']`` if set, else the
+    per-structure default. Values: ``"2d"`` | ``"3d"`` (PCA scatters) | ``"torus"`` (3-D donut) |
     ``"ultrametric"`` | ``"simplex"`` | ``"pca"`` (tree; a 2-D scatter)."""
     if spec is None:
         return "2d"
@@ -340,10 +332,9 @@ def plot_factorization(L, k=3, item_label=r"items  $\theta$", outcome_label=r"ou
                        caption="embedding = each item's coefficients      "
                                "·      decoder = the basis functions they multiply",
                        highlight_row=None, highlight_col=None):
-    """The manuscript decomposition schematic (graphs_c03): centered log-conditional ≈
-    embedding × decoder, drawn as three aligned heatmaps with per-panel symmetric color scales.
-    ``highlight_row``/``highlight_col`` box one row (a conceptual dimension) and one column
-    (an outcome's position) of the decoder. Returns ``(fig, {"L", "E", "D"})`` for overlays."""
+    """Decomposition schematic: centered log-conditional ≈ embedding × decoder, three aligned
+    heatmaps with per-panel symmetric color scales. ``highlight_row``/``highlight_col`` box one
+    decoder row/column. Returns ``(fig, {"L", "E", "D"})`` for overlays."""
     from matplotlib.patches import Rectangle
     from .geometry import factor_logcond
     Lc, E, D, S, _ = factor_logcond(L)
@@ -417,12 +408,9 @@ def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", 
 
 
 def plot_predicted_geometry(spec, L, E, cmap=None):
-    """The demo triptych: latent structure -> conditional -> the geometry it encodes. ``spec['view']``
-    (a yaml-able structure kwarg) picks the third panel; for a tree the choices are ``"ultrametric"``
-    (a dendrogram of the code, the default), ``"pca"`` (the raw scatter), or ``"simplex"`` (the
-    simplex-of-simplices grid, Park et al.); other structures use ``"2d"``/``"3d"`` PCA. ``spec`` may
-    set ``leaves_only`` to make only leaves items — inner nodes then show as gray junctions and drop
-    out of the conditional/code. ``cmap`` overrides the house cyclic colormap for item coloring."""
+    """Triptych: latent structure -> conditional -> the geometry it encodes. ``spec['view']`` picks
+    the third panel (tree: ``"ultrametric"`` | ``"pca"`` | ``"simplex"``; else ``"2d"``/``"3d"`` PCA);
+    ``spec['leaves_only']`` makes only leaves items. ``cmap`` overrides the house cyclic colormap."""
     A, pos = _structure_graph(spec)
     is3d = pos.shape[1] == 3
     is_tree = spec["structure"] == "tree"
@@ -459,10 +447,9 @@ def plot_predicted_geometry(spec, L, E, cmap=None):
 
 
 def plot_uncertainty(E):
-    """Uncertainty over a ring (demo_graphs §3): a belief (distribution over items) is coded as the
-    belief-weighted average of item codes, ``belief @ E``. Shows codes on the circle with two
-    trajectories — mixing two beliefs (a chord through the interior) and broadening one belief
-    (rim -> center) — plus the belief distributions. Assumes ``E`` is a ring code (items ordered)."""
+    """Uncertainty over a ring: belief codes ``belief @ E`` on the circle, with two trajectories —
+    mixing two beliefs (a chord) and broadening one (rim -> center) — plus the belief distributions.
+    Assumes ``E`` is a ring code (items ordered)."""
     n = len(E); th = 2 * np.pi * np.arange(n) / n; circ = np.asarray(E)[:, :2]
     vm = lambda mu, k: (lambda b: b / b.sum())(np.exp(k * np.cos(th - mu)))
     bA, bB = vm(th[int(0.15 * n)], 12), vm(th[int(0.6 * n)], 12)
@@ -574,10 +561,9 @@ def rdm_heatmap(ax, reps, title="RDM"):
 
 
 def plot_embedding_panels(E_pred, embeddings, L, spec=None, cmap=None):
-    """Two rows. Top: predicted code beside each model's representation (pre-decode activations).
-    Bottom: the predicted log-conditional beside each model's RDM. The top row follows the structure's
-    ``view`` (see `_view`): for a tree ``"ultrametric"`` | ``"pca"`` | ``"simplex"``, else ``"2d"``/
-    ``"3d"`` PCA. ``embeddings``: {name: reps}."""
+    """Two rows: predicted code beside each model's pre-decode representation (top, laid out per the
+    structure's ``view``; see `_view`), and the predicted log-conditional beside each model's RDM
+    (bottom). ``embeddings``: {name: reps}."""
     names = ["predicted"] + list(embeddings)
     reps = [E_pred] + list(embeddings.values())
     is_tree = spec is not None and spec["structure"] == "tree"
@@ -609,10 +595,9 @@ def plot_embedding_panels(E_pred, embeddings, L, spec=None, cmap=None):
 
 
 def plot_decoder_panels(D_pred, readouts, spec=None, cmap=None):
-    """The decoder mirror of `plot_embedding_panels`. Top: the predicted decoder ``D`` (each outcome
-    a point) beside each model's readout weights, laid out on the structure's ``view`` (see `_view`) —
-    for a graph task the outcomes live on the same manifold as the items, so every readout recovers it.
-    Bottom: each decoder's RDM. ``readouts``: {name: readout_weights (outcomes x features)}."""
+    """The decoder mirror of `plot_embedding_panels`: predicted decoder ``D`` beside each model's
+    readout weights on the structure's ``view`` (top), each decoder's RDM (bottom).
+    ``readouts``: {name: readout_weights (outcomes x features)}."""
     names = ["predicted"] + list(readouts)
     mats = [D_pred] + list(readouts.values())
     fig = plt.figure(figsize=(2.7 * len(names), 5.9))
@@ -701,8 +686,7 @@ def _draw_ultrametric(ax, leaf_E, colors, cmax, cmap=None):
 
 
 def _draw_simplex_of_simplices(fig, subspec, parents, items, E, cmap=None, titles=True):
-    """Park et al.'s "simplex of simplices": each split's child points (a child's rep, or its
-    subtree-leaf centroid in leaves-only mode), minus their centroid and projected to the split's
+    """Simplex-of-simplices grid: each split's child points, centered and projected to the split's
     intrinsic dimension (segment / triangle / tetrahedron), laid out in a compact grid with ⊕.
     ``titles=False`` drops per-node labels (for dense multi-column panels)."""
     cmap = cmap or FIG.cyclic_cmap
@@ -788,16 +772,9 @@ def plot_alignment_grid(reference, candidates, methods=("linear", "rotation"), r
                         colors=None, cmap=None, ref_label="reference", view="pca",
                         colorbar_label=None, suptitle=None, panel=3.8):
     """Grid of scatter panels comparing representations to a ``reference``: rows = alignment
-    methods, columns = [reference] + ``candidates`` (dict name -> (N, d) array). Each candidate is
-    aligned to the reference (``align_representations``) and drawn in the reference's 2-D view
-    plane with its R² annotated — 'linear' is the fit any invertible map achieves, 'rotation' the
-    basis-level fit CKA sees, so the two rows together separate same-basis from merely-decodable.
-
-    ``rank`` PCA-truncates the reference (and each candidate before rotation) — pass it when the
-    reference is a wide cloud (a hidden state) rather than a low-dim geometry. ``view`` picks the
-    display plane: ``"pca"`` (reference's top-2) or ``"class_means"`` (``class_mean_axes`` of the
-    reference under ``colors`` as labels — stable when per-point clouds are noisy).
-    ``colors`` colors every panel's points (a label per row of the reference)."""
+    methods ('linear' | 'rotation'), columns = [reference] + ``candidates`` (dict name -> (N, d)),
+    each aligned into the reference's 2-D view plane with its R² annotated. ``rank`` PCA-truncates
+    the reference (and each candidate before rotation); ``view``: ``"pca"`` | ``"class_means"``."""
     from .analysis_utils import align_representations
     reference = np.asarray(reference, float)
     refc = reference - reference.mean(0)
@@ -863,10 +840,9 @@ def plot_prediction_pair(reference, prediction, name, colors, method="linear", c
 
 def plot_trajectory_overlay(ref_traj, other_traj, seqs=(0, 1), labels=("reference", "model"),
                             parity=None, suptitle=None, panel=4.3):
-    """Per-sequence 2-D belief-path overlays: ``ref_traj`` / ``other_traj`` are (B, L, 2) — the
-    reference path is drawn as dots on a connecting line, the other as crosses, both colored by
-    position, one panel per index in ``seqs``. ``parity=(x, y, label)`` appends a coordinate-wise
-    y=x panel (the rotation-only parity check)."""
+    """Per-sequence 2-D belief-path overlays: ``ref_traj`` / ``other_traj`` are (B, L, 2), drawn as
+    dots vs crosses colored by position, one panel per index in ``seqs``. ``parity=(x, y, label)``
+    appends a coordinate-wise y=x panel."""
     ref_traj = np.asarray(ref_traj, float); other_traj = np.asarray(other_traj, float)
     L = ref_traj.shape[1]
     n_panels = len(seqs) + (parity is not None)

@@ -25,19 +25,10 @@ from .config import Config
 #########################
 
 def load_eval_results(setting, experiment_name, source="local", entity=None, project=None):
-    """Load eval results into a tidy DataFrame, from disk or from wandb.
-
-    wandb is optional in this template, so neither path is privileged: `source`
-    chooses where to read from, and both return the same wide schema — one row
-    per (run, step) with a `step` column, a `config` column, and one column per
-    flat metric (e.g. ``loss``).
-
-    - ``source="local"`` (default): walk ``$CACHE_DIR/{setting}/{override_dirname}/{name}/`` and read
-      the ``metrics.pt`` files written by ``eval.py`` / the online-eval callback.
-      No wandb required.
-    - ``source="wandb"``: pull logged history for the experiment's runs via the
-      wandb API. Requires ``entity``/``project`` (or env defaults).
-    """
+    """Load eval results into a tidy DataFrame: one row per (run, step) with a `step` column, a
+    `config` column, and one column per flat metric. ``source="local"`` (default) reads the
+    ``metrics.pt`` files under ``$CACHE_DIR/{setting}/{override_dirname}/{name}/``;
+    ``source="wandb"`` pulls run history via the wandb API (needs ``entity``/``project`` or env)."""
     if source == "local":
         return _load_local(setting, experiment_name)
     if source == "wandb":
@@ -123,14 +114,9 @@ def _load_wandb(experiment_name, entity=None, project=None) -> pd.DataFrame:
 #########################
 
 def align_representations(X, ref, method="rotation", rank=None):
-    """Align ``X`` to ``ref`` and score the fit; returns ``(aligned, R2)`` with ``aligned`` in
-    ``ref``'s own space/units (directly overlayable on ``ref``).
-
-    ``"linear"``: affine least squares ``X -> ref`` — the CCA-level fit any invertible map achieves.
-    ``"rotation"``: center + unit-Frobenius-norm both, PCA-truncate ``X`` to ``rank`` (default: the
-    ref dimension), orthogonal Procrustes, then restore ref's scale/mean. A rotation cannot stretch,
-    so this scores basis-level agreement (the geometry CKA sees) — the discriminating comparison
-    when two candidate representations differ only by an invertible linear map."""
+    """Align ``X`` to ``ref``; returns ``(aligned, R2)`` with ``aligned`` in ``ref``'s space/units.
+    ``"linear"``: affine least squares (the fit any invertible map achieves). ``"rotation"``:
+    PCA-truncate ``X`` to ``rank`` (default: ref dim) + orthogonal Procrustes — basis-level agreement."""
     from scipy.linalg import orthogonal_procrustes
     X = np.asarray(X, dtype=np.float64); ref = np.asarray(ref, dtype=np.float64)
     if method == "linear":
@@ -151,10 +137,7 @@ def align_representations(X, ref, method="rotation", rank=None):
 
 def _ridge_fit_r2(Xtr, Ytr, Xte, Yte, alpha):
     """Ridge-regress ``Y`` on standardized ``X`` (bias unregularized); return R² on the test split.
-
-    Units with no usable variance on the train split are dropped: standardizing them would turn
-    their flat noise into an O(1) regressor and multiply any held-out excursion by the same huge
-    factor. A saturated unit is unidentifiable here, not informative."""
+    Units with no usable variance on the train split are dropped before standardizing."""
     sd0 = Xtr.std(0)
     keep = sd0 > 1e-6 * sd0.max()
     Xtr, Xte = Xtr[:, keep], Xte[:, keep]
@@ -169,12 +152,9 @@ def _ridge_fit_r2(Xtr, Ytr, Xte, Yte, alpha):
 
 
 def heldout_decode_r2(H, F, groups, train_frac=0.6, seed=0, alpha=1.0, train_mask=None):
-    """R² of a linear map ``H -> F`` fit on a train split of *distinct prefix groups* and evaluated on
-    held-out groups. Because a causal hidden is identical for every occurrence of a prefix, splitting
-    by group keeps test prefixes wholly unseen. A wide hidden that merely *spans* F on the training
-    prefixes (random features, an untrained net) does not yield a single linear map that generalizes to
-    unseen prefixes; a genuine linear representation of the predictive state does. Pass ``train_mask``
-    to use a custom split (e.g. train on short prefixes, test on long — length extrapolation)."""
+    """R² of a linear map ``H -> F`` fit on a train split of *distinct prefix groups* and evaluated
+    on held-out groups, so test prefixes are wholly unseen. Pass ``train_mask`` for a custom split
+    (e.g. train on short prefixes, test on long)."""
     H = np.asarray(H, float); F = np.asarray(F, float); groups = np.asarray(groups)
     if train_mask is None:
         ids = np.unique(groups)

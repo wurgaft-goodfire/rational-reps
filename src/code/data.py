@@ -34,15 +34,9 @@ def init_dataset(config, overwrite_data: bool = False):
 ##### Graph co-occurrence dataset (order-1, symmetric) #####
 
 class GraphCooccurrenceDataset(Dataset):
-    """Order-1 latent-structure task. A graph -> diffusion co-occurrence -> the log-conditional
-    `log p(token | nearby context)` (exposed as `.conditional`, the object the geometry oracle
-    factors). Items are the graph's nodes; the generative transition is the row-normalized
-    conditional, so what a network learns and what we predict come from the same object.
-
-    Two `sample_mode`s share that transition:
-      - "pointwise": (item -> neighbor) pairs; makes the arity-1 linear readout well-posed.
-      - "sequence":  Markov walks under the transition; for the transformer / RNN and future ICL.
-    """
+    """Graph nodes as tokens; ``.conditional`` is the diffusion log-conditional
+    ``log p(token | context)`` (n, n), and its row-normalized exp is the sampling transition.
+    ``sample_mode``: "pointwise" (item -> neighbor pairs) or "sequence" (Markov walks)."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -132,12 +126,9 @@ class GraphCooccurrenceDataset(Dataset):
 ##### Feature-cube dataset (hypercube heat kernel + sparse item measure) #####
 
 def feature_cube(p, gamma):
-    """Feature cube = the standard analogy case (hypercube + heat kernel at time ``gamma``,
-    built by the shared `adjacency_conditional` path) plus a sparse item measure: feature i
-    is active with probability p[i] (importance = frequency). The symmetric kernel flips
-    each feature with probability f = (1 - e^{-2 gamma})/2, so log p(x'|x) = const + Z @ Lf
-    exactly — no outcome field, no bias needed anywhere.
-    Returns (logP (2^m, 2^m), pi, Z (2^m, m) in ±1, Lf (m, 2^m))."""
+    """Hypercube heat kernel at time ``gamma`` plus a sparse item measure (feature i active with
+    probability p[i]), so log p(x'|x) = const + Z @ Lf exactly.
+    Returns (logP (2^m, 2^m), pi (2^m,), Z (2^m, m) in ±1, Lf (m, 2^m))."""
     p = np.asarray(p, float)
     m = len(p)
     logP = adjacency_conditional(hypercube(m), gamma, "heat")
@@ -150,16 +141,9 @@ def feature_cube(p, gamma):
 
 
 class FeatureCubeDataset(Dataset):
-    """The standard analogy task (hypercube + heat kernel at time ``gamma``) under a sparse
-    item measure: feature i is active with probability sparsity * p_decay^i (importance =
-    frequency; the kernel stays uniform diffusion). One token per item. Exposes the exact
-    ``conditional`` (log p(x'|x) = const + Z @ Lf, purely bilinear — no bias needed), the
-    item measure ``pi``, and the ±1 feature codes ``Z`` / directions ``Lf`` for the oracle.
-
-    ``sample_mode``s: "pointwise" (items ~ pi with their exact next-item distribution as a
-    soft target) and "sequence" (short episodes from pi; the symmetric kernel's walk drifts
-    toward the dense uniform cube, so episodes are resampled rather than run long).
-    """
+    """Hypercube heat-kernel task under a sparse item measure (feature i active with probability
+    sparsity * p_decay^i). One token per item; exposes ``conditional``, the measure ``pi``, and
+    the ±1 codes ``Z`` / directions ``Lf``. ``sample_mode``: "pointwise" or "sequence"."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -230,12 +214,9 @@ class FeatureCubeDataset(Dataset):
 ##### Distribution-family dataset (order-1, asymmetric) #####
 
 class DistributionFamilyDataset(Dataset):
-    """Order-1 asymmetric task. Items are parametric distributions; the conditional is
-    `log p(x|theta)` on an x-grid (exposed as `.conditional`). Factoring it recovers the code =
-    natural parameters and decoder = sufficient statistic. Pointwise sampler: an item index ->
-    a sampled (binned) outcome, so the learned per-item embedding matches the predicted code.
-    (Sequence/in-context inference of theta from samples is the future LLM case, kept separate.)
-    """
+    """Items are parametric distributions; ``.conditional`` is ``log p(x|theta)`` on an x-grid,
+    (n_items, n_x). Pointwise sampler: every item with its exact binned ``p(x|theta)`` as a
+    soft target."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -286,12 +267,9 @@ class DistributionFamilyDataset(Dataset):
 ##### Relational dataset (order >= 2, combination) #####
 
 class RelationalDataset(Dataset):
-    """Order-2+ task. The latent structure is an operation c = a*b; the conditional is a tensor
-    `T[a, b, ..., c]` (exposed as `.conditional`) read out bilinearly by a shared code. The
-    pointwise sampler emits (a, b, ...) -> c so an arity-k readout learns e(a)^T M e(b). arity is
-    inferred from the tensor. For graded ops (max/averaging/entailment) factor_tensor gives the
-    geometry; for group ops it is degenerate and the trained model selects a single frequency.
-    """
+    """Operation task c = a*b: ``.conditional`` is the tensor ``T[a, b, ..., c]``, with arity
+    inferred from its shape. Pointwise sampler: every input tuple (a, b, ...) with its exact
+    ``p(c | a, b, ...)`` as a soft target."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -353,21 +331,9 @@ class RelationalDataset(Dataset):
 ##### Hidden-Markov dataset (latent graph walk + emissions) #####
 
 class HMMDataset(Dataset):
-    """Latent states walk the structure's adjacency graph (co-occurred into a transition via
-    ``adjacency_conditional``); each state emits an observable token. The network sees only tokens,
-    so the latent geometry lives in the belief ``p(s_t | x_{1:t})`` (the forward algorithm), not the
-    token embedding. Every state is given the *same* emission shape (uniform per-state
-    distinguishability -> even belief coverage); ``emission`` picks how the shape is placed and
-    ``emission_sigma`` its width (small -> sharp/high SNR, large -> aliased):
-
-    - ``bump``: a Gaussian in hop distance on the graph, ``Em[k,j] ~ exp(-d(k,j)^2 / 2 sigma^2)``,
-      so ``sigma`` reads as 'how many hops does an emission alias'. Symbols correspond to states
-      (``M = n_states``), and on a vertex-transitive graph (ring, torus, ...) every state is a shift.
-    - ``permuted``: one peaked template distribution over the ``M`` symbols, independently permuted
-      per state -- identical entropy, different symbols (``n_symbols < n_states`` forces aliasing).
-
-    Sequence-only. ``sigma -> 0`` with ``bump`` recovers the fully-observed graph geometry up to a
-    token permutation."""
+    """Latent states walk the structure's graph; each state emits an observable token and the
+    network sees only tokens. ``emission``: "bump" (Gaussian in hop distance, symbols = states) or
+    "permuted" (a peaked template permuted per state); ``emission_sigma`` sets its width. Sequence-only."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -480,11 +446,9 @@ class HMMDataset(Dataset):
 ##### Exchangeable datasets (in-context inference over observables) #####
 
 class ExchangeableDataset(Dataset):
-    """Each sequence draws an emission distribution ``theta`` from a prior and emits iid tokens
-    over ``K`` outcome classes; the Bayes-optimal next-token distribution is the posterior
-    predictive and the predicted representation is its centered log (``logit_code``).
-    Subclasses supply ``K``, ``sample_emission``, ``prior_predictive``, ``posterior_predictive``.
-    Sequence-only."""
+    """Each sequence draws emission probs ``theta`` from a prior and emits iid tokens over ``K``
+    outcome classes; the Bayes next-token distribution is the posterior predictive. Sequence-only.
+    Subclasses supply ``K``, ``sample_emission``, ``prior_predictive``, ``posterior_predictive``."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -632,13 +596,9 @@ class ExchangeableFamilyDataset(ExchangeableDataset):
 ##### PCFG dataset (latent states walk a *tree* + emit terminals) #####
 
 class PCFGDataset(Dataset):
-    """The tree generalization of the HMM setting: latent states diffuse *down a tree* (branching
-    diffusion) rather than along a chain, and each preterminal emits an observable terminal. The
-    network sees only the flat terminal string; the tree skeleton, latent states, and constituent
-    boundaries are hidden. The Bayes-optimal next-token distribution (``pcfg_next_token``, the
-    left-to-right prefix parser) and the per-position belief over the next emitter's latent state
-    are the objects the geometry oracle and analysis compare against — the analogue of the HMM's
-    forward algorithm. Sequence-only; identity emissions by default (terminal == leaf state)."""
+    """Latent states branch down a tree and leaves emit terminals; the network sees only the flat
+    terminal string. Bayes next-token distributions come from ``pcfg_next_token``. Sequence-only;
+    identity emissions by default (terminal == leaf state)."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -764,7 +724,7 @@ def _kl_metrics(eval_pred, return_all=True):
 
 # =====================================================================================
 # Generative processes: the conditional each setting exposes for the geometry oracle to
-# factor and for the sampler to draw from. Ported from src/notebooks/demo_graphs.ipynb.
+# factor and for the sampler to draw from.
 # =====================================================================================
 
 # ── Graph co-occurrence (order-1, symmetric): a graph -> diffusion -> log p(word|context) ──
@@ -862,12 +822,8 @@ def walk_cooccur(A, gamma=0.8):
 
 
 def heat_cooccur(A, beta=0.8):
-    """Heat-kernel co-occurrence ``exp(beta * A)``. On a Cartesian-product graph (hypercube, torus,
-    grid) this factorizes into a Kronecker product of per-factor heat kernels — ``exp`` turns the
-    adjacency's Kronecker *sum* into a *product* — so the factors stay independent, the log-conditional
-    is additive over them, and only single-factor directions survive (no interaction harmonics). This
-    is the regime in which linear analogies emerge (Korchinski et al.); the walk resolvent, by
-    contrast, does not factorize and couples the factors."""
+    """Heat-kernel co-occurrence ``exp(beta * A)``. On a Cartesian-product graph it factorizes
+    into per-factor kernels, so the log-conditional is additive over the factors."""
     from scipy.linalg import expm
     return expm(beta * np.asarray(A, dtype=np.float64))
 
@@ -892,10 +848,9 @@ def cooccur_logcond(A, gamma=0.8):
 
 
 def tree_conditional(n=3, k=2, parents=None, gamma=0.85, leaves_only=True):
-    """Branching-diffusion tree -> ultrametric co-occurrence -> nested (hierarchical) geometry,
-    over *all* nodes (inner nodes are items too, as in Park et al.). Balanced (depth n, branching
-    k) or unbalanced via an explicit `parents` list (``parents[i]`` = parent index, root = -1).
-    ``leaves_only=True`` restricts to leaves (the older branching-diffusion setup)."""
+    """Tree diffusion log-conditional over all nodes. Balanced (depth n, branching k) or
+    unbalanced via an explicit `parents` list (``parents[i]`` = parent index, root = -1);
+    ``leaves_only=True`` restricts to leaves."""
     parents = tree_parents(n, k, parents)
     J = walk_cooccur(tree_adjacency(parents), gamma)
     if leaves_only:
@@ -961,14 +916,8 @@ def _build_adjacency(name, params):
 
 def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
     """Log-conditional for a structure spec ``{'structure': name, **params}``. A structure with its
-    own conditional (tree) uses it directly; otherwise ``cooccurrence`` turns the adjacency
-    into a conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``, integrating multi-step
-    context), ``"geodesic"`` (shortest-path kernel ``gamma**d``, self-similar diagonal),
-    ``"adjacency"`` (raw one-step neighbours, zero diagonal), or ``"heat"`` (heat kernel
-    ``exp(gamma*A)``, which keeps product factors independent → additive log-conditional → analogies) —
-    a ``product``/``stack`` builds its
-    (Cartesian / block) adjacency and co-occurs that. ``gamma`` and ``cooccurrence`` may also be passed
-    as spec keys (overriding the args), so one spec dict configures the task."""
+    own conditional (tree) uses it directly; otherwise ``adjacency_conditional`` converts the
+    adjacency. ``gamma`` and ``cooccurrence`` may also be passed as spec keys, overriding the args."""
     spec = dict(spec)
     name = spec.pop("structure")
     gamma = spec.pop("gamma", gamma)
@@ -984,12 +933,9 @@ def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
 
 
 def adjacency_conditional(A, gamma=0.8, cooccurrence="diffusion"):
-    """Turn an adjacency into a log-conditional: ``"diffusion"`` (walk co-occurrence ``(I-gamma P)^-1``),
-    ``"geodesic"`` (shortest-path kernel), ``"adjacency"`` (raw one-step neighbours), or ``"heat"``
-    (heat kernel ``exp(gamma * A)``, which preserves factor independence on product graphs → additive
-    log-conditional → linear analogies). ``gamma`` is the decay for diffusion/geodesic and the
-    diffusion time ``beta`` for heat. The graph-walk view of a structure — used directly by the HMM
-    latent transition, whose states are the graph's nodes."""
+    """Turn an adjacency into a log-conditional: ``"diffusion"`` (``(I-gamma P)^-1``), ``"geodesic"``
+    (``gamma**d``), ``"adjacency"`` (raw one-step neighbours), or ``"heat"`` (``exp(gamma * A)``).
+    ``gamma`` is the decay for diffusion/geodesic and the diffusion time for heat."""
     if cooccurrence == "diffusion":
         return cooccur_logcond(A, gamma)
     if cooccurrence == "geodesic":
@@ -1017,15 +963,9 @@ def structure_distance(spec):
 
 
 def stacked_conditional(specs, mode="union", gamma=0.8):
-    """Combine several structures on one representation (demo_graphs §2 stack / share / superpose):
-
-      - ``"union"``   : disjoint supports (block-diagonal) -> the geometries stack as a union;
-      - ``"product"`` : shared support, independent factors (Cartesian) -> the product geometry;
-      - ``"share"``   : aligned relations on the same nodes (summed adjacency) -> one shared code.
-
-    The over-capacity ``superpose`` regime (more co-occurring features than dimensions) is the
-    nonlinear ``train_sparse_autoencoder`` in models.py.
-    """
+    """Log-conditional combining several structure specs on one representation. ``mode``:
+    ``"union"`` (block-diagonal adjacency, disjoint supports), ``"product"`` (Cartesian, shared
+    support), or ``"share"`` (summed adjacency, same nodes)."""
     As = [structure_adjacency(s) for s in specs]
     if mode == "union":
         A = block_diagonal(*As)
@@ -1286,10 +1226,7 @@ def pcfg_inside_chart(x, g: PCFGGrammar):
 
 def pcfg_prefix_chart(x, g: PCFGGrammar, In):
     """Prefix-inside ``PIn[i,j][h] = p(state-h subtree yields x_i..x_j as a *prefix* of its full
-    yield)``. ``R = (I - diag(p_branch) S)^-1`` resolves the left-spine descent: the prefix may end
-    arbitrarily deep in the left child (complete OR proper prefix, both already inside ``PIn``), with
-    every right sibling unconstrained. The split sum (k < j) handles the prefix continuing past a
-    *completed* left child into the right child."""
+    yield)``. ``R = (I - diag(p_branch) S)^-1`` resolves the left-spine descent."""
     m = len(g.pi); k = len(x); pb = g.p_branch
     R = np.linalg.inv(np.eye(m) - (pb[:, None] * g.S))
     PIn = {}
@@ -1305,13 +1242,9 @@ def pcfg_prefix_chart(x, g: PCFGGrammar, In):
 
 def pcfg_next_token(x, g: PCFGGrammar):
     """Exact left-to-right Bayes predictions for a terminal sequence ``x`` (length k).
-
-    Returns ``(dists, beliefs)``:
-      - ``dists`` (k+1, V+1): row t = ``p(next | x[:t])`` over the V terminals plus a final EOS
-        column, for every prefix length t = 0..k (t=0 predicts the first terminal from the prior).
-      - ``beliefs`` (k+1, m): row t = ``p(state of the node that emits x_t | x[:t])`` — the fixed-
-        dimensional belief that lands on the latent geometry (the analogue of the HMM forward belief).
-    """
+    Returns ``(dists, beliefs)``: ``dists`` (k+1, V+1), row t = ``p(next | x[:t])`` over the V
+    terminals plus a final EOS column; ``beliefs`` (k+1, m), row t = the posterior over the next
+    emitter's latent state."""
     m = len(g.pi); V = g.Em.shape[1]; k = len(x); pb = g.p_branch; e = 1.0 - pb
     R = np.linalg.inv(np.eye(m) - (pb[:, None] * g.S))
     In = pcfg_inside_chart(x, g)
@@ -1358,10 +1291,9 @@ def _pcfg_boundary(x, t, g: PCFGGrammar, In, R):
 # types) and, for Dyck, the choice of the next nested bracket type. Bounded depth => finite trees.
 
 def _grammar_from_rules(states, leaves, rules, root_prior, V, emit):
-    """Assemble an ``PCFGGrammar`` from named states. ``leaves`` maps a leaf-state name to its
-    terminal id (p_branch=0); ``rules`` maps an internal-state name to ``(left_name, right_name)``
-    or ``{left_name: p}`` distributions ``(left_dist, right_name_or_dist)`` (p_branch=1);
-    ``root_prior`` maps a state name to its prior mass; ``emit`` is unused padding for internals."""
+    """Assemble a ``PCFGGrammar`` from named states. ``leaves`` maps a leaf-state name to its
+    terminal id; ``rules`` maps an internal-state name to (left, right), each a name or a
+    ``{name: p}`` distribution; ``root_prior`` maps a state name to its prior mass; ``emit`` is unused."""
     idx = {name: i for i, name in enumerate(states)}
     m = len(states)
     pi = np.zeros(m); pb = np.zeros(m)
@@ -1401,9 +1333,7 @@ def anbn_grammar(spec):
 
 def dyck_grammar(spec):
     """Bounded-depth nested Dyck-k: strings ``(_i1 (_i2 ... )_i2 )_i1`` up to depth D, each level's
-    bracket type chosen uniformly. The prefix's sufficient statistic is the *stack* of open bracket
-    types -- a node of the depth-D, branching-k tree -> the nested (ultrametric) tree geometry
-    (``tree_conditional(D, k)``). Terminals: open_i = i, close_i = k+i (V = 2k)."""
+    bracket type chosen uniformly. Terminals: open_i = i, close_i = k+i (V = 2k)."""
     sp = dict(spec); k = int(sp.get("k", 2)); D = int(sp.get("depth", 4))
     states = [f"Op{i}" for i in range(k)] + [f"Cl{i}" for i in range(k)]
     leaves = {f"Op{i}": i for i in range(k)} | {f"Cl{i}": k + i for i in range(k)}
@@ -1428,11 +1358,9 @@ def dyck_grammar(spec):
 
 
 def mini_nl_grammar(spec):
-    """Miniature phrase-structure grammar over POS terminals (det, adj, noun, verb, prep). Binarized:
-    S -> NP VP; NP -> Det Nom; Nom -> noun | Adj Nom (bounded to ``max_adj`` adjectives); VP -> V |
-    V NP | V NP PP; PP -> Prep NP. The prefix's sufficient statistic is the partial parse (which
-    constituents are still open) -- a *soft* (probabilistic) branching geometry, in contrast to the
-    hard matched-delimiter stacks of dyck / mini_pl. Terminals: det, adj, noun, verb, prep (V = 5)."""
+    """Miniature phrase-structure grammar, binarized: S -> NP VP; NP -> Det Nom; Nom -> noun |
+    Adj Nom (up to ``max_adj`` adjectives); VP -> V | V NP | V NP PP; PP -> Prep NP.
+    Terminals: det, adj, noun, verb, prep (V = 5)."""
     n_adj = int(dict(spec).get("max_adj", 2))
     det, adj, noun, verb, prep = range(5)
     leaves = {"Det": det, "Adj": adj, "Noun": noun, "Verb": verb, "Prep": prep}
@@ -1452,11 +1380,9 @@ def mini_nl_grammar(spec):
 
 
 def mini_pl_grammar(spec):
-    """Miniature control-flow language. Statements nest to depth ``D``: an atomic assignment ``asgn``,
-    ``if cond then S end``, ``while cond do S end``, or a sequence ``asgn ; S``. The prefix's
-    sufficient statistic is the *stack of open if/while constructs* times the *phase within the current
-    construct* (expecting the condition / the then|do keyword / the body / the closing end) -- a
-    ``stack (x) phase`` geometry. Terminals: asgn, if, then, while, do, end, cond, semi (V = 8)."""
+    """Miniature control-flow language, statements nesting to depth ``D``: an assignment ``asgn``,
+    ``if cond then S end``, ``while cond do S end``, or a sequence ``asgn ; S``.
+    Terminals: asgn, if, then, while, do, end, cond, semi (V = 8)."""
     D = int(dict(spec).get("depth", 3))
     asgn, iftok, then, whiletok, do, end, cond, semi = range(8)
     leaves = {"Asgn": asgn, "If": iftok, "Then": then, "While": whiletok, "Do": do,

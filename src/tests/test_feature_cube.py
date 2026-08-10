@@ -1,5 +1,5 @@
-"""Budgeted CE-optimal codes (geometry.py rungs 3'/4') and the feature-cube setting:
-hypercube heat kernel + sparse item measure, log-conditional exactly linear in the code."""
+"""Budgeted CE-optimal codes (geometry.factor_features / als_features) and the feature-cube
+setting: hypercube heat kernel + sparse item measure, log-conditional linear in the code."""
 import itertools
 
 import numpy as np
@@ -26,7 +26,7 @@ def _setup(m, k, beta, decay=1.0):
     return Lf, Z
 
 
-##### The rung-3'/4' oracle (generic, checked on fixed-k supports) #####
+##### The budgeted-code oracles (generic, checked on fixed-k supports) #####
 
 def test_surrogate_is_the_support_averaged_fisher_quadratic():
     # tr(R^T C R Fbar) == E_S delta_S^T Fbar delta_S, enumerated directly

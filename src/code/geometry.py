@@ -1,32 +1,14 @@
-"""The predicted-geometry oracle.
-
-Given a task's *conditional* — the log-conditional matrix ``L[theta, x] = log p(x|theta)``
-for order-1 tasks, or the conditional tensor ``T[c, a, b, ...]`` for order-2+ — factor it
-into a code ``E`` (the geometry we plot / compare against) and a decoder ``D`` (the readout).
-
-This is the closed-form prediction the whole project rests on: the geometry a network *should*
-learn, read straight off the structure of the task. See ``src/notebooks/demo_graphs.ipynb``
-(the canonical notebook) for the derivations these functions port.
-"""
+"""Closed-form predicted geometries: factor a task's conditional into a code ``E`` (the
+geometry a network should learn) and a decoder ``D`` (the readout). Derivations live in
+``src/notebooks/demo_graphs.ipynb``."""
 import numpy as np
 
 
 def factor_logcond(L, drop_base_measure=False):
-    """Correspondence-analysis SVD of an order-1 log-conditional ``L[theta, x]``.
-
-    Always column-center (remove the per-context row offset / log-partition a softmax ignores).
-    ``drop_base_measure=True`` additionally removes the weighted per-outcome mean (the x-only
-    base measure) — the demo_clean factorization for *distribution* families, which makes the
-    decoder come out as the family's sufficient statistic. It leaves the *code* geometry
-    unchanged (the base-measure mode is item-constant, so it cancels in RDM/CKA comparisons),
-    so it is off by default (the demo_graphs co-occurrence factorization).
-
-    Returns ``(Lc, E, D, S, nu)``: the code ``E`` and decoder ``D``, each carrying the *balanced*
-    (symmetric) share of the scale ``sqrt(S)``, so ``E @ D = Lc`` still holds. This matches the
-    factorization gradient descent actually learns — from small init the two factors grow together
-    (the ``codeᵀcode - readoutᵀreadout`` invariant stays ~0), so each ends up with ``sqrt(S)`` rather
-    than the SVD's arbitrary all-scale-in-the-code convention (which leaves the decoder ``D = V`` flat).
-    """
+    """Correspondence-analysis SVD of a log-conditional ``L[theta, x]``: column-center
+    (drop the per-row log-partition a softmax ignores); ``drop_base_measure=True`` also drops
+    the per-outcome mean. Returns ``(Lc, E, D, S, nu)`` with the scale split as ``sqrt(S)``
+    on each factor (the balanced split gradient descent learns), so ``E @ D = Lc``."""
     L = np.asarray(L, dtype=np.float64)
     N, _ = L.shape
     w = np.full(N, 1.0 / N)                                   # uniform row (item) measure
@@ -44,13 +26,9 @@ def factor_logcond(L, drop_base_measure=False):
 
 
 def factor_tensor(T):
-    """Closed-form factorization of an order-2+ conditional tensor.
-
-    The first axis indexes the items (the shared code); reshape the rest into columns,
-    mean-center rows, and SVD. Returns ``(E, S)`` with ``E`` the singular-value-scaled code.
-    Groups are degenerate (every frequency represents the operation equally well), so this
-    returns one representative of the family — matching the demo_graphs order-2 gallery.
-    """
+    """Factor an order-2+ conditional tensor: items on the first axis, remaining axes
+    reshaped into columns, mean-centered, SVD. Returns ``(E, S)`` with ``E`` the
+    singular-value-scaled item code."""
     T = np.asarray(T, dtype=np.float64)
     M = T.reshape(T.shape[0], -1)
     U, S, _ = np.linalg.svd(M - M.mean(0), full_matrices=False)
@@ -58,12 +36,8 @@ def factor_tensor(T):
 
 
 def predicted_geometry(conditional):
-    """Predicted item code ``E`` for a dataset's conditional.
-
-    Dispatches on rank: a 2-D log-conditional -> ``factor_logcond``; a 3-D+ conditional
-    tensor -> ``factor_tensor``. This is the single entry point the ``Evaluator`` compares
-    trained representations against.
-    """
+    """Predicted item code ``E`` for a dataset's conditional: 2-D log-conditional ->
+    ``factor_logcond``; 3-D+ tensor -> ``factor_tensor``."""
     conditional = np.asarray(conditional, dtype=np.float64)
     if conditional.ndim == 2:
         return factor_logcond(conditional)[1]
@@ -71,15 +45,10 @@ def predicted_geometry(conditional):
 
 
 def spectral_hmm(pi, T, Em):
-    """Hsu-Kakade-Zhang spectral learning of an HMM from its exact observable moments — the
-    closed-form, observables-only belief oracle. Inputs: ``pi`` (n,), ``T`` (n,n) row-stochastic
-    ``p(s'|s)``, ``Em`` (n,M) ``p(x|s)``. Returns ``(U, B, b1, b_inf)``: ``U`` (M,n) the observable
-    subspace (top-n left singular vectors of the bigram co-occurrence — a closed-form belief
-    geometry whose rank is the number of hidden states), ``B`` (M,n,n) the observable operators
-    (the belief update is linear: ``b <- normalize(B[x] @ b)``), and ``b1``/``b_inf`` the initial
-    state / normalizer. The spectral belief equals the forward-algorithm belief up to an invertible
-    linear map, so predictions are identical.
-    """
+    """Hsu-Kakade-Zhang spectral HMM from exact moments ``pi`` (n,), ``T`` (n,n), ``Em`` (n,M).
+    Returns ``(U, B, b1, b_inf)``: observable subspace (M,n), operators (M,n,n) with linear
+    belief update ``b <- normalize(B[x] @ b)``, and initial state / normalizer. Equals the
+    forward-algorithm belief up to a fixed invertible map."""
     pi = np.asarray(pi, np.float64); T = np.asarray(T, np.float64); Em = np.asarray(Em, np.float64)
     n, _ = Em.shape
     P1 = pi @ Em                                                      # p(x1)
@@ -104,24 +73,11 @@ def spectral_beliefs(B, b1, b_inf, obs):
 
 
 def hankel_forward_states(g, prefixes, suffixes, rank=None, tol=1e-9, w=None, nu=None):
-    """Spectral (Hankel) predictive-state basis for a PCFG's *string* distribution — the left-to-right
-    analogue of ``spectral_hmm`` (which is the length-1 special case). Build the Hankel matrix
-    ``H[u,v] = p(string = u·v)`` over prefix set ``prefixes`` and suffix set ``suffixes`` (each a
-    sequence of terminal ids), using the exact inside chart. Its rank is the number of distinct
-    predictive states; the SVD gives their canonical basis.
-
-    ``w`` (prefix measure) and ``nu`` (suffix measure) weight the factorization correspondence-analysis
-    style (``√`` on each side of ``H``, as in ``factor_logcond``): the SVD then minimises a
-    ``w ⊗ nu``-weighted least-squares fit of the Hankel, concentrating the basis on the frequent
-    prefixes/suffixes the model's loss actually weights. Both default to uniform ``1/n``; pass
-    empirical frequencies to weight by how often each prefix/suffix occurs (e.g. PCFGs with non-uniform
-    sentence frequencies). The row weight ``w`` shapes which directions are principal but cancels from
-    the forward-state formula; ``nu`` enters the projection.
-
-    Returns ``(forward_state, info)`` where ``forward_state(w)`` maps any prefix to its rank-``r``
-    canonical predictive state, and ``info`` holds ``H``, the singular values ``S``, and ``rank``.
-    The forward state is the minimal sufficient statistic of the future given the past — i.e. the
-    exact left-to-right belief, in the data-determined observable basis (up to rotation)."""
+    """Spectral predictive-state basis for a PCFG's string distribution: SVD of the Hankel
+    matrix ``H[u,v] = p(string = u·v)``, weighted correspondence-analysis style by the prefix
+    measure ``w`` and suffix measure ``nu`` (uniform by default). Returns ``(forward_state,
+    info)``: ``forward_state(prefix)`` -> rank-``r`` canonical state; ``info`` holds ``H``,
+    ``S``, ``rank``."""
     from .data import pcfg_inside_chart
     _cache = {}
 
@@ -152,22 +108,11 @@ def hankel_forward_states(g, prefixes, suffixes, rank=None, tol=1e-9, w=None, nu
 
 
 def pcfg_predictive_states(g, seqs, test_len=4, max_tests=60):
-    """Exact predictive state at every *distinct* prefix of a corpus, as ``(prefixes, F, info)``.
-
-    The predictive state is the vector of predictions for a set of **tests** (the PSR object):
-    ``F[u, v] = p(the continuation begins with v | prefix u)``, plus a final column for the test
-    "the sentence ends here". Two prefixes share a predictive state exactly when their test
-    predictions agree, and the next-token distribution is literally the length-1 test columns — so
-    a model that predicts optimally *and* cannot re-read the prefix must carry this vector.
-
-    This is a strictly stronger object than the next-emitter belief, which marginalizes over one
-    latent node and so forgets the rest of the stack (for ``anbn`` that belief is rank 2). Unlike
-    the whitened Hankel basis of ``hankel_forward_states`` it needs no rank/tolerance choice: no
-    ``1/√S`` factor to amplify near-null directions. Tests are the ``max_tests`` most frequent
-    observed continuation-prefixes of length ``1..test_len``; ``info["rank"]`` is the numeric rank
-    of ``F``, which saturates in ``test_len`` once the tests separate every predictive state.
-    ``info["loc"]`` holds each prefix's first ``(sequence, position)`` occurrence, so a caller can
-    index model hidden states in the same row order as ``F``."""
+    """Exact predictive state at every distinct prefix of a corpus:
+    ``F[u, v] = p(continuation begins with test v | prefix u)`` plus an end-of-sentence column,
+    tests being the ``max_tests`` most frequent continuations of length ``1..test_len``.
+    Returns ``(prefixes, F, info)`` with ``info["rank"]`` the numeric rank of ``F`` and
+    ``info["loc"]`` each prefix's first ``(sequence, position)`` occurrence."""
     from collections import Counter
     from .data import pcfg_inside_chart, pcfg_prefix_chart
     _cache = {}
@@ -197,7 +142,7 @@ def pcfg_predictive_states(g, seqs, test_len=4, max_tests=60):
                          "loc": np.array([first[u] for u in prefixes])}
 
 
-##### Budgeted CE-optimal codes (rungs 3'/4'): truncation vs superposition #####
+##### Budgeted CE-optimal codes: truncation vs superposition #####
 
 def support_targets(Z, Lf):
     """Target conditionals p(x|z) = softmax(Z @ Lf) per code row. (N, n_x)."""
@@ -212,14 +157,10 @@ def _psd_sqrt(M):
 
 
 def factor_features(Lf, Z, d, w=None, fit_bias=True):
-    """Closed-form rank-d feature code under the Fisher surrogate (rung 3').
-
-    Weighted fit of logits = z^T A^T D (+ b) to the exact z^T Lf, whitened by the feature
-    second moment and Fbar^{1/2} (outcome Fisher at the marginal), truncated in whitened
-    space, unwhitened with a balanced sqrt(S) split. With ``fit_bias`` the bias absorbs the
-    mean logit row and the code is centered first; without, the fit is raw (b = 0), matching
-    bias-free readouts. Returns (A (d, m), D (d, n_x), b (n_x), S).
-    """
+    """Closed-form rank-d feature code under the Fisher surrogate: whiten by the feature
+    second moment and the outcome Fisher, truncate, unwhiten with a balanced sqrt(S) split.
+    With ``fit_bias`` the code is centered and b absorbs the mean logit row; without, b = 0.
+    Returns (A (d, m), D (d, n_x), b (n_x), S)."""
     Lf = np.asarray(Lf, float); Z = np.asarray(Z, float)
     N, m = Z.shape
     w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
@@ -253,11 +194,10 @@ def expected_ce(Z, Lf, A, D, b, w=None):
 
 
 def als_features(Lf, Z, d, init, w=None, ridge=1e-4, n_rounds=100, tol=1e-8, fit_bias=True):
-    """Exact-CE refinement (rung 4'): alternate the two convex halves (D,b) and A, each
-    solved with L-BFGS. ``fit_bias=False`` freezes b at its init (for comparing against
-    bias-free readouts). The closed-form warm start can be a *local* minimum (truncation) —
-    add random restarts when hunting the global optimum. Returns (A, D, b, ce_path) with
-    ce_path the ridge-free CE per round."""
+    """Exact-CE refinement: alternate the two convex halves (D, b) and A, each solved with
+    L-BFGS; init-dependent, so add random restarts when hunting the global optimum.
+    ``fit_bias=False`` freezes b at its init. Returns (A, D, b, ce_path) with ce_path the
+    ridge-free CE per round."""
     import torch
     Z_ = np.asarray(Z, float)
     N = len(Z_)

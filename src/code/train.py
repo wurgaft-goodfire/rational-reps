@@ -174,14 +174,9 @@ def _load_run(config, device=None):
 
 
 def train_inline(overrides, name=None, cache_dir=None):
-    """Train in-process from a list of Hydra overrides (for notebooks) — the same job the CLI runs,
-    with the same config-keyed run dir and save schedule. Returns
-    ``(model, dataset, evaluator, history_df, config)``. If that exact run already exists on disk
-    (and ``overwrite`` is not set), loads it instead of retraining. Real sweeps still go through
-    ``python -m src.code.train -m ...``.
-
-        model, dataset, evaluator, history, config = train_inline(["runner=transformer", "setting=graph"])
-    """
+    """Train in-process from a list of Hydra overrides (for notebooks) — the same job, run dir, and
+    save schedule as the CLI. Returns ``(model, dataset, evaluator, history_df, config)``. If that
+    exact run already exists on disk (and ``overwrite`` is not set), loads it instead of retraining."""
     overrides = list(overrides) + ([f"name={name}"] if name is not None else [])
     GlobalHydra.instance().clear()
     with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
@@ -204,12 +199,8 @@ def train_inline(overrides, name=None, cache_dir=None):
 
 def graph_overrides(spec):
     """Hydra overrides selecting a graph structure from a spec dict, e.g.
-    ``{"structure": "grid", "n": 6, "m": 6}`` or a composite
-    ``{"structure": "product", "factors": [{"structure": "ring", "n": 9}, ...]}``. Everything past the
-    structure name — shape params (n, factors, ...) and the co-occurrence knobs (gamma, cooccurrence) —
-    goes into ``structure_kwargs``, the full structure spec (``graph_conditional`` reads gamma/cooccurrence
-    off it). Replaces the setting's default ``structure_kwargs`` (deletes it, then re-adds), so switching
-    structures needs no per-key dance: ``train_inline(graph_overrides(spec) + ["runner=klinear"])``."""
+    ``{"structure": "grid", "n": 6, "m": 6}``. Everything past the structure name goes into
+    ``structure_kwargs``, replacing the setting's default (deletes it, then re-adds)."""
     def literal(v):                                           # nested list/dict -> Hydra override literal
         if isinstance(v, dict):
             return "{" + ",".join(f"{k}:{literal(x)}" for k, x in v.items()) + "}"
@@ -222,13 +213,8 @@ def graph_overrides(spec):
 
 @hydra.main(version_base=None, config_path=str(here("conf")), config_name="config")
 def main(cfg: DictConfig) -> None:
-    """Main training entry point.
-
-    Usage:
-      python -m src.code.train runner=transformer setting=graph
-      python -m src.code.train -m runner=klinear setting=graph structure=ring,chain
-      python -m src.code.train runner=rnn setting=distribution
-    """
+    """Main training entry point: ``python -m src.code.train runner=transformer setting=graph``
+    (``-m`` for sweeps)."""
     config = Config(cfg, make_run_dirs=True)
     if _run_exists(config):
         print(f"Output directory {config.output_dir} is not empty. Set overwrite=true to overwrite.")

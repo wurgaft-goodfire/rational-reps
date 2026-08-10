@@ -198,13 +198,9 @@ READOUT_CLASSES = {"klinear": KLinearReadout, "mlp": MLPReadout, "rnn": RNNReado
 
 def train_sparse_autoencoder(n_features, d=2, sparsity=0.05, steps=3000,
                              batch_size=1024, lr=1e-2, seed=0):
-    """Nonlinear sparse autoencoder on sparse feature activations (demo_graphs §2 finale).
-
-    When more co-occurring features than dimensions must be packed (n_features > d), the
-    optimal code *superposes* them: the learned encoder columns spread into a regular polygon
-    (e.g. a pentagon for n=5, d=2) rather than collapsing. Returns W of shape (d, n_features).
-    This is standalone (unsupervised reconstruction), not part of the Trainer/Evaluator path.
-    """
+    """Nonlinear sparse autoencoder on sparse feature activations; packing n_features > d superposes
+    the learned encoder columns into a regular polygon. Returns W of shape (d, n_features).
+    Standalone (unsupervised reconstruction), not part of the Trainer/Evaluator path."""
     g = torch.Generator().manual_seed(seed)
     W = nn.Parameter(0.1 * torch.randn(d, n_features, generator=g))
     b = nn.Parameter(torch.zeros(n_features))

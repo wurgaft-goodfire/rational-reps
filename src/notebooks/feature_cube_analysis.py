@@ -38,11 +38,11 @@
 # (softmax-saturation regime); large $\gamma$ = diffuse. The analogy work runs at
 # $\gamma = 0.8$ ($f \approx 0.40$) — the flat end.
 #
-# Two rungs at budget $d$ (`src/code/geometry.py`, both `fit_bias=False`):
-# **closed form** (rung 3′, `factor_features`) — whitened truncation, the quadratic account
-# that sees only second moments; **exact CE** (rung 4′, `als_features`) — alternating convex
+# Two oracles at budget $d$ (`src/code/geometry.py`, both `fit_bias=False`):
+# **closed form** (`factor_features`) — whitened truncation, the quadratic account
+# that sees only second moments; **exact CE** (`als_features`) — alternating convex
 # halves. The closed form can be a *stable local minimum* of the exact CE, so ALS runs with
-# random restarts. The deviation between the rungs is the superposition signal, and the
+# random restarts. The deviation between the two is the superposition signal, and the
 # prediction is a diagonal phase boundary in (sharpness $\times$ sparsity).
 
 # %%
@@ -90,7 +90,7 @@ def best_als(Lf, Z, d, w, cf, fit_bias=False, n_random=N_RESTARTS, n_rounds=N_RO
 
 @lru_cache(maxsize=None)
 def oracle(sparsity, gamma):
-    """Both rungs at one phase-plane cell, memoized so every figure shares the same fits.
+    """Both oracles at one phase-plane cell, memoized so every figure shares the same fits.
     Returns (pi, Z, Lf, cf, fit, ex_cf, ex_warm, ex_best) with excesses over Bayes."""
     logP, pi, Z, Lf = cube(sparsity, gamma)
     cf = factor_features(Lf, Z, D_BUDGET, w=pi, fit_bias=False)
@@ -104,7 +104,7 @@ def oracle(sparsity, gamma):
 # Left: the whitened spectrum `factor_features` truncates. The frequency ladder is the only
 # thing distinguishing features, and at second order sharpness ($\gamma$) and sparsity both
 # just rescale this picture — the two knobs are indistinguishable to the closed form.
-# Everything rung 4′ does beyond truncating this spectrum is invisible at second order.
+# Everything exact CE does beyond truncating this spectrum is invisible at second order.
 # Right: the sparse-sharp log-conditional itself.
 
 # %%
@@ -116,7 +116,7 @@ for gamma, ls in [(0.6, "--"), (0.03, "-")]:
         ax[0].semilogy(np.arange(1, M + 1), S, ls, marker="o", color=color,
                        label=rf"sparsity ${sp}$, $\gamma={gamma}$")
 ax[0].set_xlabel("mode"); ax[0].set_ylabel("whitened singular value")
-ax[0].legend(fontsize=9); ax[0].set_title("the spectrum rung 3' truncates")
+ax[0].legend(fontsize=9); ax[0].set_title("the spectrum the closed form truncates")
 
 logP, pi, Z, Lf = cube(0.1, 0.03)
 plot_utils.conditional_heatmap(ax[1], logP, title=r"$\log p(x'\mid x)$, sparse-sharp cube",
@@ -331,7 +331,7 @@ plot_utils.save_figure(fig, FIGDIR / "fig5_geometry_rdms.png")
 #   structure lives entirely in the gap the budget opens.
 # - The log-conditional is purely bilinear in $\pm 1$ codes — no outcome field — so **no
 #   model in the comparison has a bias**: klinear tensor, MLP/GRU heads, GPTNeoX unembedding,
-#   and both oracle rungs are all pure matrix readouts of a code.
+#   and both oracles are pure matrix readouts of a code.
 # - The phase plane (Figure 2): truncation optimal in the flat column, packing in the sharp
 #   column — and within the *bias-free* class the ratio is set almost entirely by sharpness
 #   (~0.99 → ~0.68 in every sparsity row). Sparsity does not move the truncation→packing
@@ -343,7 +343,7 @@ plot_utils.save_figure(fig, FIGDIR / "fig5_geometry_rdms.png")
 #   in earlier (bias-ful / asymmetric-kernel) formulations is absent.
 # - Trained k-linear *beats* restart-ALS at both sharp points (Figures 4–5): SGD from small
 #   init finds better bias-free optima than the L-BFGS alternation, so the trained linear
-#   model is currently the tightest rung-4′ approximation and the ALS numbers are upper
-#   bounds on the optimal excess, not the optimum.
+#   model is currently the closest thing to the exact-CE optimum and the ALS numbers are
+#   upper bounds on the optimal excess, not the optimum.
 
 # %%

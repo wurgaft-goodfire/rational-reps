@@ -36,12 +36,8 @@ def cka(X, Y):
 
 def cca(X, Y, tol=1e-5):
     """Mean canonical correlation between X and Y (rows = samples). Invariant to any invertible
-    linear map of each side — the right similarity when representations are equal up to a linear
-    transform (e.g. belief states in different bases), where CKA (rotation-only) under-reports.
-    Computed SVCCA-style: orthonormal bases of the two column spaces, then singular values of their
-    product. The basis tolerance sits above float32 numerical dirt (~1e-6 relative), so exact
-    linear constraints computed in float32 (e.g. probabilities summing to 1) don't leak a junk
-    direction into the mean."""
+    linear map of each side — the right similarity when representations match up to a linear
+    transform. ``tol`` sets the basis rank cutoff (above float32 numerical noise)."""
     def basis(A):
         A = np.asarray(A, np.float64); A = A - A.mean(0)
         U, S, _ = np.linalg.svd(A, full_matrices=False)
@@ -54,9 +50,7 @@ def cca(X, Y, tol=1e-5):
 
 def _rankdata(a):
     """Average ranks of a 1-D array (tied values share their mean rank). Values within a small
-    relative tolerance are treated as tied. This matters for *ultrametric* RDMs (e.g. trees), whose
-    pairwise distances are exactly tied up to float noise: ordinal tie-breaking would rank those
-    ties arbitrarily and deflate RSA even between identical geometries."""
+    relative tolerance are treated as tied (exact ties up to float noise)."""
     a = np.round(np.asarray(a, np.float64) / (np.abs(a).max() + 1e-12), 6)   # merge ties; bands differ far more
     order = a.argsort(); sv = a[order]
     ranks = np.empty(len(a), dtype=np.float64)
@@ -140,11 +134,9 @@ class EvalComponents:
 #########################
 
 class Evaluator:
-    """Owns all evaluation logic. Build once; call evaluate(model) per checkpoint/step.
-
-    Works for any model exposing a dict output with `.output_key` logits — trained
-    transformers, readout heads, and pretrained LLMs alike.
-    """
+    """Owns all evaluation logic. Build once; call evaluate(model) per checkpoint/step. Works for
+    any model exposing a dict output with `.output_key` logits — trained transformers, readout
+    heads, and pretrained LLMs alike."""
 
     def __init__(self, config, dataset):
         self.config = config
@@ -178,12 +170,9 @@ class Evaluator:
     # ── public interface ──────────────────────────────────────────────────
 
     def evaluate(self, model, output_hidden_states=None) -> tuple[dict, dict]:
-        """Evaluate `model` on the fixed batches.
-
-        Returns (metrics, extras): `metrics` is a flat {key: scalar} dict ready
-        for wandb; `extras` holds the heavy per-example tensors (all_loss,
-        hidden_states) for optional disk saving.
-        """
+        """Evaluate `model` on the fixed batches. Returns (metrics, extras): `metrics` is a flat
+        {key: scalar} dict ready for wandb; `extras` holds the heavy per-example tensors
+        (all_loss, hidden_states) for optional disk saving."""
         if output_hidden_states is None:
             output_hidden_states = self.config.eval_kwargs.output_hidden_states
         if hasattr(model, "eval"):
@@ -275,16 +264,9 @@ class Evaluator:
 
 @hydra.main(version_base=None, config_path=str(here("conf")), config_name="config")
 def run_evaluation(cfg: DictConfig) -> None:
-    """Standalone evaluation.
-
-    For models trained from scratch (transformer / readout heads), iterates every checkpoint
-    under ``output_dir`` and writes per-checkpoint ``metrics.pt``. For pretrained LLMs, runs a
-    single evaluation and writes ``metrics.pt`` to ``output_dir``.
-
-    Usage:
-      python -m src.code.eval runner=transformer setting=graph name=my_run
-      python -m src.code.eval runner=eval_llm model_kwargs.model_path=google/gemma-2-2b
-    """
+    """Standalone evaluation. Models trained from scratch: iterates every checkpoint under
+    ``output_dir``, writing per-checkpoint ``metrics.pt``. Pretrained LLMs: a single evaluation,
+    writing ``metrics.pt`` to ``output_dir``."""
     config = Config(cfg, make_run_dirs=True)
     model_type = config.model_kwargs.model_type
     device = "cuda" if torch.cuda.is_available() else "cpu"
