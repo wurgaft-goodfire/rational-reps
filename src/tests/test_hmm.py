@@ -53,9 +53,9 @@ def test_batch_shapes_and_normalised_targets():
     ds = HMMDataset(_cfg()); b = ds[0]
     B, L = ds._batch_size(), ds.config.training_kwargs["context_length"]
     assert b["input_ids"].shape == (B, L + 1)                  # start + L emitted tokens
-    assert b["eval_labels"].shape == (B, L, ds.num_dims)       # Bayes-optimal next-token dists
-    ones = torch.ones(B, L, device=b["eval_labels"].device)
-    assert torch.allclose(b["eval_labels"].sum(-1), ones, atol=1e-4)
+    el = ds.optimal_predictions(b["input_ids"])
+    assert el.shape == (B, L, ds.num_dims)                     # Bayes-optimal next-token dists
+    assert torch.allclose(el.sum(-1), torch.ones(B, L, device=el.device), atol=1e-4)
 
 
 def _belief_geometry_cka(sigma):
@@ -89,7 +89,7 @@ def test_shipped_hmm_config_has_learnable_signal():
     with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
         cfg = compose(config_name="config", overrides=["runner=hmm_transformer"])
     ds = HMMDataset(Config(cfg))
-    bayes = ds[0]["eval_labels"]                               # (B, L, M) forward-algorithm targets
+    bayes = ds.optimal_predictions(ds[0]["input_ids"])         # (B, L, M) forward-algorithm targets
     stationary = ds.pi @ ds.Em
     kl = (bayes * (bayes / stationary).log()).sum(-1)
     assert kl[:, 1:].mean() > 0.05                             # past the first token, context matters
@@ -137,3 +137,12 @@ def test_spectral_hmm_matches_forward_algorithm_up_to_a_linear_map():
     spec = spectral_beliefs(B, b1, b_inf, x.cpu().numpy()).reshape(-1, ds.n_states)
     assert cca(spec, fwd) > 0.999                             # identical up to an invertible linear map
     assert cka(spec, fwd) < cca(spec, fwd)                    # ... but not up to rotation (CKA under-reports)
+
+
+def test_belief_references_are_float64_and_batches_float32():
+    ds = HMMDataset(_cfg())
+    b = ds[0]
+    x = b["input_ids"][:, 1:]
+    assert ds.T.dtype == torch.float64 and ds.Em.dtype == torch.float64
+    assert ds.forward_algorithm(x).dtype == torch.float64
+    assert ds.optimal_predictions(b["input_ids"]).dtype == torch.float32

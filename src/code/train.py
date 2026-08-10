@@ -10,7 +10,7 @@ from hydra.core.global_hydra import GlobalHydra
 from dotenv import load_dotenv
 from pyprojroot import here
 from omegaconf import DictConfig, OmegaConf, open_dict
-from .models import init_model, load_model
+from .models import init_model, load_model, READOUT_CLASSES
 from .config import Config, clean_dirname
 from .data import init_dataset
 from .eval import Evaluator
@@ -62,7 +62,7 @@ def train(config):
     mc = config.cfg.model_kwargs.model_config
     with open_dict(mc):
         mc.vocab_size = dataset.vocab_size
-        if config.cfg.model_kwargs.model_type in ("klinear", "mlp", "rnn"):
+        if config.cfg.model_kwargs.model_type in READOUT_CLASSES:
             mc.num_classes = dataset.num_dims          # readout heads: outcome classes + arity
             mc.arity = dataset.arity
             print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
@@ -115,11 +115,6 @@ def train(config):
         trainer=trainer, step_interval=config.training_kwargs["eval_steps"], config=config,
     )
     trainer.add_callback(metrics_callback)
-
-    # Eval batches (with their expensive Bayes targets) are sampled once at evaluator construction
-    # above; the training dataloader doesn't use eval_labels, so skip computing them every step.
-    if hasattr(dataset, "_want_eval_labels"):
-        dataset._want_eval_labels = False
 
     trainer.train()
 

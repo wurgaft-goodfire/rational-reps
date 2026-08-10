@@ -149,4 +149,83 @@ fig = plot_utils.plot_trajectory_overlay(
              f'(CCA = {cca(H, lc):.2f}; color = time)')
 plot_utils.save_figure(fig, plot_utils.figure_path(config, "belief_trajectory"))
 
+# %% [markdown]
+# ## 4. Memorizing vs generalizing: one dimension per task, or the family rank?
+#
+# Train the same architecture on a prior of **8 fixed categoricals** (`runner=
+# categorical_transformer`): exact Bayes is now filtering over 8 memorized tasks — the
+# "memorizing predictor" (compare the context to each task, output the posterior-weighted
+# average). Two hypotheses about its hidden state:
+#
+# - **Rational compression**: the posterior over the 8 atoms is a function of the same 2-D
+#   sufficient statistic (counts), and mixtures of categoricals stay categorical — so the hidden
+#   spectrum should match the continuous-prior model's (~2 dims + corrections), with "which
+#   atom" read off *position* in the plane.
+# - **Per-task lookup** (task-vector intuition): the network allocates ~one direction per
+#   memorized task, so the M=8 spectrum should carry ~7 healthy extra singular values that the
+#   continuous-prior model lacks.
+
+# %%
+model8, ds8, ev8, hist8, config8 = train_inline(['runner=categorical_transformer'])
+
+ds8.rng.manual_seed(0)
+theta8 = ds8.sample_emission(B)
+x8 = torch.multinomial(theta8, L, replacement=True, generator=ds8.rng)
+ids8 = torch.cat([torch.full((B, 1), ds8.start_token, dtype=torch.long, device=ds8.device), x8], 1)
+with torch.no_grad():
+    out8 = model8(ids8, output_hidden_states=True)
+H8 = out8['hidden_states'][-1][:, 1:].reshape(-1, model8.config.hidden_size).cpu().numpy()
+
+# behavior: the memorizing net should match filtering over the 8 atoms, NOT the conjugate rule
+p8 = ds8.posterior_predictive(x8)
+prior8 = ds8.prior_predictive
+bayes8 = torch.cat([prior8.expand(B, 1, -1), p8[:, :-1]], 1).cpu().numpy()
+p_model8 = torch.softmax(out8['logits'][:, :-1][..., ds8.item_tokens], -1).cpu().numpy()
+counts8 = torch.cumsum(torch.nn.functional.one_hot(x8, ds8.K).float(), dim=1)
+tvec = torch.arange(1, L + 1, device=x8.device, dtype=torch.float32).view(1, -1, 1)
+conj = ((1.0 + counts8) / (float(ds8.K) + tvec))
+conj = torch.cat([torch.full((B, 1, ds8.K), 1 / ds8.K, device=x8.device), conj[:, :-1]], 1).cpu().numpy()
+print(f'KL(filtering bayes || model)    = {kl(bayes8, p_model8):.4f}   '
+      f'(prior baseline {kl(bayes8, prior8.cpu().numpy()[None, None]):.3f})')
+print(f'KL(filtering bayes || conjugate) = {kl(bayes8, conj):.4f}   '
+      f'(what a generalizing predictor would output)')
+
+# %% [markdown]
+# The verdict is in the hidden-state spectra: same architecture, same context length, only the
+# prior differs. The Bayes logit code is rank 2 in both cases (mixture closure), so any extra
+# dimensions in the M=8 model are representational choices, not task requirements.
+
+# %%
+def spectrum(X):
+    s = np.linalg.svd(X - X.mean(0), compute_uv=False)
+    pr = float((s ** 2).sum() ** 2 / (s ** 4).sum())
+    return s / s[0], pr
+
+s_dense, pr_dense = spectrum(H)
+s_mem, pr_mem = spectrum(H8)
+s_code, _ = spectrum(lc)
+print(f'participation ratio:  continuous prior {pr_dense:.2f}   8-atom prior {pr_mem:.2f}')
+print(f'dims above 5% of top: continuous {int((s_dense > .05).sum())}   '
+      f'8-atom {int((s_mem > .05).sum())}   (Bayes logit code: {int((s_code > .05).sum())})')
+
+w8 = ds8.posterior_weights(x8).cpu().numpy()
+map_atom = w8.argmax(-1).reshape(-1)
+U8, S8, _ = np.linalg.svd(H8 - H8.mean(0), full_matrices=False)
+proj8 = (U8 * S8)[:, :2]
+
+fig, ax = plt.subplots(1, 2, figsize=(10, 3.8))
+ax[0].semilogy(np.arange(1, 21), s_dense[:20], 'o-', ms=4, label='continuous prior (generalizing)')
+ax[0].semilogy(np.arange(1, 21), s_mem[:20], 's-', ms=4, label='8-atom prior (memorizing)')
+ax[0].axvline(2.5, ls='--', color='0.7', lw=1)
+ax[0].annotate('Bayes code rank', (2.6, 0.5), fontsize=8, color='0.4')
+ax[0].set_xlabel('component'); ax[0].set_ylabel(r'$\sigma_i / \sigma_1$')
+ax[0].legend(fontsize=8)
+ax[0].set_title('hidden-state spectra: does memorization\nbuy one dimension per task?')
+plot_utils.FIG.style_axes(ax[0])
+ax[1].scatter(proj8[:, 0], proj8[:, 1], c=map_atom, cmap='tab10', vmax=9, s=5)
+ax[1].set_title('memorizing model, hidden PCA\n(color = Bayes-MAP atom)')
+plot_utils.FIG.clean(ax[1])
+fig.tight_layout()
+plot_utils.save_figure(fig, plot_utils.figure_path(config8, "memorizing_spectrum"))
+
 # %%

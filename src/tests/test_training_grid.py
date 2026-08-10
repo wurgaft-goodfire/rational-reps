@@ -34,14 +34,14 @@ def _check(history, dataset, model):
     ("sphere", {"n": 40, "k": 6}, "klinear"),
 ])
 def test_graph_training_runs(structure, kw, arch, tmp_path):
-    model, dataset, evaluator, history = train_inline(
+    model, dataset, evaluator, history, _ = train_inline(
         _graph_overrides(structure, kw) + [f"runner={arch}"] + _QUICK,
         name=f"grid_{structure}_{arch}", cache_dir=str(tmp_path))
     _check(history, dataset, model)
 
 
 def test_distribution_training_runs(tmp_path):
-    model, dataset, evaluator, history = train_inline(
+    model, dataset, evaluator, history, _ = train_inline(
         ["setting=distribution", "family=gaussian1d", "runner=klinear"] + _QUICK,
         name="grid_distribution", cache_dir=str(tmp_path))
     _check(history, dataset, model)
@@ -49,7 +49,7 @@ def test_distribution_training_runs(tmp_path):
 
 def test_relational_training_runs(tmp_path):
     # group op: rsa vs the (degenerate) factor_tensor is low, so we only check it runs + scores
-    model, dataset, evaluator, history = train_inline(
+    model, dataset, evaluator, history, _ = train_inline(
         ["setting=relational", "operation=modular_add", "operation_kwargs.p=7", "runner=klinear"] + _QUICK,
         name="grid_relational", cache_dir=str(tmp_path))
     _check(history, dataset, model)

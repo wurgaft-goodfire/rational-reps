@@ -34,12 +34,14 @@ def cka(X, Y):
     return float((Kx * Ky).sum() / denom) if denom > 0 else 0.0
 
 
-def cca(X, Y, tol=1e-8):
+def cca(X, Y, tol=1e-5):
     """Mean canonical correlation between X and Y (rows = samples). Invariant to any invertible
     linear map of each side — the right similarity when representations are equal up to a linear
     transform (e.g. belief states in different bases), where CKA (rotation-only) under-reports.
     Computed SVCCA-style: orthonormal bases of the two column spaces, then singular values of their
-    product."""
+    product. The basis tolerance sits above float32 numerical dirt (~1e-6 relative), so exact
+    linear constraints computed in float32 (e.g. probabilities summing to 1) don't leak a junk
+    direction into the mean."""
     def basis(A):
         A = np.asarray(A, np.float64); A = A - A.mean(0)
         U, S, _ = np.linalg.svd(A, full_matrices=False)
@@ -121,10 +123,12 @@ class EvalComponents:
         """Pre-sample a fixed set of eval batches once. Sampling is deterministic
         given the seed, so every checkpoint/step is scored on the same batches."""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        batches = [
-            {k: v.cpu() for k, v in dataset.__getitem__().items()}
-            for _ in range(config.eval_kwargs.num_eval_batches)
-        ]
+        batches = []
+        for _ in range(config.eval_kwargs.num_eval_batches):
+            batch = dataset.__getitem__()
+            if hasattr(dataset, "optimal_predictions"):           # Bayes targets, computed on demand
+                batch["eval_labels"] = dataset.optimal_predictions(batch["input_ids"])
+            batches.append({k: v.cpu() for k, v in batch.items()})
         return cls(batches=batches, device=device)
 
     def save(self, path: str):

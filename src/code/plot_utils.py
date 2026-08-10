@@ -336,6 +336,74 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None):
     scatter_geometry(ax, _pca(r, ndim), title, cmap)
 
 
+def plot_factorization(L, k=3, item_label=r"items  $\theta$", outcome_label=r"outcomes  $x$",
+                       caption="embedding = each item's coefficients      "
+                               "·      decoder = the basis functions they multiply",
+                       highlight_row=None, highlight_col=None):
+    """The manuscript decomposition schematic (graphs_c03): centered log-conditional ≈
+    embedding × decoder, drawn as three aligned heatmaps with per-panel symmetric color scales.
+    ``highlight_row``/``highlight_col`` box one row (a conceptual dimension) and one column
+    (an outcome's position) of the decoder. Returns ``(fig, {"L", "E", "D"})`` for overlays."""
+    from matplotlib.patches import Rectangle
+    from .geometry import factor_logcond
+    Lc, E, D, S, _ = factor_logcond(L)
+    Ek, Dk = E[:, :k], D[:k]
+    n_i, n_o = Lc.shape
+
+    fig = plt.figure(figsize=(13, 4.2))
+    fig.subplots_adjust(bottom=0.16)
+    gap = 0.14 * n_o
+    gs = fig.add_gridspec(1, 5, width_ratios=[n_o, gap, 0.05 * n_o * k, gap, n_o], wspace=0.05)
+
+    def _panel(ax, M, aspect="auto"):
+        lim = np.percentile(np.abs(M), 98)
+        ax.imshow(M, cmap=FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect=aspect)
+        FIG.clean(ax)
+
+    axL = fig.add_subplot(gs[0, 0])
+    _panel(axL, Lc, aspect="equal")
+    axL.set_title("log-conditional\n" + r"$L[\theta, x] = \log p(x \mid \theta)$", fontsize=15)
+    axL.set_xlabel(outcome_label, fontsize=13); axL.set_ylabel(item_label, fontsize=13)
+
+    axE = fig.add_subplot(gs[0, 2])
+    _panel(axE, Ek)
+    axE.set_title("embedding\n(coefficients)", fontsize=15)
+    axE.set_xlabel("k dims", fontsize=13)
+
+    # decoder: k rows drawn at the same cell height as the other panels, vertically centered
+    axD = fig.add_subplot(gs[0, 4])
+    _panel(axD, Dk)
+    axD.set_title("decoder  (basis functions over x)", fontsize=15)
+    axD.set_xlabel(outcome_label, fontsize=13)
+    pos = axD.get_position()
+    shrink = min(1.0, 0.09 * k)                                   # chunky rows, like the manuscript
+    axD.set_position([pos.x0, pos.y0 + pos.height * (1 - shrink) / 2,
+                      pos.width, pos.height * shrink])
+    # E is (n, k) and D is (k, n): mirror their cell geometry — E's column width (inches)
+    # equals D's row thickness
+    figw, figh = fig.get_size_inches()
+    cell_in = axD.get_position().height * figh / k
+    posE = axE.get_position()
+    new_w = k * cell_in / figw
+    axE.set_position([posE.x0 + (posE.width - new_w) / 2, posE.y0, new_w, posE.height])
+    # the operator symbols, centered between the *drawn* panel boxes (L letterboxes to a square,
+    # so gridspec-cell centering would drift)
+    fig.canvas.draw()
+    pL, pE, pD = axL.get_position(), axE.get_position(), axD.get_position()
+    yc = (pL.y0 + pL.y1) / 2
+    fig.text((pL.x1 + pE.x0) / 2, yc, r"$\approx$", fontsize=26, ha="center", va="center", color="0.15")
+    fig.text((pE.x1 + pD.x0) / 2, yc, r"$\times$", fontsize=26, ha="center", va="center", color="0.15")
+    if highlight_row is not None:
+        axD.add_patch(Rectangle((-0.5, highlight_row - 0.5), n_o, 1, fill=False,
+                                ec="0.45", lw=2.2, zorder=5, clip_on=False))
+    if highlight_col is not None:
+        axD.add_patch(Rectangle((highlight_col - 0.5, -0.5), 1, k, fill=False,
+                                ec="black", lw=2.2, zorder=5, clip_on=False))
+    if caption:
+        fig.text(0.5, 0.015, caption, ha="center", fontsize=12.5, color="0.45")
+    return fig, {"L": axL, "E": axE, "D": axD}
+
+
 def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", ylabel=r"item  $\theta$",
                         aspect="equal"):
     """Diverging heatmap of the (centered) conditional the geometry is read off (borderless, with
@@ -403,24 +471,28 @@ def plot_uncertainty(E):
     ks = [12, 6, 3, 1.5, 0.7, 0.3, 0.1]
     broaden = np.array([vm(th[int(0.35 * n)], k) @ circ for k in ks])
 
-    fig, ax = plt.subplots(1, 3, figsize=(13, 3.9))
+    fig, ax = plt.subplots(1, 3, figsize=(13, 4.2))
     ax[0].scatter(circ[:, 0], circ[:, 1], c="0.85", s=15)
     ax[0].scatter([0], [0], c="0.6", marker="+", s=60)
     ax[0].plot(interp[:, 0], interp[:, 1], "-", color="0.6", lw=0.8, zorder=1)
-    ax[0].scatter(interp[:, 0], interp[:, 1], c=ts, cmap="coolwarm", s=45, zorder=3)
+    ax[0].scatter(interp[:, 0], interp[:, 1], c=ts, cmap="coolwarm", s=26, zorder=3)
     ax[0].plot(broaden[:, 0], broaden[:, 1], "-", color="0.6", lw=0.8, zorder=1)
     ax[0].scatter(broaden[:, 0], broaden[:, 1], c=range(len(ks)), cmap="viridis_r",
-                  s=45, marker="s", zorder=3)
-    ax[0].set_title("codes on the circle\n(o) mix A-B    (s) broaden to center")
+                  s=26, marker="s", zorder=3)
+    ax[0].set_title("codes on the circle", pad=24)
+    ax[0].text(0.5, 1.03, r"$\bullet$ mix A$\leftrightarrow$B     $\blacksquare$ broaden $\to$ center",
+               transform=ax[0].transAxes, ha="center", fontsize=12, color="0.35")
+    ax[0].set_anchor("C")
     ax[0].set_aspect("equal"); FIG.clean(ax[0])
 
     for t in [0, 0.25, 0.5, 0.75, 1.0]:
         ax[1].plot(np.arange(n), t * bA + (1 - t) * bB, lw=1.4, color=plt.cm.coolwarm(t))
-    ax[1].set(title="mix A-B (midpoint two-peaked)", xlabel="item", yticks=[]); FIG.style_axes(ax[1])
+    ax[1].set(title=r"mix A$\leftrightarrow$B", xlabel="item", yticks=[])
+    FIG.style_axes(ax[1])
 
     for i, k in enumerate(ks):
         ax[2].plot(np.arange(n), vm(th[int(0.35 * n)], k), lw=1.4, color=plt.cm.viridis_r(i / len(ks)))
-    ax[2].set(title="broaden one belief (sharp to flat)", xlabel="item", yticks=[]); FIG.style_axes(ax[2])
+    ax[2].set(title="broaden one belief", xlabel="item", yticks=[]); FIG.style_axes(ax[2])
     fig.tight_layout()
     return fig
 
@@ -479,6 +551,18 @@ def plot_stacking(n=12, q=10, n_features=5, sae_steps=3000):
 
     fig.tight_layout()
     return fig
+
+
+def feature_arrows(ax, V, scale=1.25, lw=1.8, fontsize=10):
+    """Labeled feature vectors (rows of V, (m, 2)) as arrows from the origin, tab10-colored."""
+    for i, v in enumerate(np.asarray(V, float)):
+        c = plt.cm.tab10(i)
+        ax.annotate("", xy=v, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=lw, color=c))
+        ax.annotate(str(i + 1), v * 1.15, fontsize=fontsize, ha="center", va="center", color=c)
+    ax.scatter([0], [0], s=12, color="0.3", zorder=3)
+    r = np.abs(V).max() * scale + 1e-9
+    ax.set_xlim(-r, r); ax.set_ylim(-r, r); ax.set_aspect("equal")
+    FIG.clean(ax)
 
 
 def rdm_heatmap(ax, reps, title="RDM"):

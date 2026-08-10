@@ -7,20 +7,16 @@ from .eval import Evaluator
 
 # Keys returned by the dataset that are for evaluation only and must not be
 # forwarded to the model (they are not valid forward() arguments).
-EVAL_ONLY_KEYS = {"eval_labels"}
-
-
 #########################
 # helpers for training
 #########################
 
 class PreBatchedDataCollator:
     """Datasets here already return a full batch from __getitem__, so the
-    DataLoader hands us a single-element list. Unwrap it and drop eval-only keys
-    that would otherwise be passed to model.forward()."""
+    DataLoader hands us a single-element list. Unwrap it."""
 
     def __call__(self, features):
-        return {k: v for k, v in features[0].items() if k not in EVAL_ONLY_KEYS}
+        return features[0]
 
 
 #########################

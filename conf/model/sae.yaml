@@ -1,0 +1,8 @@
+# @package model_kwargs
+# Softmax-CE autoencoder with a ReLU bottleneck on feature activations. num_classes (= feature
+# dimension) is derived from the dataset at train time; hidden_size is the bottleneck d.
+model_type: sae
+model_config:
+  hidden_size: 2
+  l1: 0.0
+  init_scale: 0.1

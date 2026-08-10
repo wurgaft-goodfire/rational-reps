@@ -58,7 +58,7 @@ def test_rnn_exposes_per_position_hidden_states():
 
 
 def test_registry_covers_the_ladder():
-    assert set(READOUT_CLASSES) == {"klinear", "mlp", "rnn"}
+    assert set(READOUT_CLASSES) == {"klinear", "mlp", "rnn", "sae"}
 
 
 def test_sparse_autoencoder_superposes_five_features_as_a_pentagon():
@@ -67,3 +67,11 @@ def test_sparse_autoencoder_superposes_five_features_as_a_pentagon():
     ang = np.sort(np.arctan2(W[1], W[0]))
     gaps = np.degrees(np.diff(np.r_[ang, ang[0] + 2 * np.pi]))
     assert gaps.min() > 50.0                               # evenly spread (ideal pentagon = 72 deg)
+
+
+def test_readout_heads_are_bias_free():
+    # the readout (decoder) is a pure matrix everywhere; hidden-layer biases are code-side
+    from src.code.models import SAEReadout
+    assert MLPReadout(_cfg()).mlp[-1].bias is None
+    assert RNNReadout(_cfg()).head.bias is None
+    assert SAEReadout(_cfg(hidden_size=3, init_scale=0.1)).decoder.bias is None

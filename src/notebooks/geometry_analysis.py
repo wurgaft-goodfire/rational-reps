@@ -50,6 +50,7 @@ spec = {"structure": "chain", "cooccurrence": "diffusion",
         "n": 15}
 L = graph_conditional(spec)
 E_pred = predicted_geometry(L)
+fig_fact, _ = plot_utils.plot_factorization(L)                   # the decomposition schematic
 fig_pred = plot_utils.plot_predicted_geometry(spec, L, E_pred)   # saved once we have a run config (below)
 
 # %% [markdown]
@@ -71,6 +72,7 @@ for arch in ARCHS:
     print(f"{arch:12s} CKA={results[arch]['cka']:.3f}  RSA={results[arch]['rsa']:.3f}")
 
 # every arch for this structure shares one experiment figure dir; `config` keys it (model level dropped)
+plot_utils.save_figure(fig_fact, plot_utils.figure_path(config, "factorization"))
 plot_utils.save_figure(fig_pred, plot_utils.figure_path(config, "predicted_geometry"))
 fig_rsa = plot_utils.plot_rsa_curves({a: results[a]["history"] for a in ARCHS})
 plot_utils.save_figure(fig_rsa, plot_utils.figure_path(config, "rsa_curves"))

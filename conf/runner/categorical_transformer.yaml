@@ -1,0 +1,35 @@
+# @package _global_
+# Memorizing-predictor experiment: the prior is 8 fixed categoricals over K=3 outcomes (atom
+# spacing >> end-of-context posterior width), so exact Bayes is filtering over 8 memorized
+# tasks. Architecture matches dirichlet_transformer (the continuous-prior counterpart), so the
+# two hidden-state spectra are directly comparable: rational compression predicts the family
+# rank (~2 dims) for both; a per-task lookup predicts ~M-1 extra dimensions here.
+#   python -m src.code.train runner=categorical_transformer
+defaults:
+  - override /setting: exchangeable
+  - override /model: transformer
+  - override /train: default
+  - _self_
+
+# {task}_{arch}: the arch is baked in here (not a CLI override), so it never reaches override_dirname.
+name: categorical_transformer
+output_dir: ${run_dir}/checkpoints
+sample_mode: sequence
+family: categorical
+family_kwargs:
+  K: 3
+  n_items: 8
+  alpha: 1.0
+  seed: 0
+model_kwargs:
+  model_config:
+    hidden_size: 64
+    num_hidden_layers: 1
+    num_attention_heads: 1
+    intermediate_size: 256
+eval_kwargs:
+  output_hidden_states: true
+training_kwargs:
+  learning_rate: 0.001
+  train_steps: 10000
+  context_length: 64

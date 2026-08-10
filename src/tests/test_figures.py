@@ -106,3 +106,15 @@ def test_plot_prediction_pair_is_a_two_panel_row():
         r2s = [t.get_text() for a in fig.axes for t in a.texts if "R2" in t.get_text()]
         assert len(r2s) == 1
         plt.close(fig)
+
+
+def test_plot_factorization_renders_the_three_panel_decomposition():
+    from src.code.data import graph_conditional
+    from src.code.plot_utils import plot_factorization
+    L = graph_conditional({"structure": "ring", "n": 24, "gamma": 0.8, "cooccurrence": "diffusion"})
+    fig, axes = plot_factorization(L, k=3, highlight_row=0, highlight_col=6)
+    assert set(axes) == {"L", "E", "D"}
+    assert axes["L"].images[0].get_array().shape == (24, 24)
+    assert axes["E"].images[0].get_array().shape == (24, 3)
+    assert axes["D"].images[0].get_array().shape == (3, 24)
+    plt.close(fig)

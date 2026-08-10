@@ -256,10 +256,11 @@ def test_dataset_batch_contract(name, kw):
     B = ds._batch_size()
     assert b["input_ids"].shape == (B, ds.seq_len)
     assert b["labels"].shape == (B, ds.seq_len)
-    assert b["eval_labels"].shape == (B, ds.max_len + 1, ds.num_dims)
     pad = b["input_ids"] == ds.pad_token
     assert (b["labels"][pad] == -100).all()                  # padding ignored in the LM loss
-    el = b["eval_labels"]; valid = el.sum(-1) > 0
+    el = ds.optimal_predictions(b["input_ids"])
+    assert el.shape == (B, ds.max_len + 1, ds.num_dims)
+    valid = el.sum(-1) > 0
     ones = torch.ones(int(valid.sum()), device=el.device)
     assert torch.allclose(el[valid].sum(-1), ones, atol=1e-4)   # valid Bayes rows are distributions
     assert torch.allclose(el[~valid], torch.zeros_like(el[~valid]))   # padded rows are zero
@@ -271,12 +272,6 @@ def test_dataset_vocab_and_token_layout():
     assert ds.num_dims == 6 and ds.vocab_size == 8           # terminals+EOS ; terminals+eos+start+pad
     assert ds.eos_token == 5 and ds.start_token == 6 and ds.pad_token == 7
     assert ds.item_tokens.tolist() == list(range(6))         # maps logits -> terminals + EOS
-
-
-def test_eval_labels_gate_skips_the_expensive_oracle():
-    ds = PCFGDataset(_cfg())
-    ds._want_eval_labels = False
-    assert (ds[0]["eval_labels"] == 0).all()
 
 
 # ── shared KL metric (padding mask) ─────────────────────────────────────────
@@ -336,7 +331,7 @@ def test_shipped_pcfg_config_has_hierarchical_signal(runner):
     cfg.training_kwargs.batch_size = 1024
     ds = PCFGDataset(Config(cfg))
     b = ds[0]
-    bayes = b["eval_labels"].cpu().numpy()
+    bayes = ds.optimal_predictions(b["input_ids"]).cpu().numpy()
     ids = b["input_ids"].cpu().numpy()
     T, C = bayes.shape[1], bayes.shape[2]
     valid = bayes.sum(-1) > 0.5

@@ -1,0 +1,9 @@
+# @package _global_
+# Feature cube: the standard analogy case (hypercube + heat kernel at time gamma) under a
+# sparse item measure — feature i active with probability sparsity * p_decay^i.
+setting: feature_cube
+n_features: 6
+gamma: 0.25
+sparsity: 0.5
+p_decay: 0.7
+sample_mode: pointwise

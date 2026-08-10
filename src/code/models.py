@@ -59,7 +59,7 @@ class ReadoutConfig(transformers.PretrainedConfig):
     model_type = "readout"
 
     def __init__(self, vocab_size=2, num_classes=2, embed_dim=16, arity=1,
-                 hidden_size=64, num_layers=2, init_scale=0.02, **kwargs):
+                 hidden_size=64, num_layers=2, init_scale=0.02, l1=0.0, **kwargs):
         super().__init__(**kwargs)
         self.vocab_size = vocab_size
         self.num_classes = num_classes
@@ -68,6 +68,7 @@ class ReadoutConfig(transformers.PretrainedConfig):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.init_scale = init_scale
+        self.l1 = l1                                     # SAE sparsity penalty
 
 
 class _ReadoutBase(transformers.PreTrainedModel):
@@ -126,7 +127,7 @@ class MLPReadout(_ReadoutBase):
         for _ in range(config.num_layers):
             layers += [nn.Linear(in_dim, config.hidden_size), nn.ReLU()]
             in_dim = config.hidden_size
-        layers.append(nn.Linear(in_dim, config.num_classes))
+        layers.append(nn.Linear(in_dim, config.num_classes, bias=False))
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, input_ids, labels=None, **kwargs):
@@ -145,7 +146,7 @@ class RNNReadout(_ReadoutBase):
         super().__init__(config)
         self.rnn = nn.GRU(config.embed_dim, config.hidden_size,
                           num_layers=config.num_layers, batch_first=True)
-        self.head = nn.Linear(config.hidden_size, config.vocab_size)   # next-token over the vocab
+        self.head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)   # next-token readout
 
     def forward(self, input_ids, labels=None, output_hidden_states=False, **kwargs):
         h, _ = self.rnn(self.embedding(input_ids))          # (B, T, hidden)
@@ -166,7 +167,31 @@ class RNNReadout(_ReadoutBase):
         return h[:, -1]
 
 
-READOUT_CLASSES = {"klinear": KLinearReadout, "mlp": MLPReadout, "rnn": RNNReadout}
+class SAEReadout(_ReadoutBase):
+    """Softmax autoencoder with a ReLU bottleneck on feature activations x (B, m): code
+    h = relu(We x + be), logits Wd h (bias-free readout), CE against the target distribution
+    (+ l1 * mean|h|). Bottleneck = hidden_size; feature dim = num_classes."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.encoder = nn.Linear(config.num_classes, config.hidden_size)
+        self.decoder = nn.Linear(config.hidden_size, config.num_classes, bias=False)
+        for lin in (self.encoder, self.decoder):
+            nn.init.normal_(lin.weight, std=config.init_scale)
+        nn.init.zeros_(self.encoder.bias)
+
+    def forward(self, input_ids, labels=None, **kwargs):
+        h = torch.relu(self.encoder(input_ids.float()))
+        out = {"logits": self.decoder(h)}
+        if labels is not None:
+            logp = F.log_softmax(out["logits"], dim=-1)
+            out["loss"] = -(labels.float() * logp).sum(-1).mean() \
+                + self.config.l1 * h.abs().mean()
+        return out
+
+
+READOUT_CLASSES = {"klinear": KLinearReadout, "mlp": MLPReadout, "rnn": RNNReadout,
+                   "sae": SAEReadout}
 
 
 ################# Superposition (over-capacity) ########################

@@ -33,7 +33,7 @@ def test_pointwise_batch_is_full_batch_soft_targets():
     batch = ds.__getitem__()
     assert batch["input_ids"].shape == (24, 1)             # full batch: every item
     assert batch["labels"].shape == (24, 24)               # soft targets = true conditional
-    assert batch["eval_labels"].shape == (24, 24)
+    assert ds.optimal_predictions(batch["input_ids"]).shape == (24, 24)
     assert torch.allclose(batch["labels"].sum(1), torch.ones(24, device=batch["labels"].device))
 
 
@@ -43,7 +43,7 @@ def test_sequence_batch_shapes_and_start_token():
     assert batch["input_ids"].shape == (8, 7)              # start + context_length
     assert (batch["input_ids"][:, 0] == 24).all()          # start token first
     assert batch["labels"].shape == (8, 7)
-    assert batch["eval_labels"].shape == (8, 6, 24)        # aligns with logits[:, :-1]
+    assert ds.optimal_predictions(batch["input_ids"]).shape == (8, 6, 24)   # aligns with logits[:, :-1]
 
 
 def test_ring_conditional_is_circulant():
@@ -65,7 +65,6 @@ def test_distribution_family_dataset_shapes():
     batch = ds.__getitem__()
     assert batch["input_ids"].shape == (ds.n_items, 1)          # full batch: every distribution
     assert batch["labels"].shape == (ds.n_items, ds.n_outcomes)  # soft targets
-    assert batch["eval_labels"].shape == (ds.n_items, ds.n_outcomes)
 
 
 def test_relational_dataset_infers_arity_and_shapes():

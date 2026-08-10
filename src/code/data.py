@@ -22,8 +22,12 @@ def init_dataset(config, overwrite_data: bool = False):
         return HMMDataset(config)
     if config.setting == "dirichlet-categorical":
         return DirichletCategoricalDataset(config)
+    if config.setting == "exchangeable-family":
+        return ExchangeableFamilyDataset(config)
     if config.setting == "pcfg":
         return PCFGDataset(config)
+    if config.setting == "feature_cube":
+        return FeatureCubeDataset(config)
     raise ValueError(f"Unsupported setting: {config.setting}")
 
 
@@ -100,7 +104,7 @@ class GraphCooccurrenceDataset(Dataset):
     def _pointwise_batch(self):
         # full batch: every item with its exact neighbour distribution as a soft target
         items = torch.arange(self.n_nodes, device=self.device)
-        return {"input_ids": items.unsqueeze(1), "labels": self.P, "eval_labels": self.P}
+        return {"input_ids": items.unsqueeze(1), "labels": self.P}
 
     def _sequence_batch(self):
         B = self._batch_size()
@@ -111,10 +115,113 @@ class GraphCooccurrenceDataset(Dataset):
             walk[:, t] = torch.multinomial(self.P[walk[:, t - 1]], 1, generator=self.rng).squeeze(1)
         start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
         input_ids = torch.cat([start, walk], dim=1)               # (B, L+1)
-        # true next-token dist at each prefix: P[token_j] (start token -> item marginal).
+        return {"input_ids": input_ids, "labels": input_ids.clone()}
+
+    def optimal_predictions(self, input_ids):
+        """Bayes next-token distribution at every prefix: P[token] (start -> item marginal).
+        Pointwise (B, 1) -> (B, C); sequence (B, L+1) -> (B, L, C), aligned with logits[:, :-1]."""
+        if self.sample_mode == "pointwise":
+            return self.P[input_ids[:, 0]]
         dist_table = torch.cat([self.P, self.marginal.unsqueeze(0)], dim=0)  # (vocab, C)
-        eval_labels = dist_table[input_ids[:, :-1]]               # (B, L, C), aligns with logits[:, :-1]
-        return {"input_ids": input_ids, "labels": input_ids.clone(), "eval_labels": eval_labels}
+        return dist_table[input_ids[:, :-1]]
+
+    def compute_metrics(self, eval_pred, return_all=True):
+        return _kl_metrics(eval_pred, return_all)
+
+
+##### Feature-cube dataset (hypercube heat kernel + sparse item measure) #####
+
+def feature_cube(p, gamma):
+    """Feature cube = the standard analogy case (hypercube + heat kernel at time ``gamma``,
+    built by the shared `adjacency_conditional` path) plus a sparse item measure: feature i
+    is active with probability p[i] (importance = frequency). The symmetric kernel flips
+    each feature with probability f = (1 - e^{-2 gamma})/2, so log p(x'|x) = const + Z @ Lf
+    exactly — no outcome field, no bias needed anywhere.
+    Returns (logP (2^m, 2^m), pi, Z (2^m, m) in ±1, Lf (m, 2^m))."""
+    p = np.asarray(p, float)
+    m = len(p)
+    logP = adjacency_conditional(hypercube(m), gamma, "heat")
+    Z = 2.0 * cube_codes(m) - 1.0
+    Lf = 0.5 * np.log(1 / np.tanh(gamma)) * Z.T                # w = half log coth(gamma)
+    on = Z > 0
+    pi = (p ** on * (1 - p) ** ~on).prod(1)
+    return logP, pi, Z, Lf
+
+
+
+class FeatureCubeDataset(Dataset):
+    """The standard analogy task (hypercube + heat kernel at time ``gamma``) under a sparse
+    item measure: feature i is active with probability sparsity * p_decay^i (importance =
+    frequency; the kernel stays uniform diffusion). One token per item. Exposes the exact
+    ``conditional`` (log p(x'|x) = const + Z @ Lf, purely bilinear — no bias needed), the
+    item measure ``pi``, and the ±1 feature codes ``Z`` / directions ``Lf`` for the oracle.
+
+    ``sample_mode``s: "pointwise" (items ~ pi with their exact next-item distribution as a
+    soft target) and "sequence" (short episodes from pi; the symmetric kernel's walk drifts
+    toward the dense uniform cube, so episodes are resampled rather than run long).
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.rng = torch.Generator(device=self.device); self.rng.manual_seed(config.random_seed)
+
+        m = config.get("n_features")
+        p = config.get("sparsity") * config.get("p_decay") ** np.arange(m)
+        logP, self.pi, self.Z, self.Lf = feature_cube(p, config.get("gamma"))
+        self._L = logP
+        self.n_items = len(logP)
+        self.arity = 1
+        self.sample_mode = config.get("sample_mode", "pointwise")
+        self.item_tokens = torch.arange(self.n_items)
+        self.start_token = self.n_items                           # sequence mode only
+        self.P = torch.tensor(np.exp(logP), dtype=torch.float32, device=self.device)
+        self._pi = torch.tensor(self.pi, dtype=torch.float32, device=self.device)
+        self._dist_table = torch.cat([self.P, self._pi.unsqueeze(0)])  # start -> the item measure
+
+    @property
+    def conditional(self):
+        return self._L
+
+    @property
+    def num_dims(self):
+        return self.n_items
+
+    @property
+    def vocab_size(self):
+        return self.n_items + 1 if self.sample_mode == "sequence" else self.n_items
+
+    @property
+    def seq_len(self):
+        if self.sample_mode == "sequence":
+            return self.config.training_kwargs["context_length"] + 1
+        return self.arity + 1
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, i=None):
+        B = self.config.training_kwargs["batch_size"]
+        if self.sample_mode == "sequence":
+            return self._sequence_batch(B)
+        items = torch.multinomial(self._pi, B, replacement=True, generator=self.rng)
+        return {"input_ids": items.unsqueeze(1), "labels": self.P[items]}
+
+    def _sequence_batch(self, B):
+        L = self.config.training_kwargs["context_length"]
+        walk = torch.empty(B, L, dtype=torch.long, device=self.device)
+        walk[:, 0] = torch.multinomial(self._pi, B, replacement=True, generator=self.rng)
+        for t in range(1, L):
+            walk[:, t] = torch.multinomial(self.P[walk[:, t - 1]], 1, generator=self.rng).squeeze(1)
+        start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
+        input_ids = torch.cat([start, walk], dim=1)
+        return {"input_ids": input_ids, "labels": input_ids.clone()}
+
+    def optimal_predictions(self, input_ids):
+        """Bayes next-token distribution at every prefix: P[token] (start -> the item measure)."""
+        if self.sample_mode == "pointwise":
+            return self.P[input_ids[:, 0]]
+        return self._dist_table[input_ids[:, :-1]]
 
     def compute_metrics(self, eval_pred, return_all=True):
         return _kl_metrics(eval_pred, return_all)
@@ -170,7 +277,7 @@ class DistributionFamilyDataset(Dataset):
     def __getitem__(self, i=None):
         # full batch: every item (distribution) with its exact p(x|theta) as a soft target
         items = torch.arange(self.n_items, device=self.device)
-        return {"input_ids": items.unsqueeze(1), "labels": self.P, "eval_labels": self.P}
+        return {"input_ids": items.unsqueeze(1), "labels": self.P}
 
     def compute_metrics(self, eval_pred, return_all=True):
         return _kl_metrics(eval_pred, return_all)
@@ -237,7 +344,7 @@ class RelationalDataset(Dataset):
         for j in range(self.arity):
             flat = flat * self.n_items + inputs[:, j]             # row-major over the item axes
         dist = self.P[flat]
-        return {"input_ids": inputs, "labels": dist, "eval_labels": dist}
+        return {"input_ids": inputs, "labels": dist}
 
     def compute_metrics(self, eval_pred, return_all=True):
         return _kl_metrics(eval_pred, return_all)
@@ -278,7 +385,7 @@ class HMMDataset(Dataset):
         self.n_states = len(self._L)
         self.arity = 1
 
-        T = torch.tensor(np.exp(self._L), dtype=torch.float32, device=self.device)
+        T = torch.tensor(np.exp(self._L), dtype=torch.float64, device=self.device)
         self.T = T / T.sum(-1, keepdim=True)
         self.pi = self._stationary(self.T)                        # prior = stationary distribution
 
@@ -290,14 +397,14 @@ class HMMDataset(Dataset):
             # (M = n_states), so sigma reads directly as 'how many hops does an emission alias'
             D = structure_distance(spec)
             Em = np.exp(-(D ** 2) / (2 * sigma ** 2)); self.n_symbols = self.n_states
-            self.Em = torch.tensor(Em / Em.sum(1, keepdims=True), dtype=torch.float32, device=self.device)
+            self.Em = torch.tensor(Em / Em.sum(1, keepdims=True), dtype=torch.float64, device=self.device)
         elif emission == "permuted":
             # one peaked template over the M symbols, independently permuted per state
             j = np.arange(self.n_symbols); template = np.exp(-(j ** 2) / (2 * sigma ** 2))
             g = torch.Generator(device=self.device); g.manual_seed(config.random_seed + 1)
             perms = torch.stack([torch.randperm(self.n_symbols, generator=g, device=self.device)
                                  for _ in range(self.n_states)])
-            self.Em = torch.tensor(template / template.sum(), dtype=torch.float32, device=self.device)[perms]
+            self.Em = torch.tensor(template / template.sum(), dtype=torch.float64, device=self.device)[perms]
         else:
             raise ValueError(f"unknown emission {emission!r} (expected 'bump' or 'permuted')")
 
@@ -306,7 +413,7 @@ class HMMDataset(Dataset):
 
     @staticmethod
     def _stationary(T, iters=2000):
-        v = torch.full((T.shape[0],), 1.0 / T.shape[0], device=T.device)
+        v = torch.full((T.shape[0],), 1.0 / T.shape[0], dtype=T.dtype, device=T.device)
         for _ in range(iters):
             v = v @ T
         return v / v.sum()
@@ -344,12 +451,16 @@ class HMMDataset(Dataset):
 
         start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
         input_ids = torch.cat([start, x], dim=1)                  # (B, L+1)
-        # Bayes-optimal next-token distributions p(x_{t+1} | x_{1:t}) via the forward algorithm
+        return {"input_ids": input_ids, "labels": input_ids.clone()}
+
+    def optimal_predictions(self, input_ids):
+        """Bayes next-token distributions p(x_{t+1} | x_{1:t}) via the forward algorithm.
+        (B, L+1) -> (B, L, M)."""
+        x = input_ids[:, 1:]
         beliefs = self.forward_algorithm(x)                       # (B, L, n_states) = b_1..b_L
-        pred_first = (self.pi @ self.Em).expand(B, 1, -1)         # predict x_1 from the prior
+        pred_first = (self.pi @ self.Em).expand(len(x), 1, -1)    # predict x_1 from the prior
         pred_rest = (beliefs[:, :-1] @ self.T) @ self.Em          # predict x_{t+1}, t = 1..L-1
-        eval_labels = torch.cat([pred_first, pred_rest], dim=1)   # (B, L, M)
-        return {"input_ids": input_ids, "labels": input_ids.clone(), "eval_labels": eval_labels}
+        return torch.cat([pred_first, pred_rest], dim=1).float()
 
     def forward_algorithm(self, obs):
         """Per-position posteriors ``b_t = p(s_t | x_{1:t})`` via the forward algorithm. obs: (B, L)."""
@@ -366,24 +477,20 @@ class HMMDataset(Dataset):
         return _kl_metrics(eval_pred, return_all)
 
 
-##### Dirichlet-categorical dataset (exchangeable in-context inference over observables) #####
+##### Exchangeable datasets (in-context inference over observables) #####
 
-class DirichletCategoricalDataset(Dataset):
-    """Each sequence draws ``theta ~ Dir(alpha)`` and emits iid tokens ``x_t ~ Cat(theta)``; the
-    Bayes-optimal next-token distribution is the posterior predictive ``(alpha + c_t)/(alpha_0 + t)``
-    and the predicted representation is its centered log (``logit_code``). Sequence-only."""
+class ExchangeableDataset(Dataset):
+    """Each sequence draws an emission distribution ``theta`` from a prior and emits iid tokens
+    over ``K`` outcome classes; the Bayes-optimal next-token distribution is the posterior
+    predictive and the predicted representation is its centered log (``logit_code``).
+    Subclasses supply ``K``, ``sample_emission``, ``prior_predictive``, ``posterior_predictive``.
+    Sequence-only."""
 
     def __init__(self, config: Config):
         self.config = config
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.rng = torch.Generator(device=self.device); self.rng.manual_seed(config.random_seed)
-        # torch.distributions.Dirichlet takes no generator; numpy keeps theta draws reproducible
-        self.np_rng = np.random.default_rng(config.random_seed)
-        self.K = int(config.get("n_categories"))
-        self.alpha = torch.full((self.K,), float(config.get("alpha")), device=self.device)
         self.arity = 1
-        self.item_tokens = torch.arange(self.K)                   # emission symbols = outcome classes
-        self.start_token = self.K                                 # extra token to begin a sequence
 
     @property
     def num_dims(self):
@@ -391,7 +498,15 @@ class DirichletCategoricalDataset(Dataset):
 
     @property
     def vocab_size(self):
-        return self.K + 1                                         # categories + start token
+        return self.K + 1                                         # outcome classes + start token
+
+    @property
+    def item_tokens(self):
+        return torch.arange(self.K)                               # emission symbols = outcome classes
+
+    @property
+    def start_token(self):
+        return self.K                                             # extra token to begin a sequence
 
     @property
     def seq_len(self):
@@ -400,32 +515,22 @@ class DirichletCategoricalDataset(Dataset):
     def __len__(self):
         return 1
 
-    def _batch_size(self):
-        return self.config.training_kwargs["batch_size"]
-
     def __getitem__(self, i=None):
-        B, L = self._batch_size(), self.config.training_kwargs["context_length"]
-        theta = torch.tensor(self.np_rng.dirichlet(self.alpha.cpu().numpy(), size=B),
-                             dtype=torch.float32, device=self.device)
+        B, L = self.config.training_kwargs["batch_size"], self.config.training_kwargs["context_length"]
+        theta = self.sample_emission(B)                           # (B, K) emission probs
         x = torch.multinomial(theta, L, replacement=True, generator=self.rng)   # (B, L) iid | theta
 
         start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
         input_ids = torch.cat([start, x], dim=1)                  # (B, L+1)
-        # Bayes-optimal next-token distributions: prior mean for x_1, posterior predictive after
+        return {"input_ids": input_ids, "labels": input_ids.clone()}
+
+    def optimal_predictions(self, input_ids):
+        """Bayes next-token distributions: prior predictive for x_1, posterior predictive after.
+        References are float64; the returned batch tensor is float32. (B, L+1) -> (B, L, K)."""
+        x = input_ids[:, 1:]
         pred = self.posterior_predictive(x)                       # p(x_{t+1} | x_{1:t}), t = 1..L
-        prior = (self.alpha / self.alpha.sum()).expand(B, 1, -1)
-        eval_labels = torch.cat([prior, pred[:, :-1]], dim=1)     # (B, L, K)
-        return {"input_ids": input_ids, "labels": input_ids.clone(), "eval_labels": eval_labels}
-
-    def counts(self, obs):
-        """Cumulative per-category counts of ``x_{1:t}`` at every position t — the belief state
-        (with ``alpha``, the posterior Dirichlet parameters). obs: (B, L) -> (B, L, K)."""
-        return torch.cumsum(nn.functional.one_hot(obs, self.K).float(), dim=1)
-
-    def posterior_predictive(self, obs):
-        """``(alpha + counts_t) / (alpha_0 + t)``: the posterior predictive after ``x_{1:t}``."""
-        n = self.alpha + self.counts(obs)
-        return n / n.sum(-1, keepdim=True)
+        prior = self.prior_predictive.expand(len(x), 1, -1)
+        return torch.cat([prior, pred[:, :-1]], dim=1).float()
 
     def logit_code(self, obs):
         """Centered log posterior predictive (float64): the predicted in-context code. (B,L) -> (B,L,K)."""
@@ -434,6 +539,94 @@ class DirichletCategoricalDataset(Dataset):
 
     def compute_metrics(self, eval_pred, return_all=True):
         return _kl_metrics(eval_pred, return_all)
+
+
+class DirichletCategoricalDataset(ExchangeableDataset):
+    """Exchangeable task with the conjugate prior ``theta ~ Dir(alpha)``: the posterior predictive
+    has the closed form ``(alpha + counts_t)/(alpha_0 + t)``."""
+
+    def __init__(self, config: Config):
+        super().__init__(config)
+        # torch.distributions.Dirichlet takes no generator; numpy keeps theta draws reproducible
+        self.np_rng = np.random.default_rng(config.random_seed)
+        self.K = int(config.get("n_categories"))
+        self.alpha = torch.full((self.K,), float(config.get("alpha")), dtype=torch.float64,
+                                device=self.device)
+        self._alpha_np = np.full(self.K, float(config.get("alpha")))
+
+    @property
+    def prior_predictive(self):
+        return self.alpha / self.alpha.sum()
+
+    def sample_emission(self, B):
+        return torch.tensor(self.np_rng.dirichlet(self._alpha_np, size=B),
+                            dtype=torch.float64, device=self.device)
+
+    def counts(self, obs):
+        """Cumulative per-category counts of ``x_{1:t}`` at every position t — the belief state
+        (with ``alpha``, the posterior Dirichlet parameters). obs: (B, L) -> (B, L, K)."""
+        return torch.cumsum(nn.functional.one_hot(obs, self.K).double(), dim=1)
+
+    def posterior_predictive(self, obs):
+        """``(alpha + counts_t) / (alpha_0 + t)``: the posterior predictive after ``x_{1:t}``."""
+        n = self.alpha + self.counts(obs)
+        return n / n.sum(-1, keepdim=True)
+
+
+class ExchangeableFamilyDataset(ExchangeableDataset):
+    """Exchangeable task over any distribution family: ``theta`` is an atom from the family's
+    pool (uniform prior), tokens are the binned support, and the posterior predictive is exact
+    Bayes filtering over the atoms. Generalizes the Dirichlet task to arbitrary priors."""
+
+    def __init__(self, config: Config):
+        super().__init__(config)
+        from omegaconf import OmegaConf
+        fk = config.get("family_kwargs")
+        family_kwargs = OmegaConf.to_container(fk, resolve=True) if fk else {}
+        spec = {"family": config.get("family"), **family_kwargs}
+        L, self.info = family_build(spec)                         # (M, K) log p(x|theta) on the grid
+        # normalize in log space (float64): exp-then-log would quantize or underflow deep tails
+        from scipy.special import logsumexp
+        logP = L - logsumexp(L, axis=1, keepdims=True)
+        self._logatoms = logP
+        self.log_atoms = torch.tensor(logP, dtype=torch.float64, device=self.device)
+        self.log_atoms_T = self.log_atoms.T.contiguous()          # (K, M) for per-step gathers
+        self.atoms = self.log_atoms.exp()                         # (M, K) emission probs per atom
+        self.M, self.K = self.atoms.shape
+        self._prior_predictive = self.atoms.mean(0)
+
+    @property
+    def atom_logcond(self):
+        """Normalized ``log p(x|theta)`` (float64) — the matrix the geometry oracle factors.
+        Rows are atoms (not tokens), so this is deliberately not ``conditional``: the in-context
+        code lives in hidden states over contexts, not item embeddings."""
+        return self._logatoms
+
+    @property
+    def prior_predictive(self):
+        return self._prior_predictive
+
+    def sample_emission(self, B):
+        idx = torch.randint(self.M, (B,), device=self.device, generator=self.rng)
+        return self.atoms[idx]
+
+    def posterior_weights(self, obs):
+        """Posterior over atoms after ``x_{1:t}`` at every position t — the belief state.
+        obs: (B, L) -> (B, L, M)."""
+        loglik = torch.cumsum(self.log_atoms_T[obs], dim=1)       # (B, L, M) cumulative log p(x_{1:t}|m)
+        return torch.softmax(loglik, dim=-1)                      # uniform prior over atoms
+
+    def posterior_predictive(self, obs):
+        """``sum_m w_t(m) theta_m``: the posterior predictive after ``x_{1:t}``."""
+        return self.posterior_weights(obs) @ self.atoms
+
+    def logit_code(self, obs):
+        """Centered log posterior predictive via logsumexp (float64), so tail bins beyond the
+        float32 exp range stay finite. (B, L) -> (B, L, K)."""
+        loglik = torch.cumsum(self.log_atoms_T[obs], dim=1)                   # (B, L, M) float64
+        logw = loglik - loglik.logsumexp(-1, keepdim=True)                    # log posterior weights
+        g = (logw.unsqueeze(-1) + self.log_atoms).logsumexp(2)                # log mixed predictive
+        return g - g.mean(-1, keepdim=True)
 
 
 ##### PCFG dataset (latent states walk a *tree* + emit terminals) #####
@@ -451,7 +644,6 @@ class PCFGDataset(Dataset):
         self.config = config
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.rng = np.random.default_rng(config.random_seed)
-        self._want_eval_labels = True
 
         from omegaconf import OmegaConf
         gk = config.get("grammar_kwargs")
@@ -516,29 +708,29 @@ class PCFGDataset(Dataset):
                 return terms, states
 
     def __getitem__(self, i=None):
-        B = self._batch_size(); Lin = self.seq_len; Tpred = self.max_len + 1
+        B = self._batch_size(); Lin = self.seq_len
         input_ids = np.full((B, Lin), self.pad_token, dtype=np.int64)
         input_ids[:, 0] = self.start_token
-        eval_labels = np.zeros((B, Tpred, self.num_dims), dtype=np.float32)
-        beliefs = np.zeros((B, Tpred, self.m), dtype=np.float32)   # for analysis (not used by model)
-        states_pad = np.full((B, Tpred), -1, dtype=np.int64)
         for b in range(B):
-            terms, states = self._sample_sentence(); k = len(terms)
+            terms, _ = self._sample_sentence(); k = len(terms)
             input_ids[b, 1:1 + k] = terms
             input_ids[b, 1 + k] = self.eos_token
-            states_pad[b, :k] = states
-            if self._want_eval_labels:
-                dists, bel = pcfg_next_token(np.array(terms, dtype=int), self.g)
-                eval_labels[b, :k + 1] = dists                    # rows 0..k = p(next | x[:t])
-                beliefs[b, :k + 1] = bel
         input_ids = torch.from_numpy(input_ids).to(self.device)
         labels = input_ids.clone()
         labels[input_ids == self.pad_token] = -100                # ignore post-EOS padding in the LM loss
-        out = {"input_ids": input_ids, "labels": labels,
-               "eval_labels": torch.from_numpy(eval_labels).to(self.device)}
-        self.last_beliefs = torch.from_numpy(beliefs)             # side-channel for the notebook
-        self.last_states = torch.from_numpy(states_pad)
-        return out
+        return {"input_ids": input_ids, "labels": labels}
+
+    def optimal_predictions(self, input_ids):
+        """Bayes next-token distributions p(next | x[:t]) via the inside/prefix charts, per
+        sentence read off the tokens (rows past EOS are zero). (B, Lin) -> (B, max_len+1, V+1)."""
+        ids = input_ids.cpu().numpy()
+        B, Tpred = len(ids), self.max_len + 1
+        eval_labels = np.zeros((B, Tpred, self.num_dims), dtype=np.float32)
+        for b in range(B):
+            terms = ids[b, 1:]
+            terms = terms[:int(np.argmax(terms == self.eos_token))]   # tokens before EOS
+            eval_labels[b, :len(terms) + 1] = pcfg_next_token(terms.astype(int), self.g)[0]
+        return torch.from_numpy(eval_labels).to(input_ids.device)
 
     def compute_metrics(self, eval_pred, return_all=True):
         return _kl_metrics(eval_pred, return_all)
@@ -625,9 +817,14 @@ def communities(n=25, k=3, p_in=0.45, p_out=0.04, seed=0):
     return A
 
 
+def cube_codes(n):
+    """Binary attribute codes of the hypercube's 2^n nodes, (2^n, n), in node order."""
+    return np.array([[(v >> b) & 1 for b in range(n)] for v in range(2 ** n)], float)
+
+
 def hypercube(n):
     """Binary attribute cube: n attributes -> 2^n nodes, neighbors differ in one bit -> analogies."""
-    B = np.array([[(v >> b) & 1 for b in range(n)] for v in range(2 ** n)])
+    B = cube_codes(n)
     H = (B[:, None] != B[None]).sum(-1)
     return (H == 1).astype(float)
 
