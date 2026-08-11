@@ -292,40 +292,6 @@ def nuclear_features(Lf, Z, d, w=None, fit_bias=True, path=(0.5, 0.2, 0.08, 0.03
     return (U2[:, :d] * rootS).T, rootS[:, None] * V2t[:d], b, S2[:d]
 
 
-def additive_cube_excess(K, w, p):
-    """Exact excess CE on the feature cube of the additive code ``G = s K s'``: gaps are
-    additive over flipped features, so the row partition function factorizes and the excess
-    decomposes into per-feature softplus potentials of the single-flip gaps
-    ``g_j(s) = 2 s_j (s K)_j``. ``K (m, m)``, coupling ``w``, feature-on probabilities ``p``."""
-    K = np.asarray(K, float); p = np.asarray(p, float)
-    m = len(p)
-    f = 1.0 / (1.0 + np.exp(2.0 * w))
-    S = np.array([[1 - 2 * ((v >> i) & 1) for i in range(m)] for v in range(2 ** m)], float)
-    pi = ((p ** (S > 0)) * ((1 - p) ** (S < 0))).prod(1)
-    G = 2.0 * S * (S @ K)                                         # g_j(s) per item row
-    phi = np.logaddexp(0.0, -G) - np.logaddexp(0.0, -2.0 * w) + f * (G - 2.0 * w)
-    return float(pi @ phi.sum(1))
-
-
-def minimize_additive_excess(K0, d, w, p, maxiter=1000):
-    """Descend ``additive_cube_excess`` over rank-d codes ``K = A'B`` from the rank-d
-    truncation of ``K0`` (deterministic). Returns (K, excess)."""
-    from scipy.optimize import minimize
-    m = len(p)
-    U, S, Vt = np.linalg.svd(np.asarray(K0, float))
-    rootS = np.sqrt(S[:d])
-    x0 = np.concatenate([((U[:, :d] * rootS).T).ravel(), (rootS[:, None] * Vt[:d]).ravel()])
-
-    def obj(x):
-        A = x[:d * m].reshape(d, m)
-        B = x[d * m:].reshape(d, m)
-        return additive_cube_excess(A.T @ B, w, p)
-
-    r = minimize(obj, x0, method="L-BFGS-B", options=dict(maxiter=maxiter))
-    A, B = r.x[:d * m].reshape(d, m), r.x[d * m:].reshape(d, m)
-    return A.T @ B, float(r.fun)
-
-
 def superposition_measure(A):
     """Elhage et al.'s per-feature superposition score sum_{j != i} (a_hat_i . a_j)^2 for
     feature columns A (d, m); 0 = the feature has a dimension to itself."""

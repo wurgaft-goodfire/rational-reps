@@ -110,42 +110,6 @@ def test_nuclear_features_flat_matches_closed_form_and_sharp_packs():
             assert (ce - bayes) > 0.8 * (ce_cf - bayes)    # flat: closed form ~ optimal
 
 
-def test_additive_cube_excess_is_exact():
-    # the per-feature softplus decomposition equals the exact expected CE of the same code
-    from src.code.geometry import additive_cube_excess
-    rng = np.random.default_rng(0)
-    p = np.array([0.5, 0.35, 0.2, 0.14, 0.1])
-    for gamma in (0.6, 0.03):
-        logP, pi, Z, Lf = feature_cube(p, gamma)
-        f = (1 - np.exp(-2 * gamma)) / 2
-        w = 0.5 * np.log((1 - f) / f)
-        A, B = rng.normal(size=(2, 5)), rng.normal(size=(2, 5))
-        ce, bayes = expected_ce(Z, Lf, A, B @ Z.T, np.zeros(len(Z)), w=pi)
-        assert np.isclose(additive_cube_excess(A.T @ B, w, p), ce - bayes, atol=1e-9)
-
-
-def test_additive_class_is_rigid_at_sharp_gamma():
-    # gaps are additive over flipped features, so the fully-additive class cannot manage
-    # interference per outcome: its optimum barely improves on truncation, while the free
-    # readout of nuclear_features buys most of the packing
-    from src.code.geometry import additive_cube_excess, minimize_additive_excess
-    p = 0.5 * 0.7 ** np.arange(6)
-    logP, pi, Z, Lf = feature_cube(p, 0.03)
-    f = (1 - np.exp(-2 * 0.03)) / 2
-    w = 0.5 * np.log((1 - f) / f)
-    cf = factor_features(Lf, Z, 2, w=pi, fit_bias=False)
-    coef = np.linalg.lstsq(Z, cf[1].T, rcond=None)[0]             # cf readout, additive part
-    K0 = cf[0].T @ coef.T
-    ce_cf, bayes = expected_ce(Z, Lf, *cf[:3], w=pi)
-    assert np.isclose(additive_cube_excess(K0, w, p), ce_cf - bayes, atol=1e-8)
-    K, ex = minimize_additive_excess(K0, 2, w, p)
-    assert np.isclose(additive_cube_excess(K, w, p), ex)
-    assert ex < ce_cf - bayes - 0.05                              # some packing in the class
-    nuc = nuclear_features(Lf, Z, 2, w=pi, fit_bias=False)
-    ex_nuc = expected_ce(Z, Lf, *nuc[:3], w=pi)[0] - bayes
-    assert ex_nuc < ex - 0.2                                      # free readout beats it all
-
-
 def test_superposition_measure():
     A = np.array([[1.0, 0.0, 0.5], [0.0, 1.0, 0.0]])              # feature 3 overlaps feature 1
     s = superposition_measure(A)
