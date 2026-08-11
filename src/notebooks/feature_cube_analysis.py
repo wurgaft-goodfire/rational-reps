@@ -38,12 +38,14 @@
 # (softmax-saturation regime); large $\gamma$ = diffuse. The analogy work runs at
 # $\gamma = 0.8$ ($f \approx 0.40$) — the flat end.
 #
-# Two oracles at budget $d$ (`src/code/geometry.py`, both `fit_bias=False`):
-# **closed form** (`factor_features`) — whitened truncation, the quadratic account
-# that sees only second moments; **exact CE** (`als_features`) — alternating convex
-# halves. The closed form can be a *stable local minimum* of the exact CE, so ALS runs with
-# random restarts. The deviation between the two is the superposition signal, and the
-# prediction is a diagonal phase boundary in (sharpness $\times$ sparsity).
+# Two predictions at budget $d$ (`src/code/geometry.py`, both `fit_bias=False`):
+# **closed form** (`factor_features`) — whitened truncation, the quadratic account that sees
+# only second moments; **nuclear** (`nuclear_features`) — the exact-CE fit through its convex
+# relaxation: CE is convex in the logit map $R = A^\top D$, so the nuclear-penalized program
+# is solved globally along a regularization path, and a deterministic joint polish descends
+# within the basin each path point proposes. No restarts, no init dependence. The deviation
+# between the two is the superposition signal; a trained k-linear model per cell is the
+# empirical reference both predictions are judged against.
 
 # %%
 import os, sys
@@ -54,19 +56,16 @@ import numpy as np
 ROOT = Path(sys.prefix).parent            # <repo>/.venv -> <repo>
 os.chdir(ROOT); sys.path.insert(0, str(ROOT))
 from src.code.data import feature_cube
-from src.code.geometry import (factor_features, als_features, expected_ce, principal_angles,
-                               _psd_sqrt)
+from src.code.geometry import (factor_features, nuclear_features, expected_ce,
+                               principal_angles, _psd_sqrt)
 from src.code import plot_utils
 import matplotlib.pyplot as plt
 
 QUICK = bool(int(os.environ.get("QUICK", "0")))   # QUICK=1: coarse grids + short fits/training
 FIGDIR = Path("outputs/feature_cube") / ("figures_quick" if QUICK else "figures")
 FIGDIR.mkdir(parents=True, exist_ok=True)
-rng = np.random.default_rng(0)
 
 M, D_BUDGET, P_DECAY = 6, 2, 0.7
-RIDGE = 1e-4
-N_RESTARTS, N_ROUNDS = (1, 20) if QUICK else (2, 40)
 
 
 @lru_cache(maxsize=None)
@@ -75,28 +74,58 @@ def cube(sparsity, gamma, m=M):
     return feature_cube(sparsity * P_DECAY ** np.arange(m), gamma)
 
 
-def best_als(Lf, Z, d, w, cf, fit_bias=False, n_random=N_RESTARTS, n_rounds=N_ROUNDS):
-    """ALS from the closed-form warm start plus random restarts; lowest exact CE wins.
-    Returns (fit, ce_warm, ce_best) — the warm-start CE is kept to expose the local minimum."""
-    m, nx = Lf.shape
-    kw = dict(w=w, ridge=RIDGE, n_rounds=n_rounds, fit_bias=fit_bias)
-    fits = [als_features(Lf, Z, d, init=cf[:3], **kw)]
-    for _ in range(n_random):
-        init = (rng.normal(size=(d, m)), rng.normal(size=(d, nx)), np.zeros(nx))
-        fits.append(als_features(Lf, Z, d, init=init, **kw))
-    ces = [f[3][-1] for f in fits]                                # ridge-free CE at the solution
-    return fits[int(np.argmin(ces))], ces[0], min(ces)
-
-
 @lru_cache(maxsize=None)
 def oracle(sparsity, gamma):
-    """Both oracles at one phase-plane cell, memoized so every figure shares the same fits.
-    Returns (pi, Z, Lf, cf, fit, ex_cf, ex_warm, ex_best) with excesses over Bayes."""
+    """Closed-form and nuclear fits at one phase-plane cell, memoized so every figure shares
+    the same fits. Returns (pi, Z, Lf, cf, nuc, ex_cf, ex_nuc) with excesses over Bayes."""
     logP, pi, Z, Lf = cube(sparsity, gamma)
     cf = factor_features(Lf, Z, D_BUDGET, w=pi, fit_bias=False)
     ce_cf, bayes = expected_ce(Z, Lf, *cf[:3], w=pi)
-    fit, ce_warm, ce_best = best_als(Lf, Z, D_BUDGET, w=pi, cf=cf)
-    return pi, Z, Lf, cf, fit, ce_cf - bayes, ce_warm - bayes, ce_best - bayes
+    nuc = nuclear_features(Lf, Z, D_BUDGET, w=pi, fit_bias=False)
+    ce_nuc, _ = expected_ce(Z, Lf, *nuc[:3], w=pi)
+    return pi, Z, Lf, cf, nuc, ce_cf - bayes, ce_nuc - bayes
+
+# %%
+import torch
+from src.code.train import train_inline
+
+
+def item_excess_ce(model, ds):
+    """Excess CE (nats) over Bayes on every item, weighted by the item measure."""
+    device = next(model.parameters()).device
+    ids = torch.arange(ds.n_items, device=device)
+    with torch.no_grad():
+        if model.config.vocab_size == ds.n_items + 1:             # walk models: [start, item]
+            start = torch.full((ds.n_items, 1), int(ds.start_token), device=device)
+            logits = model(torch.cat([start, ids.unsqueeze(1)], dim=1))["logits"][:, -1]
+            logits = logits[:, :ds.n_items]                       # start is never a target
+        else:
+            logits = model(ids.unsqueeze(1))["logits"]
+    logq = torch.log_softmax(logits.double(), dim=-1).cpu().numpy()
+    P = np.exp(ds.conditional)
+    ce = -(ds.pi[:, None] * P * logq).sum()
+    bayes = -(ds.pi[:, None] * P * ds.conditional).sum()
+    return float(ce - bayes)
+
+
+def feature_vectors(H, Z, w):
+    """Weighted least-squares additive fit H ~ [Z, 1] W: effective feature vectors (m, d)."""
+    X = np.column_stack([Z, np.ones(len(Z))]) * np.sqrt(w)[:, None]
+    return np.linalg.lstsq(X, np.sqrt(w)[:, None] * np.asarray(H, float), rcond=None)[0][:-1]
+
+
+KLINEAR_STEPS = 2000 if QUICK else 6000
+
+
+@lru_cache(maxsize=None)
+def trained_klinear(sparsity, gamma):
+    """The empirical reference at one cell: k-linear at the oracle budget, trained from
+    scratch. Returns (excess CE, item codes H)."""
+    model, ds, evaluator, *_ = train_inline(
+        ["setting=feature_cube", f"n_features={M}", f"sparsity={sparsity}", f"gamma={gamma}",
+         f"p_decay={P_DECAY}", "runner=klinear", f"model_kwargs.model_config.embed_dim={D_BUDGET}",
+         f"training_kwargs.train_steps={KLINEAR_STEPS}"])
+    return item_excess_ce(model, ds), np.asarray(evaluator.item_representations(model), float)
 
 # %% [markdown]
 # ## Figure 1 — what the quadratic account sees
@@ -128,15 +157,15 @@ plot_utils.save_figure(fig, FIGDIR / "fig1_spectrum.png")
 # %% [markdown]
 # ## Figure 2 — the phase plane: truncation → packing in (sharpness × sparsity)
 #
-# For each cell (everything bias-free): closed form, warm-started ALS, best-of-restarts ALS,
-# and best-of-restarts ALS *granted an output bias*. Four readouts of the same object:
+# For each cell (everything bias-free unless noted): closed form, nuclear, nuclear *granted
+# an output bias*, and a trained k-linear at the same budget. Four readouts:
 #
-# - **best/cf** (top left): the phase signal. 1 = truncation optimal; small = packing wins.
-# - **warm/cf** (top right): the local-minimum trap — where warm-started ALS fails to leave
-#   the closed form even though the optimum has moved.
+# - **nuclear/cf** (top left): the phase signal. 1 = truncation optimal; small = packing wins.
+# - **k-linear/nuclear** (top right): reality vs prediction — ≈1 means the deterministic
+#   convex-path fit accounts for what training finds.
 # - **max principal angle** (bottom left) between the Fisher-whitened row spaces of the
 #   fitted logit maps.
-# - **bias ablation** (bottom right): best-with-bias / best-bias-free. The target has no
+# - **bias ablation** (bottom right): nuclear-with-bias / nuclear-bias-free. The target has no
 #   constant component (the kernel is symmetric), so any gain from the bias here is the bias
 #   acting as an *interference sink* for packing — a resource, not a correction.
 #
@@ -149,33 +178,33 @@ SPARSITY_GRID = [0.5, 0.1] if QUICK else [0.5, 0.25, 0.1]
 cache = FIGDIR.parent / ("phase_plane_quick.npz" if QUICK else "phase_plane.npz")
 if cache.exists():
     dat = np.load(cache)
-    ratio_best, ratio_warm, angle, bias_gain = (dat["ratio_best"], dat["ratio_warm"],
-                                                dat["angle"], dat["bias_gain"])
+    ratio_nuc, ratio_klin, angle, bias_gain = (dat["ratio_nuc"], dat["ratio_klin"],
+                                               dat["angle"], dat["bias_gain"])
 else:
     shape = (len(SPARSITY_GRID), len(GAMMA_GRID))
-    ratio_best, ratio_warm, angle, bias_gain = (np.zeros(shape) for _ in range(4))
+    ratio_nuc, ratio_klin, angle, bias_gain = (np.zeros(shape) for _ in range(4))
     for i, sp in enumerate(SPARSITY_GRID):
         for j, gamma in enumerate(GAMMA_GRID):
-            pi, Z, Lf, cf, fit, ex_cf, ex_warm, ex_best = oracle(sp, gamma)
-            cf_bias = factor_features(Lf, Z, D_BUDGET, w=pi)
-            _, _, ce_bias = best_als(Lf, Z, D_BUDGET, w=pi, cf=cf_bias, fit_bias=True)
-            _, bayes = expected_ce(Z, Lf, *cf[:3], w=pi)
+            pi, Z, Lf, cf, nuc, ex_cf, ex_nuc = oracle(sp, gamma)
+            nuc_bias = nuclear_features(Lf, Z, D_BUDGET, w=pi)
+            ce_bias, bayes = expected_ce(Z, Lf, *nuc_bias[:3], w=pi)
+            ex_klin, _ = trained_klinear(sp, gamma)
             q = pi @ np.exp(cube(sp, gamma)[0])
             Fh = _psd_sqrt(np.diag(q) - np.outer(q, q))
-            ang = principal_angles((cf[0].T @ cf[1]) @ Fh, (fit[0].T @ fit[1]) @ Fh).max()
-            ratio_best[i, j] = ex_best / ex_cf
-            ratio_warm[i, j] = ex_warm / ex_cf
+            ang = principal_angles((cf[0].T @ cf[1]) @ Fh, (nuc[0].T @ nuc[1]) @ Fh).max()
+            ratio_nuc[i, j] = ex_nuc / ex_cf
+            ratio_klin[i, j] = ex_klin / ex_nuc
             angle[i, j] = np.degrees(ang)
-            bias_gain[i, j] = (ce_bias - bayes) / ex_best
+            bias_gain[i, j] = (ce_bias - bayes) / ex_nuc
             print(f"sparsity={sp:4.2f} gamma={gamma:4.2f}  exCE cf={ex_cf:7.4f}  "
-                  f"warm={ex_warm:7.4f}  best={ex_best:7.4f}  "
-                  f"with-bias={ce_bias - bayes:7.4f}  ratio={ratio_best[i, j]:.3f}")
-    np.savez(cache, ratio_best=ratio_best, ratio_warm=ratio_warm, angle=angle,
+                  f"nuclear={ex_nuc:7.4f}  klinear={ex_klin:7.4f}  "
+                  f"with-bias={ce_bias - bayes:7.4f}  ratio={ratio_nuc[i, j]:.3f}")
+    np.savez(cache, ratio_nuc=ratio_nuc, ratio_klin=ratio_klin, angle=angle,
              bias_gain=bias_gain)
 
 fig, ax = plt.subplots(2, 2, figsize=(11.5, 8.6))
-panels = [(ratio_best, "excess-CE ratio  best ALS / closed form", 0, 1, "viridis_r"),
-          (ratio_warm, "warm-started / closed form  (the local-minimum trap)", 0, 1, "viridis_r"),
+panels = [(ratio_nuc, "excess-CE ratio  nuclear / closed form", 0, 1, "viridis_r"),
+          (ratio_klin, "trained k-linear / nuclear  (reality vs prediction)", 0, 1.5, "viridis_r"),
           (angle, "max principal angle (deg)", 0, 90, "viridis"),
           (bias_gain, "bias ablation:  with-bias / bias-free  (interference sink)", 0, 1, "viridis_r")]
 for a, (Mx, title, vmin, vmax, cmap) in zip(ax.ravel(), panels):
@@ -199,7 +228,7 @@ plot_utils.save_figure(fig, FIGDIR / "fig2_phase_plane.png")
 # ## Figure 3 — the geometry at the corners of the plane
 #
 # Feature code vectors (columns of $A$, native $d=2$ coordinates — no projection) for the
-# closed form and the best bias-free ALS at four corners. Truncation keeps the top of the
+# closed form and the bias-free nuclear fit at four corners. Truncation keeps the top of the
 # frequency ladder everywhere; the CE optimum leaves it in the sharp column, spreading rare
 # features into their own directions.
 
@@ -207,9 +236,9 @@ plot_utils.save_figure(fig, FIGDIR / "fig2_phase_plane.png")
 CORNERS = [(0.5, 0.6), (0.5, 0.03), (0.1, 0.6), (0.1, 0.03)]
 fig, ax = plt.subplots(2, len(CORNERS), figsize=(3.4 * len(CORNERS), 7.4))
 for col, (sp, gamma) in enumerate(CORNERS):
-    pi, Z, Lf, cf, fit, ex_cf, _, ex_best = oracle(sp, gamma)
+    pi, Z, Lf, cf, nuc, ex_cf, ex_nuc = oracle(sp, gamma)
     for row, (A, name, ex) in enumerate([(cf[0], "closed form", ex_cf),
-                                         (fit[0], "ALS (best)", ex_best)]):
+                                         (nuc[0], "nuclear", ex_nuc)]):
         a = ax[row, col]
         plot_utils.feature_arrows(a, A.T, lw=2, fontsize=10.5)
         a.set_title(rf"{name}:  excess = {ex:.3f}", fontsize=10.5)
@@ -233,9 +262,6 @@ plot_utils.save_figure(fig, FIGDIR / "fig3_oracle_geometry.png")
 # target).
 
 # %%
-import torch
-from src.code.train import train_inline
-
 D_ARCH = str(D_BUDGET)
 ARCH = {
     "klinear": ["runner=klinear", f"model_kwargs.model_config.embed_dim={D_ARCH}",
@@ -255,36 +281,11 @@ if QUICK:                                                          # readout hea
     ARCH = {"klinear": ARCH["klinear"][:-1] + ["training_kwargs.train_steps=2000"],
             "mlp": ARCH["mlp"][:-1] + ["training_kwargs.train_steps=3000"]}
 
-
-def item_excess_ce(model, ds):
-    """Excess CE (nats) over Bayes on every item, weighted by the item measure."""
-    device = next(model.parameters()).device
-    ids = torch.arange(ds.n_items, device=device)
-    with torch.no_grad():
-        if model.config.vocab_size == ds.n_items + 1:             # walk models: [start, item]
-            start = torch.full((ds.n_items, 1), int(ds.start_token), device=device)
-            logits = model(torch.cat([start, ids.unsqueeze(1)], dim=1))["logits"][:, -1]
-            logits = logits[:, :ds.n_items]                       # start is never a target
-        else:
-            logits = model(ids.unsqueeze(1))["logits"]
-    logq = torch.log_softmax(logits.double(), dim=-1).cpu().numpy()
-    P = np.exp(ds.conditional)
-    ce = -(ds.pi[:, None] * P * logq).sum()
-    bayes = -(ds.pi[:, None] * P * ds.conditional).sum()
-    return float(ce - bayes)
-
-
-def feature_vectors(H, Z, w):
-    """Weighted least-squares additive fit H ~ [Z, 1] W: effective feature vectors (m, d)."""
-    X = np.column_stack([Z, np.ones(len(Z))]) * np.sqrt(w)[:, None]
-    return np.linalg.lstsq(X, np.sqrt(w)[:, None] * np.asarray(H, float), rcond=None)[0][:-1]
-
-
 arch_results = {}
 for sp, gamma in POINTS:
-    pi, Z, Lf, cf, fit, ex_cf, _, ex_best = oracle(sp, gamma)
+    pi, Z, Lf, cf, nuc, ex_cf, ex_nuc = oracle(sp, gamma)
     entry = {"closed form": (ex_cf, Z @ cf[0].T),
-             "ALS": (ex_best, Z @ fit[0].T)}
+             "nuclear": (ex_nuc, Z @ nuc[0].T)}
     base = ["setting=feature_cube", f"n_features={M}", f"sparsity={sp}", f"gamma={gamma}",
             f"p_decay={P_DECAY}"]
     for name, ov in ARCH.items():
@@ -292,7 +293,7 @@ for sp, gamma in POINTS:
         H = evaluator.item_representations(model)
         entry[name] = (item_excess_ce(model, ds), np.asarray(H, float))
         print(f"sparsity={sp:4.2f} gamma={gamma:4.2f} {name:12s} "
-              f"excess CE={entry[name][0]:.4f}  (cf {ex_cf:.4f} / ALS {ex_best:.4f})")
+              f"excess CE={entry[name][0]:.4f}  (cf {ex_cf:.4f} / nuclear {ex_nuc:.4f})")
     arch_results[(sp, gamma)] = (entry, pi, Z)
 
 # %% [markdown]
@@ -304,7 +305,7 @@ for sp, gamma in POINTS:
 # solutions give every feature a direction.
 
 # %%
-names = ["closed form", "ALS"] + list(ARCH)
+names = ["closed form", "nuclear"] + list(ARCH)
 fig = plt.figure(figsize=(2.7 * len(names), 5.6 * len(POINTS)))
 gs = fig.add_gridspec(2 * len(POINTS), len(names), hspace=0.45, wspace=0.3)
 for prow, (sp, gamma) in enumerate(POINTS):
@@ -333,17 +334,26 @@ plot_utils.save_figure(fig, FIGDIR / "fig5_geometry_rdms.png")
 #   model in the comparison has a bias**: klinear tensor, MLP/GRU heads, GPTNeoX unembedding,
 #   and both oracles are pure matrix readouts of a code.
 # - The phase plane (Figure 2): truncation optimal in the flat column, packing in the sharp
-#   column — and within the *bias-free* class the ratio is set almost entirely by sharpness
-#   (~0.99 → ~0.68 in every sparsity row). Sparsity does not move the truncation→packing
-#   boundary here; its co-activation advantage (interference $\propto p_i p_j$, benefit
-#   $\propto p_i$) is instead harvested by the **bias channel**: the with-bias/bias-free
-#   ratio (bottom right) improves from 0.59 (dense-sharp) to 0.43 (sparse-sharp) — the
-#   interference-sink value of an output bias grows with sparsity.
-# - Warm-started ALS ≈ best-of-restarts everywhere in this class: the truncation trap seen
-#   in earlier (bias-ful / asymmetric-kernel) formulations is absent.
-# - Trained k-linear *beats* restart-ALS at both sharp points (Figures 4–5): SGD from small
-#   init finds better bias-free optima than the L-BFGS alternation, so the trained linear
-#   model is currently the closest thing to the exact-CE optimum and the ALS numbers are
-#   upper bounds on the optimal excess, not the optimum.
+#   column — and within the *bias-free* class the nuclear/cf ratio is set almost entirely by
+#   sharpness (~0.99 → ~0.67 as $\gamma$: 0.6 → 0.03, nearly identical in every sparsity
+#   row). Sparsity does not move the truncation→packing boundary here; its co-activation
+#   advantage (interference $\propto p_i p_j$, benefit $\propto p_i$) is instead harvested by
+#   the **bias channel** (bottom right): with-bias/bias-free 0.84 (flat) → 0.55–0.58 (sharp).
+# - The exact-CE branch is `nuclear_features`: CE is convex in the logit map $R = A^\top D$
+#   (only the rank constraint is nonconvex), so the nuclear-penalized program is solved
+#   globally along a regularization path and polished within each proposed basin —
+#   deterministic, no restarts. It matches the closed form in the flat column and beats the
+#   old restart-ALS numbers at the sharp points (1.072 vs 1.099 dense-sharp).
+# - Trained k-linear equals nuclear through the flat and mid columns (ratio 1.00–0.99) but
+#   still sits 9–14% *below* it in the sharp column (0.917 vs 1.072; 0.230 vs 0.254). The
+#   remaining gap is the relaxation's truncation looseness and/or a genuine class gap —
+#   k-linear's free per-item codes need not stay additive in the features, and its sharp-cell
+#   RDM (Figure 5) visibly departs from the additive checker pattern. The additive-residual
+#   diagnostic (regress the trained embedding on $Z$) would separate the two.
+# - A pure max-margin packing is *not* the sharp limit of this problem: dropping a feature
+#   gives its flip-pairs margin exactly 0, while any full-support rank-2 packing of six
+#   features has a negative worst-case margin, so max-min-margin prefers truncation. CE
+#   instead charges ties a bounded log-degeneracy cost, which is why packing wins under CE.
+#   The equally-spaced polygon of the MSE superposition story does not appear here.
 
 # %%

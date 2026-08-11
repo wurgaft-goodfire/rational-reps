@@ -1,4 +1,4 @@
-"""Budgeted CE-optimal codes (geometry.factor_features / als_features) and the feature-cube
+"""Budgeted CE-optimal codes (geometry.factor_features / nuclear_features) and the feature-cube
 setting: hypercube heat kernel + sparse item measure, log-conditional linear in the code."""
 import itertools
 
@@ -7,8 +7,8 @@ from omegaconf import OmegaConf
 
 from src.code.config import Config
 from src.code.data import FeatureCubeDataset, feature_cube
-from src.code.geometry import (factor_features, als_features, expected_ce, principal_angles,
-                               superposition_measure)
+from src.code.geometry import (factor_features, expected_ce, nuclear_features,
+                               principal_angles, superposition_measure)
 
 
 def all_supports(m, k):
@@ -59,28 +59,91 @@ def test_closed_form_ce_is_monotone_in_budget():
     assert all(a >= b - 1e-9 for a, b in zip(ces, ces[1:]))
 
 
-def test_als_descends_from_the_closed_form_init():
-    Lf, Z = _setup(m=6, k=2, beta=4.0, decay=0.8)
-    A0, D0, b0, _ = factor_features(Lf, Z, d=3)
-    A, D, b, ce_path = als_features(Lf, Z, d=3, init=(A0, D0, b0))
-    assert all(a >= b - 1e-7 for a, b in zip(ce_path, ce_path[1:]))
-    ce0 = expected_ce(Z, Lf, A0, D0, b0)[0]
-    assert expected_ce(Z, Lf, A, D, b)[0] <= ce0 + 1e-7
-
-
 def test_superposition_at_high_beta_truncation_at_low_beta():
     # equal-importance one-hot features, m=6 into d=2: the packing-vs-truncation phase
     for beta, packed in [(0.3, False), (8.0, True)]:
         Lf, Z = _setup(m=6, k=1, beta=beta)
         A0, D0, b0, _ = factor_features(Lf, Z, d=2)
-        A, D, b, _ = als_features(Lf, Z, d=2, init=(A0, D0, b0))
+        A, D, b, _ = nuclear_features(Lf, Z, d=2)
         _, bayes = expected_ce(Z, Lf, A0, D0, b0)
         ex_cf = expected_ce(Z, Lf, A0, D0, b0)[0] - bayes
-        ex_als = expected_ce(Z, Lf, A, D, b)[0] - bayes
+        ex_nuc = expected_ce(Z, Lf, A, D, b)[0] - bayes
         if packed:
-            assert ex_als < 0.6 * ex_cf          # ALS packs; truncation is far from optimal
+            assert ex_nuc < 0.6 * ex_cf          # packing beats truncation
         else:
-            assert ex_als > 0.8 * ex_cf          # quadratic regime: closed form ~ optimal
+            assert ex_nuc > 0.8 * ex_cf          # quadratic regime: closed form ~ optimal
+
+
+def test_prox_nuclear_soft_thresholds_the_spectrum():
+    from src.code.geometry import _prox_nuclear
+    rng = np.random.default_rng(0)
+    R = rng.normal(size=(4, 7))
+    U, S, Vt = np.linalg.svd(R, full_matrices=False)
+    t = S[2]                                                  # kills modes 3-4, shrinks 1-2
+    P = _prox_nuclear(R, t)
+    assert np.allclose(np.linalg.svd(P, compute_uv=False), np.maximum(S - t, 0.0))
+    assert np.allclose(P, (U * np.maximum(S - t, 0.0)) @ Vt)
+    assert np.allclose(_prox_nuclear(R, 0.0), R)
+
+
+def test_nuclear_features_full_rank_recovers_bayes_with_balanced_factors():
+    logP, pi, Z, Lf = feature_cube(np.array([0.4, 0.2, 0.1]), gamma=0.3)
+    A, D, b, S = nuclear_features(Lf, Z, d=3, w=pi, fit_bias=False)
+    ce, bayes = expected_ce(Z, Lf, A, D, b, w=pi)
+    assert ce - bayes < 1e-5
+    assert np.allclose(A @ A.T, D @ D.T, atol=1e-8)           # plain balanced split
+
+
+def test_nuclear_features_flat_matches_closed_form_and_sharp_packs():
+    # the convex program reduces to the whitened SVD in the flat regime and packs at sharp
+    for gamma, packed in [(0.6, False), (0.03, True)]:
+        logP, pi, Z, Lf = feature_cube(0.5 * 0.7 ** np.arange(6), gamma)
+        cf = factor_features(Lf, Z, d=2, w=pi, fit_bias=False)
+        ce_cf, bayes = expected_ce(Z, Lf, *cf[:3], w=pi)
+        A, D, b, S = nuclear_features(Lf, Z, d=2, w=pi, fit_bias=False)
+        ce, _ = expected_ce(Z, Lf, A, D, b, w=pi)
+        assert np.allclose(b, 0.0)
+        assert ce <= ce_cf + 1e-4                          # never worse than truncation
+        if packed:
+            assert (ce - bayes) < 0.8 * (ce_cf - bayes)    # sharp: packing beats truncation
+        else:
+            assert (ce - bayes) > 0.8 * (ce_cf - bayes)    # flat: closed form ~ optimal
+
+
+def test_additive_cube_excess_is_exact():
+    # the per-feature softplus decomposition equals the exact expected CE of the same code
+    from src.code.geometry import additive_cube_excess
+    rng = np.random.default_rng(0)
+    p = np.array([0.5, 0.35, 0.2, 0.14, 0.1])
+    for gamma in (0.6, 0.03):
+        logP, pi, Z, Lf = feature_cube(p, gamma)
+        f = (1 - np.exp(-2 * gamma)) / 2
+        w = 0.5 * np.log((1 - f) / f)
+        A, B = rng.normal(size=(2, 5)), rng.normal(size=(2, 5))
+        ce, bayes = expected_ce(Z, Lf, A, B @ Z.T, np.zeros(len(Z)), w=pi)
+        assert np.isclose(additive_cube_excess(A.T @ B, w, p), ce - bayes, atol=1e-9)
+
+
+def test_additive_class_is_rigid_at_sharp_gamma():
+    # gaps are additive over flipped features, so the fully-additive class cannot manage
+    # interference per outcome: its optimum barely improves on truncation, while the free
+    # readout of nuclear_features buys most of the packing
+    from src.code.geometry import additive_cube_excess, minimize_additive_excess
+    p = 0.5 * 0.7 ** np.arange(6)
+    logP, pi, Z, Lf = feature_cube(p, 0.03)
+    f = (1 - np.exp(-2 * 0.03)) / 2
+    w = 0.5 * np.log((1 - f) / f)
+    cf = factor_features(Lf, Z, 2, w=pi, fit_bias=False)
+    coef = np.linalg.lstsq(Z, cf[1].T, rcond=None)[0]             # cf readout, additive part
+    K0 = cf[0].T @ coef.T
+    ce_cf, bayes = expected_ce(Z, Lf, *cf[:3], w=pi)
+    assert np.isclose(additive_cube_excess(K0, w, p), ce_cf - bayes, atol=1e-8)
+    K, ex = minimize_additive_excess(K0, 2, w, p)
+    assert np.isclose(additive_cube_excess(K, w, p), ex)
+    assert ex < ce_cf - bayes - 0.05                              # some packing in the class
+    nuc = nuclear_features(Lf, Z, 2, w=pi, fit_bias=False)
+    ex_nuc = expected_ce(Z, Lf, *nuc[:3], w=pi)[0] - bayes
+    assert ex_nuc < ex - 0.2                                      # free readout beats it all
 
 
 def test_superposition_measure():
@@ -129,19 +192,6 @@ def test_cube_full_rank_recovers_bayes():
     assert np.allclose(b, 0.0)
     ce, bayes = expected_ce(Z, Lf, A, D, b, w=pi)
     assert ce - bayes < 1e-8
-
-
-def test_bias_free_closed_form_matches_the_class():
-    # flat kernel: truncation is optimal within the bias-free class, so bias-free ALS
-    # warm-started from the bias-free closed form should not beat it by much
-    logP, pi, Z, Lf = feature_cube(np.array([0.4, 0.2, 0.1]), gamma=1.0)
-    cf = factor_features(Lf, Z, d=2, w=pi, fit_bias=False)
-    ce_cf, bayes = expected_ce(Z, Lf, *cf[:3], w=pi)
-    A, D, b, _ = als_features(Lf, Z, 2, init=cf[:3], w=pi, fit_bias=False)
-    assert np.allclose(b, cf[2])                                  # bias frozen at its init
-    ce_als, _ = expected_ce(Z, Lf, A, D, b, w=pi)
-    assert ce_als <= ce_cf + 1e-7                                 # ALS refines, never worse
-    assert (ce_als - bayes) > 0.8 * (ce_cf - bayes)               # flat: closed form ~ optimal
 
 
 ##### Trainable dataset #####

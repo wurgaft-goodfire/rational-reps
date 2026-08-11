@@ -193,49 +193,137 @@ def expected_ce(Z, Lf, A, D, b, w=None):
     return ce, bayes
 
 
-def als_features(Lf, Z, d, init, w=None, ridge=1e-4, n_rounds=100, tol=1e-8, fit_bias=True):
-    """Exact-CE refinement: alternate the two convex halves (D, b) and A, each solved with
-    L-BFGS; init-dependent, so add random restarts when hunting the global optimum.
-    ``fit_bias=False`` freezes b at its init. Returns (A, D, b, ce_path) with ce_path the
-    ridge-free CE per round."""
-    import torch
-    Z_ = np.asarray(Z, float)
-    N = len(Z_)
-    w_ = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
-    Pt = torch.tensor(support_targets(Z_, Lf))
-    Zt, wt = torch.tensor(Z_), torch.tensor(w_)
-    A0, D0, b0 = init
-    At = torch.tensor(np.asarray(A0, float).T.copy(), requires_grad=True)
-    D = torch.tensor(np.asarray(D0, float), requires_grad=True)
-    b = torch.tensor(np.asarray(b0, float), requires_grad=fit_bias)
+def _prox_nuclear(R, t):
+    """Soft-threshold the spectrum of ``R`` by ``t`` (the proximal map of t*||R||_*)."""
+    U, S, Vt = np.linalg.svd(R, full_matrices=False)
+    return (U * np.maximum(S - t, 0.0)) @ Vt
 
-    def ce():
-        return -(wt[:, None] * Pt * torch.log_softmax(Zt @ At @ D + b, dim=1)).sum()
 
-    def solve(params, frozen):
-        for t in frozen:                                  # don't backprop through the fixed half
-            t.requires_grad_(False)
-        opt = torch.optim.LBFGS(params, max_iter=200, tolerance_grad=1e-12,
-                                tolerance_change=1e-14, line_search_fn="strong_wolfe")
+def _solve_penalized_ce(P, X, w, lam, n_pen, R0, max_iter=10000, tol=1e-10):
+    """FISTA global minimum over R of sum_x w_x CE(P[x], softmax(X[x] @ R)) plus
+    lam * ||R[:n_pen]||_* (rows past n_pen — the bias row — are unpenalized). Returns R."""
+    from scipy.special import logsumexp
+    step = 2.0 / np.linalg.eigvalsh(X.T @ (X * w[:, None]))[-1]   # 1/L, L = lmax(X'WX)/2
 
-        def closure():
-            opt.zero_grad()
-            loss = ce() + ridge * (At.square().sum() + D.square().sum())
-            loss.backward()
-            return loss
+    def objective(R):
+        G = X @ R
+        ce = (w * (logsumexp(G, axis=1) - (P * G).sum(1))).sum()
+        return ce + lam * np.linalg.svd(R[:n_pen], compute_uv=False).sum()
 
-        opt.step(closure)
-        for t in frozen:
-            t.requires_grad_(True)
+    R, Y, t, f_prev = R0.copy(), R0.copy(), 1.0, np.inf
+    for it in range(max_iter):
+        G = X @ Y
+        Q = np.exp(G - logsumexp(G, axis=1, keepdims=True))
+        Rn = Y - step * (X.T @ ((Q - P) * w[:, None]))
+        Rn[:n_pen] = _prox_nuclear(Rn[:n_pen], step * lam)
+        t_next = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * t * t))
+        Y = Rn + ((t - 1.0) / t_next) * (Rn - R)
+        R, t = Rn, t_next
+        if it % 20 == 19:
+            f = objective(R)
+            if f > f_prev:                                        # restart the momentum
+                Y, t = R.copy(), 1.0
+            elif f_prev - f < tol * max(1.0, abs(f)):
+                break
+            f_prev = f
+    return R
 
-    ce_path = [ce().item()]
-    for _ in range(n_rounds):
-        solve([D, b] if fit_bias else [D], [At])
-        solve([At], [D, b] if fit_bias else [D])
-        ce_path.append(ce().item())
-        if ce_path[-2] - ce_path[-1] < tol:
-            break
-    return At.detach().numpy().T, D.detach().numpy(), b.detach().numpy(), ce_path
+
+def _polish_features(A0, D0, b0, Z, P, w, fit_bias, maxiter=2000):
+    """Joint L-BFGS on exact weighted CE from a fixed init (deterministic basin descent).
+    Returns (A, D, b, ce)."""
+    from scipy.special import logsumexp
+    from scipy.optimize import minimize
+    (d, m), nx = A0.shape, P.shape[1]
+
+    def unpack(theta):
+        A = theta[:d * m].reshape(d, m)
+        D = theta[d * m:d * m + d * nx].reshape(d, nx)
+        b = theta[d * m + d * nx:] if fit_bias else np.zeros(nx)
+        return A, D, b
+
+    def fg(theta):
+        A, D, b = unpack(theta)
+        G = Z @ A.T @ D + b
+        Q = np.exp(G - logsumexp(G, 1, keepdims=True))
+        ce = (w * (logsumexp(G, 1) - (P * G).sum(1))).sum()
+        E = (Q - P) * w[:, None]
+        grads = [(Z.T @ E @ D.T).T.ravel(), (A @ Z.T @ E).ravel()]
+        if fit_bias:
+            grads.append(E.sum(0))
+        return ce, np.concatenate(grads)
+
+    theta0 = np.concatenate([A0.ravel(), D0.ravel()] + ([b0] if fit_bias else []))
+    r = minimize(fg, theta0, jac=True, method="L-BFGS-B", options=dict(maxiter=maxiter))
+    A, D, b = unpack(r.x)
+    return A, D, b, r.fun
+
+
+def nuclear_features(Lf, Z, d, w=None, fit_bias=True, path=(0.5, 0.2, 0.08, 0.03, 0.01, 0.003)):
+    """Rank-d code via the nuclear-norm regularization path of the exact-CE fit: the convex
+    program CE(Z R + b) + lam*||R||_* is solved globally along a decreasing lam ladder
+    (warm-started continuation), each solution is truncated to rank d and polished by joint
+    L-BFGS — the path proposes the basin, the polish converges within it; everything is
+    deterministic. Best exact CE wins; the scale is split balanced.
+    Returns (A (d, m), D (d, n_x), b (n_x), S)."""
+    Lf = np.asarray(Lf, float); Z = np.asarray(Z, float)
+    N, m = Z.shape
+    w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
+    P = support_targets(Z, Lf)
+    nx = P.shape[1]
+    X = np.column_stack([Z, np.ones(N)]) if fit_bias else Z
+    q = w @ P                                                     # bias-only optimum
+    Q0 = np.tile(q if fit_bias else np.full(nx, 1.0 / nx), (N, 1))
+    lam_hi = np.linalg.norm(Z.T @ ((Q0 - P) * w[:, None]), 2)     # above: R = 0
+
+    R, best = np.zeros((X.shape[1], nx)), None
+    for frac in path:
+        R = _solve_penalized_ce(P, X, w, frac * lam_hi, m, R)
+        U, S, Vt = np.linalg.svd(R[:m])
+        rootS = np.sqrt(S[:d])
+        b0 = R[m] if fit_bias else np.zeros(nx)
+        fit = _polish_features((U[:, :d] * rootS).T, rootS[:, None] * Vt[:d], b0,
+                               Z, P, w, fit_bias)
+        if best is None or fit[3] < best[3]:
+            best = fit
+    A, D, b, _ = best
+    U2, S2, V2t = np.linalg.svd(A.T @ D)                          # plain balanced split
+    rootS = np.sqrt(S2[:d])
+    return (U2[:, :d] * rootS).T, rootS[:, None] * V2t[:d], b, S2[:d]
+
+
+def additive_cube_excess(K, w, p):
+    """Exact excess CE on the feature cube of the additive code ``G = s K s'``: gaps are
+    additive over flipped features, so the row partition function factorizes and the excess
+    decomposes into per-feature softplus potentials of the single-flip gaps
+    ``g_j(s) = 2 s_j (s K)_j``. ``K (m, m)``, coupling ``w``, feature-on probabilities ``p``."""
+    K = np.asarray(K, float); p = np.asarray(p, float)
+    m = len(p)
+    f = 1.0 / (1.0 + np.exp(2.0 * w))
+    S = np.array([[1 - 2 * ((v >> i) & 1) for i in range(m)] for v in range(2 ** m)], float)
+    pi = ((p ** (S > 0)) * ((1 - p) ** (S < 0))).prod(1)
+    G = 2.0 * S * (S @ K)                                         # g_j(s) per item row
+    phi = np.logaddexp(0.0, -G) - np.logaddexp(0.0, -2.0 * w) + f * (G - 2.0 * w)
+    return float(pi @ phi.sum(1))
+
+
+def minimize_additive_excess(K0, d, w, p, maxiter=1000):
+    """Descend ``additive_cube_excess`` over rank-d codes ``K = A'B`` from the rank-d
+    truncation of ``K0`` (deterministic). Returns (K, excess)."""
+    from scipy.optimize import minimize
+    m = len(p)
+    U, S, Vt = np.linalg.svd(np.asarray(K0, float))
+    rootS = np.sqrt(S[:d])
+    x0 = np.concatenate([((U[:, :d] * rootS).T).ravel(), (rootS[:, None] * Vt[:d]).ravel()])
+
+    def obj(x):
+        A = x[:d * m].reshape(d, m)
+        B = x[d * m:].reshape(d, m)
+        return additive_cube_excess(A.T @ B, w, p)
+
+    r = minimize(obj, x0, method="L-BFGS-B", options=dict(maxiter=maxiter))
+    A, B = r.x[:d * m].reshape(d, m), r.x[d * m:].reshape(d, m)
+    return A.T @ B, float(r.fun)
 
 
 def superposition_measure(A):
