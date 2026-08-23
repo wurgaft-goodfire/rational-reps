@@ -4,6 +4,7 @@
 # the Bayes-optimal output is the posterior predictive (exact filtering). Generalizes the
 # Dirichlet-categorical setting to arbitrary priors over next-token distributions.
 setting: exchangeable-family
-family: von_mises        # gaussian1d | gaussian2d | von_mises | categorical | mixture
+family: von_mises        # gaussian1d | gaussian2d | von_mises | categorical | mixture | *_concepts
 family_kwargs: {}        # family-specific params (see the family builders in src/code/data.py)
 sample_mode: sequence    # sequence-only
+labels: tokens           # tokens | latent (finite atom index)

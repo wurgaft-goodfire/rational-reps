@@ -282,7 +282,9 @@ plot_utils.save_figure(fig, FIGDIR / "fig5b_property_direction_3d.png")
 # $\log p(x \mid i) = \langle e_i, d_x\rangle$, read as geometry. **Left**, the standard
 # binary picture: concepts fall in two groups, the property's decoder contrast
 # $u = d_{\mathrm{yes}} - d_{\mathrm{no}}$ is one direction, and a concept's log-odds is its
-# projection onto that direction. **Right**, the simplest continuous extension: temperature
+# projection onto that direction. The prototypes are drawn astride a shared component (a gauge
+# the softmax ignores — only the contrast survives the readout), so the chord between them *is*
+# the log-odds axis: the line inference travels in fig 7. **Right**, the simplest continuous extension: temperature
 # $\theta$ on a line, adjective outputs with Gaussian tuning
 # $\log p(x \mid \theta) = -(\theta - \mu_x)^2/2 + \mathrm{const}(\theta)$. This factorizes
 # *exactly* in 2-D — no curved embedding needed: $e_\theta = (\theta,\, 1)$ stays a straight
@@ -314,28 +316,28 @@ def _code_axes(a, rx, y0, y1):
 c_blue = plt.get_cmap(plot_utils.FIG.diverging_cmap)(0.08)
 c_red = plt.get_cmap(plot_utils.FIG.diverging_cmap)(0.92)
 
-# left — binary property: one embedding, the yes/no decoder pair
+# left — binary property: the yes/no prototypes astride their contrast, one embedding
 a = ax[0]
 _code_axes(a, 1.55, -1.0, 1.15)
 u = np.array([np.cos(np.deg2rad(15)), np.sin(np.deg2rad(15))])
-d_yes, d_no = 0.9 * u, -0.9 * u
-a.plot(*zip(1.35 * u, -1.35 * u), ls=":", color="0.8", lw=1.2, zorder=0)
-a.text(*(1.42 * u), r"$u = d_{\mathrm{yes}} - d_{\mathrm{no}}$", fontsize=11.5,
+mAB = 0.55 * np.array([-u[1], u[0]])                 # shared component — a gauge the softmax ignores
+d_yes, d_no = mAB + 0.9 * u, mAB - 0.9 * u           # the two prototypes, astride the contrast
+a.plot(*zip(mAB + 1.35 * u, mAB - 1.35 * u), ls=":", color="0.8", lw=1.2, zorder=0)   # the chord
+a.text(*(mAB + 1.42 * u), r"$u = d_{\mathrm{yes}} - d_{\mathrm{no}}$", fontsize=11.5,
        color="0.55", ha="left", va="center")
 ei = 1.1 * np.array([np.cos(np.deg2rad(62)), np.sin(np.deg2rad(62))])
 a.annotate("", xy=ei, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=2.6, color=c_blue))
 a.annotate(r"$e_i$", ei + np.array([0.02, 0.14]), ha="center", va="bottom",
            fontsize=13, color=c_blue)
-for d, lab, off in [(d_yes, r"$d_{\mathrm{yes}}$", (0.04, -0.14)),
-                    (d_no, r"$d_{\mathrm{no}}$", (-0.04, -0.14))]:
+for d, lab, off in [(d_yes, r"$d_{\mathrm{yes}}$", (0.2, -0.18)),
+                    (d_no, r"$d_{\mathrm{no}}$", (-0.2, -0.18))]:
     a.annotate("", xy=d, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=1.6, color="0.15"))
     a.annotate(f"{lab}\n{ei @ d:+.2f}", d, d + np.array(off), fontsize=11,
                ha="center", va="top", color="0.3")
-for dang, r in [(15, 0.24), (195, 0.36)]:            # angle arcs, embedding to each decoder
+for d, r in [(d_yes, 0.3), (d_no, 0.45)]:            # angle arcs, embedding to each prototype
+    dang = np.degrees(np.arctan2(d[1], d[0]))
     a.add_patch(mpatches.Arc((0, 0), 2 * r, 2 * r, theta1=min(62, dang),
                              theta2=max(62, dang), color="0.78", lw=1.0))
-a.text(0, 1.45, r"$\log\frac{p(\mathrm{yes}\,\mid\,i)}{p(\mathrm{no}\,\mid\,i)}"
-                r" = \langle e_i,\, u\rangle$", fontsize=14, ha="center")
 a.set_title("binary property: log-odds = projection", fontsize=13, pad=14)
 a.set_xlim(-1.75, 1.75); a.set_ylim(-1.15, 1.7)
 a.set_aspect("equal"); plot_utils.FIG.clean(a)
@@ -368,10 +370,6 @@ for j, (dv, lab) in enumerate(zip(Dv, adjs)):
     r = 0.2 + 0.08 * rank[j]                         # angle arcs nested by angular distance
     a.add_patch(mpatches.Arc((0, 0), 2 * r, 2 * r, theta1=min(e_ang, d_angs[j]),
                              theta2=max(e_ang, d_angs[j]), color="0.78", lw=1.0))
-a.text(0, 1.62, r"$\log p(x \mid \theta) = \langle e_\theta,\, d_x\rangle"
-                r" = \theta\,\mu_x - \mu_x^2/2"
-                r" = -(\theta - \mu_x)^2/2 + \mathrm{const}(\theta)$",
-       fontsize=13.5, ha="center")
 a.set_title("continuous latent: embeddings stay a line, the decoder curves", fontsize=13, pad=18)
 a.set_xlim(-1.9, 1.9); a.set_ylim(-0.95, 1.85)
 a.set_aspect("equal"); plot_utils.FIG.clean(a)
@@ -398,13 +396,213 @@ for j, (dv, lab) in enumerate(zip(Dw, days)):
     r = 0.16 + 0.06 * rank[j]                        # angle arcs nested by angular distance
     a.add_patch(mpatches.Arc((0, 0), 2 * r, 2 * r, theta1=min(phi, w_angs[j]),
                              theta2=max(phi, w_angs[j]), color="0.78", lw=1.0))
-a.text(0, 1.88, r"$\log p(x \mid \varphi) = \langle e_\varphi,\, d_x\rangle"
-                r" = \kappa\cos(\varphi - \varphi_x)$", fontsize=13.5, ha="center")
 a.set_title("circular latent: the symmetric case, $e = d$ up to scale", fontsize=13, pad=18)
 a.set_xlim(-2.25, 2.25); a.set_ylim(-1.85, 2.1)
 a.set_aspect("equal"); plot_utils.FIG.clean(a)
 fig.tight_layout()
 plot_utils.save_figure(fig, FIGDIR / "fig6_continuous_decoder.png")
+
+# %% [markdown]
+# ## Figure 6b — the same three worlds, with the readout's decision regions
+#
+# Figure 6 redrawn with the **argmax of the output-token logits** shaded in. Logits are linear
+# in the code with no bias, so every token's region is a **cone from the origin**: angle decides,
+# radius only sharpens the softmax. **Binary**: the two half-planes of $d_{\mathrm{yes}}$ /
+# $d_{\mathrm{no}}$, split by the line $\perp u$; the prototypes sit one per side and the chord
+# between them crosses the boundary exactly at its midpoint — the shared component moves both
+# decoders but never the boundary. **Line**: five cones of unequal width; the
+# embedding line $e_\theta = (\theta, 1)$ crosses their boundaries at $\theta = (\mu_i+\mu_j)/2$
+# — the decision thresholds on the latent. **Circle**: seven equal sectors, the Voronoi of the
+# day decoders (the warm-day / Wed-night embeddings of fig 6 sit inside the region they decode to).
+
+# %%
+from matplotlib.colors import to_rgb
+
+def argmax_regions(Dcols, r_x, r_y, res=500):
+    """Argmax-outcome index over the code plane. Dcols (2, n) -> (res, res) image + extent."""
+    gx, gy = np.linspace(*r_x, res), np.linspace(*r_y, res)
+    C = np.stack(np.meshgrid(gx, gy), -1)                          # (res, res, 2), [i,j] = (x_j, y_i)
+    return (C @ Dcols).argmax(-1), (*r_x, *r_y)
+
+def region_bg(ax, win, ext, rgb, fade=0.5):
+    """Decision regions as a white-blended background image (rgb: (n, 3-or-4) region colors)."""
+    ax.imshow(1 - fade * (1 - np.asarray(rgb)[win][..., :3]), origin="lower", extent=ext, zorder=0)
+
+fig, ax = plt.subplots(1, 3, figsize=(19.5, 6))
+
+# left — binary property: two half-planes
+a = ax[0]
+yes_no = [to_rgb(plot_utils.FIG.colors["blue"]), to_rgb(plot_utils.FIG.colors["orange"])]
+region_bg(a, *argmax_regions(np.stack([d_yes, d_no], 1), (-1.75, 1.75), (-1.15, 1.7)),
+          yes_no, fade=0.16)
+_code_axes(a, 1.55, -1.0, 1.15)
+perp = np.array([-u[1], u[0]])                                     # the decision boundary, ⟂ u
+a.plot(*zip(1.55 * perp, -1.1 * perp), ls="--", color="0.4", lw=1.3, zorder=2)
+a.plot(*zip(mAB + 1.35 * u, mAB - 1.35 * u), ls=":", color="0.7", lw=1.2, zorder=1)   # the chord
+a.text(*(mAB + 1.42 * u), r"$u$", fontsize=11.5, color="0.55", ha="left", va="center")
+a.scatter(*mAB, s=30, facecolor="white", edgecolor="0.35", lw=1.2, zorder=4)   # midpoint, on the boundary
+a.annotate("", xy=ei, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=2.6, color=c_blue))
+a.annotate(r"$e_i$", ei + np.array([0.02, 0.14]), ha="center", va="bottom",
+           fontsize=13, color=c_blue)
+for d, lab, off in [(d_yes, r"$d_{\mathrm{yes}}$", (0.2, -0.16)),
+                    (d_no, r"$d_{\mathrm{no}}$", (-0.2, -0.16))]:
+    a.annotate("", xy=d, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=1.6, color="0.15"))
+    a.annotate(lab, d + np.array(off), fontsize=11.5, ha="center", va="top", color="0.3")
+a.text(1.28, -0.95, "argmax: yes", fontsize=11.5, color="0.35", ha="center")
+a.text(-1.28, -0.95, "argmax: no", fontsize=11.5, color="0.35", ha="center")
+a.set_title("binary: two half-planes", fontsize=13, pad=14)
+a.set_xlim(-1.75, 1.75); a.set_ylim(-1.15, 1.7)
+a.set_aspect("equal"); plot_utils.FIG.clean(a)
+
+# middle — temperature line: five cones, thresholds where the embedding line crosses them
+a = ax[1]
+cols5 = plt.get_cmap(plot_utils.FIG.diverging_cmap)(np.linspace(0.06, 0.94, 5))
+region_bg(a, *argmax_regions(Dv.T, (-1.9, 1.9), (-0.95, 1.85), res=600), cols5, fade=0.55)
+_code_axes(a, 1.7, -0.75, 1.45)
+for dv in Dv:
+    a.annotate("", xy=dv, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=1.6, color="0.15"))
+for mu, lab in zip(mus, adjs):
+    a.text(1.55 * mu, 1.58, lab, fontsize=11, ha="center", color="0.25")
+a.plot([-1.45, 1.45], [1, 1], ls=":", color="0.3", lw=1.4, zorder=3)
+a.text(1.52, 1.0, r"$e_\theta = (\theta,\,1)$", fontsize=12, color="0.4", ha="left", va="center")
+e = np.array([tstar, 1.0])                                         # the warm day of fig 6
+a.annotate("", xy=e, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=2.6, color=c_red))
+thr = (mus[:-1] + mus[1:]) / 2
+a.scatter(thr, np.ones(4), marker="|", s=110, color="0.1", zorder=5)
+for t_ in thr:
+    a.text(t_, 0.86, f"{t_:+.2f}", fontsize=9.5, ha="center", va="top", color="0.35")
+a.set_title("line: five cones — thresholds on the latent", fontsize=13, pad=14)
+a.set_xlim(-1.9, 1.9); a.set_ylim(-0.95, 1.85)
+a.set_aspect("equal"); plot_utils.FIG.clean(a)
+
+# right — weektime circle: seven equal sectors
+a = ax[2]
+hue7 = plt.cm.twilight(np.arange(7) / 7)
+region_bg(a, *argmax_regions(Dw.T, (-2.25, 2.25), (-1.85, 2.1)), hue7, fade=0.45)
+_code_axes(a, 1.95, -1.5, 1.68)
+tt = np.linspace(0, 2 * np.pi, 200)
+a.plot(np.cos(tt), np.sin(tt), ls=":", color="0.55", lw=1.2, zorder=1)
+for dv, lab in zip(Dw, days):
+    a.annotate("", xy=dv, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=1.6, color="0.15"))
+    a.annotate(lab, dv, dv / 0.85 * 1.3, fontsize=11, ha="center", va="center", color="0.25")
+phi_wed = 90 - 360 * 2.3 / 7                                       # Wed night, inside Wed's sector
+e = np.array([np.cos(np.deg2rad(phi_wed)), np.sin(np.deg2rad(phi_wed))])
+a.annotate("", xy=e, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=2.6, color=c_red))
+a.annotate(r"$e_\varphi$  (Wed night)", e * 1.78, ha="center", va="center",
+           fontsize=12, color=c_red)
+a.set_title("circle: seven equal sectors", fontsize=13, pad=14)
+a.set_xlim(-2.25, 2.25); a.set_ylim(-1.85, 2.1)
+a.set_aspect("equal"); plot_utils.FIG.clean(a)
+fig.tight_layout()
+plot_utils.save_figure(fig, FIGDIR / "fig6b_decision_regions.png")
+
+# %% [markdown]
+# ## Figure 7 — inference: given examples of x, the history walks the code space
+#
+# The inference setting of `notes/inference_derivation.md`: $z$ is hidden, the model sees
+# examples $x_{1:t} \sim p(x \mid z)$, and the target posterior factors through a belief state,
+# $\log \tilde p(z \mid x_{1:t}) = E(z)^\top \phi_z(x_{1:t})$. With conditionally independent
+# examples the state is **additive** — $\phi_z(x_{1:t}) = \phi_z(\varnothing) + \sum_i D_z(x_i)$
+# — so a history is a *trajectory*: each example adds its evidence vector, and the decision
+# regions of fig 6b (now over $z$, via the rows of $E$) give the running argmax. The three
+# worlds of fig 6:
+#
+# - **Binary $z$.** Two concepts $e_A$, $e_B$ — in this symmetric world they *are* the
+#   prototypes $d_{\mathrm{yes}}$, $d_{\mathrm{no}}$ of fig 6 — and noisy yes/no evidence. The *belief point* —
+#   the posterior-weighted concept, fig 3's chord — travels the segment between them: each
+#   observation nudges it toward one end, position $= \sigma(\Lambda_t)$ of the cumulative
+#   log-odds. The $\hat z$ boundary ($\perp e_A - e_B$, through the origin) cuts the chord at
+#   its midpoint; single paths can wander across early before the drift wins.
+# - **Continuous $z$ (the temperature line).** The latent-inference embedding is *not* the
+#   next-token decoder: $\log p(x_{1:t} \mid \theta) = \theta \sum_i \mu(x_i) - t\,A(\theta)$
+#   needs the count, so $D_z(x) = (1, \mu_x)$ and $E_z(\theta) = (-A(\theta), \theta)$ — the same
+#   belief state, a different target-adapted embedding (the derivation's central point). In the
+#   $(t, \sum\mu)$ plane the day-types' regions are again cones from the origin, and the
+#   trajectory is a staircase whose *slope* is the running mean evidence.
+# - **Day of the week.** Noisy day mentions around a true day; the circle's homogeneity makes
+#   $A(z)$ constant, so the raw additive sum $\phi_z = \sum_i d(x_i)$ is the whole state: it
+#   spirals out into the true day's sector — angle converges (content), radius grows
+#   (confidence). Binary shows the *normalized* belief view (bounded on the chord); the week
+#   shows the *raw evidence* view (growing) — the two faces of the same walk (cf. fig 4).
+
+# %%
+T = 40
+fig, ax = plt.subplots(1, 3, figsize=(15.5, 4.8))
+
+# left — binary z: the belief point travels the chord between the two concepts
+a = ax[0]
+eA, eB = d_yes, d_no                                 # symmetric world: concepts = the prototypes
+xr, yr = (-1.65, 1.65), (-0.55, 1.45)
+region_bg(a, *argmax_regions(np.stack([eA, eB], 1), xr, yr), yes_no, fade=0.16)
+a.plot(*zip(2.6 * mAB, -1.0 * mAB), ls="--", color="0.4", lw=1.3, zorder=2)   # boundary ⟂ e_A - e_B
+for ez, lab, off in [(eA, r"$e_A$", (0.14, 0.06)), (eB, r"$e_B$", (-0.14, 0.06))]:
+    a.annotate("", xy=ez, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=2.0, color="0.15"))
+    a.annotate(lab, ez, ez + np.array(off), fontsize=13, ha="center", va="bottom", color="0.2")
+a.plot(*zip(eA, eB), color="0.75", lw=1.0, zorder=1)
+p1 = 0.65                                                          # p(x says "yes" | z = A)
+llr = np.log(p1 / (1 - p1))
+lam = np.concatenate([[0.0], np.cumsum(np.where(np.random.default_rng(0).random(T) < p1,
+                                                llr, -llr))])
+b = 1 / (1 + np.exp(-lam))                                         # posterior p(A | x_{1:t})
+pts = eB + np.outer(b, eA - eB)
+a.plot(*pts.T, color="0.6", lw=0.8, zorder=3)
+a.scatter(*pts.T, c=range(T + 1), cmap="viridis", s=30, zorder=4)
+a.annotate("$t=0$", mAB, mAB + np.array([-0.1, -0.3]), fontsize=11, color="0.3",
+           arrowprops=dict(arrowstyle="->", color="0.5", lw=0.9))
+a.text(1.25, -0.42, r"$\hat z = A$", fontsize=12.5, color="0.35", ha="center")
+a.text(-1.25, -0.42, r"$\hat z = B$", fontsize=12.5, color="0.35", ha="center")
+a.set_title("binary: the belief travels the chord", fontsize=13)
+a.set_xlim(*xr); a.set_ylim(*yr)
+a.set_aspect("equal"); plot_utils.FIG.clean(a)
+
+# middle — day-type from adjective mentions: cones in the (count, evidence) plane
+a = ax[1]
+A_th = np.log(np.exp(mus[:, None] * mus[None, :] - mus[None, :] ** 2 / 2).sum(1))   # A(theta_k)
+Slim = 0.45 * T
+tg, Sg = np.meshgrid(np.linspace(0, T, 400), np.linspace(-Slim, Slim, 400))
+win = (mus * Sg[..., None] - A_th * tg[..., None]).argmax(-1)     # argmax_k theta_k S - t A(theta_k)
+a.imshow(1 - 0.55 * (1 - cols5[win][..., :3]), origin="lower",
+         extent=(0, T, -Slim, Slim), aspect="auto", zorder=0)
+theta_star = 0.55                                                  # the warm day of fig 6
+p_star = np.exp(theta_star * mus - mus ** 2 / 2); p_star /= p_star.sum()
+xs = np.random.default_rng(26).choice(5, T, p=p_star)
+S = np.concatenate([[0.0], np.cumsum(mus[xs])])
+a.plot([0, T], [0, T * (p_star @ mus)], ls="--", color="0.15", lw=1.1, zorder=2)
+a.plot(range(T + 1), S, color="0.35", lw=1.0, zorder=3)
+a.scatter(range(T + 1), S, c=range(T + 1), cmap="viridis", s=22, zorder=4)
+bounds = np.diff(A_th) / np.diff(mus)                              # region slopes S/t
+mid = np.concatenate([[bounds[0] - 0.14], (bounds[:-1] + bounds[1:]) / 2, [bounds[-1] + 0.14]])
+for slope, lab in zip(mid, adjs):
+    a.text(0.985 * T, np.clip(slope * T, -0.93 * Slim, 0.93 * Slim), lab,
+           fontsize=10.5, ha="right", va="center", color="0.25",
+           bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1.5))
+a.set(xlim=(0, T), ylim=(-Slim, Slim), xlabel="examples  $t$",
+      ylabel=r"evidence  $S_t = \sum_i \mu(x_i)$")
+a.set_title("continuous: cones in (count, evidence)", fontsize=13)
+plot_utils.FIG.style_axes(a)
+
+# right — day of the week: additive evidence spirals into the true day's sector
+a = ax[2]
+zday = 2                                                           # true day: Wednesday
+ang = np.deg2rad(day_angs)
+pw = np.exp(1.5 * np.cos(ang - ang[zday])); pw /= pw.sum()         # von Mises day mentions, kappa = 1.5
+xs = np.random.default_rng(2).choice(7, T, p=pw)
+traj = np.vstack([np.zeros(2), np.cumsum(Dw[xs], axis=0)])
+rr = np.abs(traj).max() * 1.35
+region_bg(a, *argmax_regions(Dw.T, (-rr, rr), (-rr, rr)), hue7, fade=0.45)
+for dv, lab in zip(Dw, days):
+    a.text(*(dv / 0.85 * 0.88 * rr), lab, fontsize=11, ha="center", va="center",
+           color="0.1" if lab == days[zday] else "0.35")
+udir = Dw[zday] / np.linalg.norm(Dw[zday])
+a.plot([0, udir[0] * 0.78 * rr], [0, udir[1] * 0.78 * rr], ls="--", color="0.15", lw=1.2, zorder=2)
+a.plot(*traj.T, color="0.35", lw=1.0, zorder=3)
+a.scatter(*traj.T, c=range(T + 1), cmap="viridis", s=26, zorder=4)
+a.scatter(*(udir * 0.78 * rr), marker="*", s=260, facecolor="gold", edgecolor="k", lw=0.8, zorder=5)
+a.annotate("$t=0$", traj[0], traj[0] + rr * np.array([-0.22, -0.06]), fontsize=11, color="0.3")
+a.set_title("week: evidence spirals into the true day", fontsize=13)
+a.set_aspect("equal"); plot_utils.FIG.clean(a)
+fig.tight_layout()
+plot_utils.save_figure(fig, FIGDIR / "fig7_inference_trajectories.png")
 
 # %% [markdown]
 # ## Summary
@@ -419,5 +617,8 @@ plot_utils.save_figure(fig, FIGDIR / "fig6_continuous_decoder.png")
 # | confidence in a concept | radius; output = tempered (sharp → flat) | fig 3, ■ |
 # | prototype = concept | exact under symmetry; splits at boundaries | fig 4 |
 # | property (binary factor) | difference of decoder columns $d(\mathrm{fem}_+) - d(\mathrm{fem}_-)$: one direction carries every concept | fig 5 |
+# | decision region | cone of an argmax readout: angle decides, radius never | fig 6b |
+# | inference from examples | additive evidence $\phi_z = \phi_z(\varnothing) + \sum_i D_z(x_i)$; posterior read out by $E(z)^\top$ | fig 7 |
+# | confidence under inference | trajectory radius / drift margin, growing with $t$ | fig 7 |
 
 # %%

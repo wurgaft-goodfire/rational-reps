@@ -2,7 +2,8 @@
 decoder = sufficient statistic (demo / demo_clean §2)."""
 import numpy as np
 
-from src.code.data import gaussian1d, gaussian2d, von_mises, categorical, mixture
+from src.code.data import (gaussian1d, gaussian2d, von_mises, categorical, mixture,
+                           binary_concepts, temperature_concepts)
 from src.code.geometry import factor_logcond
 
 
@@ -31,6 +32,18 @@ def test_von_mises_decoder_is_fourier():
     x = info["x"]
     for row in (D[0], D[1]):                                       # each row is a Fourier mode
         assert max(_corr(row, np.cos(x)), _corr(row, np.sin(x))) > 0.95
+
+
+def test_binary_concepts_is_the_noisy_yes_no_process():
+    L, info = binary_concepts(p=0.65)
+    np.testing.assert_allclose(np.exp(L), [[0.65, 0.35], [0.35, 0.65]])
+    np.testing.assert_array_equal(info["latent"], [-1.0, 1.0])
+
+
+def test_temperature_concepts_is_the_count_evidence_exponential_family():
+    L, info = temperature_concepts(n_theta=5, n_observations=5)
+    theta, mu = info["latent"], info["observations"]
+    np.testing.assert_allclose(L, theta[:, None] * mu[None] - 0.5 * mu[None] ** 2)
 
 
 def test_categorical_dirichlet_is_flat_spectrum():

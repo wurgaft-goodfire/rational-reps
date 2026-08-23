@@ -1,10 +1,15 @@
-# Template LM Training Codebase
+# rational-reps
 
-A Hydra-based template for systematic language-model training and evaluation experiments. Designed for reproducible research: composable configs, deterministic evaluation, automatic run-directory management, and optional Weights & Biases tracking.
+Toy settings where the Bayes-optimal ("rational") representation is computable in closed form.
+Each setting is a data-generating process with a known geometry oracle (`src/code/geometry.py`);
+we train small networks on it from scratch and compare their learned representations to the
+rational code. Hydra composes the configs; evaluation is deterministic; analysis lives in thin
+notebooks.
 
 ## Setup
 
-The project is managed by [`uv`](https://docs.astral.sh/uv/). All dependencies are declared in `pyproject.toml` (locked in `uv.lock`).
+The project is managed by [`uv`](https://docs.astral.sh/uv/). Dependencies are declared in
+`pyproject.toml` (locked in `uv.lock`).
 
 ```bash
 uv sync                              # create / update .venv from uv.lock
@@ -14,154 +19,140 @@ export WANDB_API_KEY=...             # optional: only if logging to wandb
 
 Run everything as `uv run python -m ...` so it uses the project venv.
 
+## Tests
+
+```bash
+uv run python -m pytest -m "not slow"   # fast suite
+uv run python -m pytest                 # full suite (trains small models end-to-end)
+```
+
 ## Usage
 
-The base config composes a **runner** (a top-level job). Pick one with `runner=...`.
-
-### Train a small LM
-
-```bash
-# Single run
-uv run python -m src.code.train runner=train_small_lm name=my_run
-
-# Disable wandb (no tracking) — handy for quick / debug runs
-uv run python -m src.code.train runner=train_small_lm wandb.enabled=false
-
-# Parameter sweep (multirun)
-uv run python -m src.code.train -m runner=train_small_lm model_kwargs.model_config.hidden_size=64,128,256
-```
-
-### Evaluate
+A **runner** (`conf/runner/`) fully specifies a job: setting + model + train defaults. Pick one
+with `runner=...`; override any config key on the CLI.
 
 ```bash
-# Evaluate every checkpoint of a trained run (same name/overrides as training)
-uv run python -m src.code.eval runner=train_small_lm name=my_run
+# Train
+uv run python -m src.code.train runner=dirichlet_transformer
+uv run python -m src.code.train runner=hmm_transformer structure=grid
+uv run python -m src.code.train runner=pcfg_dyck_rnn
 
-# Evaluate a pretrained LLM (single run)
-uv run python -m src.code.eval runner=eval_llm model_kwargs.model_path=google/gemma-2-2b
+# Sweep (Hydra runs in multirun mode by default)
+uv run python -m src.code.train runner=transformer model_kwargs.model_config.hidden_size=16,64,256
 
-# Evaluate the Bayesian baseline
-uv run python -m src.code.eval runner=eval_bayes
+# Evaluate every checkpoint of a trained run (same runner + overrides as training)
+uv run python -m src.code.eval runner=dirichlet_transformer
 
 # Re-evaluate, overwriting existing metrics
-uv run python -m src.code.eval runner=eval_llm overwrite=true
+uv run python -m src.code.eval runner=dirichlet_transformer overwrite=true
 ```
 
-Evaluation is **deterministic**: a fixed set of eval batches is sampled once (seeded), so every checkpoint and every training step is scored on the same batches. Pass `eval_cache_dir=<a prior run dir>` to reuse another run's exact batches.
+Evaluation is **deterministic**: a fixed set of eval batches is sampled once (seeded), so every
+checkpoint and every training step is scored on the same batches. Pass
+`eval_cache_dir=<a prior run dir>` to reuse another run's exact batches.
 
-## Weights & Biases
+## Settings
 
-wandb is fully optional and controlled from config:
+Each `conf/setting/*.yaml` defines a data-generating process; its header comment states the task
+and the predicted geometry.
 
-```yaml
-wandb:
-  enabled: true          # set false to disable all wandb logging
-  entity: null           # null -> WANDB_ENTITY env / default entity
-  project: template-lm-training
-```
+| Setting | Task | Rational code |
+|---|---|---|
+| `graph` | graph → diffusion co-occurrence → next token | structure harmonics (ring → circle) |
+| `hypercube` | binary attribute vectors, heat-kernel co-occurrence | additive per-bit code → linear analogies |
+| `relational` | order-2 operation `c = a*b` | bilinear tensor factors |
+| `distribution` | items are parametric distributions, predict `p(x\|θ)` | natural parameters / sufficient statistics |
+| `word_attribute` | words = feature-cube corners → attribute tokens | reweighted truncation of the cube code |
+| `feature_cube` | product kernel with importance ladder + sparse measure | packed (superposed) feature directions |
+| `dirichlet` | in-context inference of a per-sequence categorical | posterior predictive (belief simplex) |
+| `exchangeable` | in-context inference over any distribution family | posterior over atoms, exact filtering |
+| `hmm` | latent walk on a graph, emitted tokens | belief state of the forward algorithm |
+| `pcfg` | terminal strings of a probabilistic grammar | predictive states over hidden parses |
 
-`wandb.enabled=false` skips `wandb.init` and all online metric logging, and sets the HF Trainer `report_to="none"`.
-
-## Repository structure
-
-```
-conf/
-  config.yaml              # base defaults, wandb toggle, Hydra run-dir layout
-  setting/balls_and_urns.yaml   # task / dataset config
-  model/{small_lm,llm,bayesian_model}.yaml
-  train/default.yaml       # training_kwargs + eval_kwargs
-  runner/                  # top-level jobs (fully specify a run)
-    train_small_lm.yaml    # train a small LM from scratch
-    eval_llm.yaml          # evaluate a pretrained LLM
-    eval_bayes.yaml        # evaluate the Bayesian baseline
-src/
-  code/
-    config.py              # Config wrapper: RNG seeding, checkpoint scheduling
-    data.py                # init_dataset + dataset classes (return batched dicts)
-    models.py              # init_model / load_model (small LM, LLM, Bayesian)
-    train.py               # training entry point (HF Trainer + callbacks)
-    train_utils.py         # data collator + online-eval / checkpoint callbacks
-    eval.py                # EvalComponents + Evaluator + standalone eval entry
-    analysis_utils.py      # load_eval_results -> DataFrame
-    plot_utils.py          # publication-quality figure styling helpers
-  notebooks/               # analysis notebooks
-  tests/                   # pytest suite (-m slow for the end-to-end test)
-```
+Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `klinear`, `sae`, `llm` (pretrained).
 
 ## Output structure
 
 ```
-$CACHE_DIR/{setting}/{name}/{override_dirname}/
+$CACHE_DIR/{setting}/{override_dirname}/{name}/
   config_resolved.yaml     # full resolved config (reproducibility + eval cache match)
   eval_batches.pt          # fixed eval batches (for the eval cache loop)
-  checkpoints/             # training runs only
+  checkpoints/
     {step}/
       model/               # saved weights
       metrics.pt           # {metrics, extras, step}
 ```
 
-## Adding components
-
-- **New dataset**: add a class in `src/code/data.py` (return `input_ids` / `labels` / `eval_labels`, expose `compute_metrics`, `vocab_size`, `seq_len`); register it in `init_dataset`; add `conf/setting/<name>.yaml`.
-- **New model**: add to `src/code/models.py` (init + load), register in `init_model`/`load_model`; add `conf/model/<name>.yaml`.
-- **New runner**: add `conf/runner/<name>.yaml` selecting setting/model/train + any sweep params.
-
-## Testing
-
-```bash
-uv run python -m pytest -m "not slow"   # fast unit tests
-uv run python -m pytest                 # full suite (includes the end-to-end smoke test)
-```
-
 ## Notebooks
 
-Analysis notebooks in `src/notebooks/` are plain **percent-format `.py` files** ([jupytext](https://jupytext.readthedocs.io/)
-/ VS Code `# %%` cells) — there is no `.ipynb` in the repo, so git stays free of notebook JSON and
-output bloat. Run them interactively (VS Code Interactive Window, or open the `.py` as a notebook in
-Jupyter Lab), or execute one headless:
+Analysis notebooks in `src/notebooks/` are percent-format `.py` files
+([jupytext](https://jupytext.readthedocs.io/) / VS Code `# %%` cells) — no `.ipynb` in the repo.
+One notebook per setting (`dirichlet_analysis.py`, `hmm_analysis.py`, …) plus cross-setting
+geometry studies. Run them interactively, or headless:
 
 ```bash
-uv run jupytext --to notebook --execute src/notebooks/<name>.py -o /tmp/out.ipynb   # run end-to-end; temp output
+uv run jupytext --to notebook --execute src/notebooks/<name>.py -o /tmp/out.ipynb
 ```
 
 The setup cell resolves the project root and `chdir`s to it, so notebooks find `conf/` and `src/`
-regardless of the kernel's working directory (a headless `--execute` launches the kernel in the
-output notebook's directory, which may be outside the repo).
+regardless of the kernel's working directory.
 
-Keep notebooks thin: real logic belongs in `src/code/` (unit-tested); the notebook just calls those
-functions and renders/saves figures.
+Notebooks train through `train.train_inline(overrides)`, which returns
+`(model, dataset, evaluator, history_df, config)` and transparently reuses a cached run when one
+exists with the same config.
 
-**Figures** are written to the gitignored cache via `plot_utils.figure_path(config, name)`, keyed by
-experiment (`config` is the run config returned by `train_inline`), so the repo stays binary-free —
-promote a figure to git by hand only when it is paper-final:
+**Figures** are written to the gitignored cache via `plot_utils.figure_path(config, name)`; promote
+a figure to git by hand only when it is paper-final:
 
 ```python
 from src.code.plot_utils import save_figure, figure_path
 
-save_figure(fig, figure_path(config, "cca_by_arch"))            # PNG (default, viewable)
+save_figure(fig, figure_path(config, "cca_by_arch"))            # PNG (default)
 # -> $CACHE_DIR/{setting}/figures/{override_dirname}/cca_by_arch.png
-save_figure(fig, figure_path(config, "cca_by_arch", ext="pdf")) # vector, for paper-final
+save_figure(fig, figure_path(config, "cca_by_arch", ext="pdf")) # vector, paper-final
 ```
 
-Figures are keyed by `{setting}/figures/{override_dirname}` (the per-model level of the run dir is
-dropped), so all models trained on one structure share a figures dir and switching structures needs
-no renaming.
+Figures are keyed by `{setting}/figures/{override_dirname}` (the per-model level is dropped), so
+all models trained on one structure share a figures dir.
 
 ## Analysis
 
-wandb is optional, so analysis works from disk or from wandb — neither is the
-hardwired path. `load_eval_results` returns the same wide schema either way: one
-row per (run, step), a `config` column, and one column per flat metric.
+`load_eval_results` returns the same wide schema from disk (default) or wandb: one row per
+(run, step), a `config` column, and one column per flat metric.
 
 ```python
 from src.code.analysis_utils import load_eval_results
 
-# Offline (default): reads metrics.pt from $CACHE_DIR — no wandb needed.
-df = load_eval_results(setting="balls-and-urns", experiment_name="my_run")
-
-# Or pull the same shape from wandb.
-df = load_eval_results("balls-and-urns", "my_run", source="wandb",
-                       entity="my_entity", project="template-lm-training")
-
-# columns: sweep params + 'step' + 'config' + flat metric columns (e.g. 'loss')
+df = load_eval_results(setting="dirichlet-categorical", experiment_name="dirichlet_transformer")
 ```
+
+wandb is optional throughout: `wandb.enabled=false` (the default) skips `wandb.init` and all
+online logging.
+
+## Architecture
+
+Hydra composes config from `conf/` and runs one runner (train or eval).
+
+- `conf/config.yaml` — base defaults (setting + model + train + runner), wandb toggle, run-dir layout.
+- `src/code/config.py` — `Config` wraps the resolved `DictConfig`; seeds all RNGs; turns `save_steps_method` into a concrete checkpoint schedule.
+- `src/code/data.py` — `init_dataset` + one dataset class per setting, plus the structure gallery (graphs, kernels, grammars). Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
+- `src/code/geometry.py` — the rational-code oracles: spectral factorizations (`factor_logcond`), HMM/PCFG belief and predictive states, the nuclear-norm feature oracle (`nuclear_features`), and representation-comparison utilities (principal angles, superposition measures).
+- `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
+- `src/code/train.py` — Hydra entry point + `train_inline` for notebooks. Sizes the model from the dataset, runs the HF `Trainer` with custom callbacks.
+- `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.
+- `src/code/eval.py` — `EvalComponents` (fixed eval batches, built once) + `Evaluator` (`evaluate(model) -> (metrics, extras)`). `Evaluator.from_cache` reuses a prior run's batches so online and standalone eval score identically.
+- `src/code/analysis_utils.py` — `load_eval_results(..., source="local"|"wandb")`.
+- `src/code/plot_utils.py` — figure styling, `figure_path`, `save_figure`.
+- `notes/` — derivations and setting write-ups.
+
+## Adding components
+
+- **New setting**: add a dataset class in `src/code/data.py` (return `input_ids` / `labels` / `eval_labels`; expose `compute_metrics`, `vocab_size`, `seq_len`); register it in `init_dataset`; add `conf/setting/<name>.yaml`; add its geometry oracle to `src/code/geometry.py`.
+- **New model**: add to `src/code/models.py`, register in `init_model`/`load_model`; add `conf/model/<name>.yaml`.
+- **New runner**: add `conf/runner/<name>.yaml` selecting setting/model/train + any fixed overrides.
+
+## Repo invariants
+
+- **Build once, evaluate as a pure function.** Eval setup (fixed batches) happens once; `evaluate(model)` is then a pure function of the model, reproducible across checkpoints.
+- **Config-driven, no hardcoding.** All knobs live in `conf/`. Derive model I/O dims from the dataset; never hardcode them.
+- **Reproducible artifacts.** Each run writes `config_resolved.yaml`; eval writes `metrics.pt` (+ `eval_batches.pt` for the cache loop).

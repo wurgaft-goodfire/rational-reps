@@ -10,10 +10,12 @@ from src.code.config import Config
 from src.code.data import ExchangeableFamilyDataset
 
 
-def _cfg(family="von_mises", family_kwargs=None, seed=0, batch_size=8, context_length=12):
+def _cfg(family="von_mises", family_kwargs=None, seed=0, batch_size=8, context_length=12,
+         labels="tokens"):
     return Config(OmegaConf.create({
         "setting": "exchangeable-family", "family": family,
-        "family_kwargs": family_kwargs or {}, "sample_mode": "sequence", "random_seed": seed,
+        "family_kwargs": family_kwargs or {}, "sample_mode": "sequence", "labels": labels,
+        "random_seed": seed,
         "model_kwargs": {"model_type": "transformer"},
         "training_kwargs": {"batch_size": batch_size, "context_length": context_length},
         "eval_kwargs": {"num_eval_batches": 1, "output_hidden_states": False},
@@ -29,6 +31,26 @@ def test_batch_shapes_and_start_token():
     el = ds.optimal_predictions(b["input_ids"])
     assert el.shape == (8, 12, 10)                              # Bayes-optimal next-token dists
     assert torch.allclose(el.sum(-1), torch.ones(8, 12, device=el.device), atol=1e-5)
+
+
+def test_latent_labels_use_never_input_atom_tokens_and_exact_posterior():
+    ds = ExchangeableFamilyDataset(_cfg(
+        "gaussian1d", {"n_mu": 5, "n_sig": 2, "x_n": 12}, labels="latent"))
+    b = ds[0]
+
+    assert ds.num_dims == ds.M
+    assert ds.item_tokens.tolist() == list(range(ds.K + 1, ds.K + 1 + ds.M))
+    assert ds.vocab_size == ds.K + 1 + ds.M
+    assert not torch.isin(b["input_ids"], ds.item_tokens.to(ds.device)).any()
+    assert torch.isin(b["labels"][:, 1:], ds.item_tokens.to(ds.device)).all()
+    assert (b["labels"][:, 1:] == b["labels"][:, 1:2]).all()  # one atom per sequence
+
+    x = b["input_ids"][:, 1:]
+    expected = torch.cat([
+        torch.full((len(x), 1, ds.M), 1.0 / ds.M, dtype=torch.float64, device=ds.device),
+        ds.posterior_weights(x)[:, :-1],
+    ], dim=1).float()
+    assert torch.allclose(ds.optimal_predictions(b["input_ids"]), expected, atol=1e-6)
 
 
 def test_eval_labels_are_the_exact_posterior_predictive_over_atoms():

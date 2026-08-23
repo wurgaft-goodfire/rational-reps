@@ -1,78 +1,111 @@
-# CLAUDE.md
+# Voice
 
-This file provides guidance to Claude Code when working with code in this repository.
+Communicate directly, concisely, and honestly, like a competent collaborator.
+
+## Directness
+
+- Lead with the result, then support it. No preamble.
+- Have opinions. Specific examples and names, not vague claims. Trust the reader to see what matters without labelling it "significant" or "important."
+- Accuracy over validation: push back when I'm wrong. No praise, no emotional cushioning, no superlatives.
+- No hedging and no fake authority: don't write "arguably" or "studies show" without a source.
+
+## Sentences
+
+- Active voice. One instruction per sentence. One topic per paragraph.
+- Short (~20 words), varied in length; not uniform choppy blocks.
+- Complete sentences: shorten by cutting content, not by dropping articles and verbs.
+- No dense hyphenated chains ("the eval-batch cache-loop schedule"); unpack noun clusters longer than three words.
+- Consistent terminology: one name per concept, one meaning per name.
+- Use the verb, not its nominalization: "evaluate", not "perform an evaluation of".
+- Rewrite any sentence that sounds like a press release; say each point once.
+
+## Structure
+
+- Structure over prose: subheadings, bolding, bullets and sub-bullets. A wall of flat bullets is as bad as a wall of prose; group related points under a bold lead-in or subheading.
+- Plain words over jargon. Use contractions. Match tone to context. At most one em dash per response.
+
+## Banned
+
+- Signposting ("Let's turn to"), restating the question, summary or inspirational wrap-ups. Start and end on substance.
+- Fake-profundity structures: "It's not just X — it's Y", "Not only X, but Y", "No X. No Y. Just Z."
+- Words: load-bearing, rung, arm, insight, comprehensive, leverage, delve, crucial, seamless, nuanced, pivotal, groundbreaking, cutting-edge.
+
+---
 
 # Research code philosophy
 
-This is research code. Correctness, succinctness, and clarity take priority over robustness.
+This is research code. Correctness, succinctness, and clarity are most important.
 
-- **Fail loudly.** No try/except to paper over errors, no fallbacks, no default values that hide missing inputs. Let exceptions propagate — a crash with a clear traceback is more useful than silent misbehavior.
 - **Minimize code.** Prefer principled abstractions over bloated ones. A clean abstraction that reduces duplication is good; a speculative one added for hypothetical future use is not.
-- **No defensive validation** at internal boundaries. Trust that callers pass correct inputs; only validate at the outermost entry point (CLI args, config files).
-- **Integration tests may load real models.** A test that runs an actual forward pass is more trustworthy than one that mocks the model.
-- **Comments explain the current state of the code, not its chronology and development** (that's what git is for). No "(removed) …", "previously …", or "now uses …" notes.
-- **Succinct docstrings.** One to three lines: what it computes and the shapes. Derivations, empirical findings, and caveats belong in notebook markdown, not docstrings.
+- **Fail loudly.** No try/except to paper over errors, no fallbacks, no default values that hide missing inputs, no defensive validation at internal boundaries; only validate at the outermost entry point (CLI args, config files). Let exceptions propagate: a crash with a clear traceback is more useful than silent misbehavior.
 
-# Development approach
+## Documentation
 
-Follow BDD dual-loop TDD. Every feature increment starts from a failing integration test and is driven inward through unit-level red-green-refactor cycles.
+- Comments explain the current state of the code, not its chronology and development (that's what git is for). No "(removed) …", "previously …", or "now uses …" notes.
+- Succinct docstrings. One to three lines: what it computes and the shapes. 
 
-## Outer loop (integration)
+## Testing
 
-1. **Red (integration)** — Write one integration/acceptance test describing the next observable behavior from the outside in. Run it. Confirm it fails for the reason you expect.
-2. **Inner loop (unit)** — Repeat until the integration test can pass:
-   - **Red** — Write the smallest unit test that expresses the next missing piece.
-   - **Green** — Write the minimum production code to make that unit test pass. No speculative code.
-   - **Refactor** — Clean up while all unit tests stay green.
-3. **Green (integration)** — Re-run the integration test; drop back into the inner loop if it still fails.
-4. **Refactor (integration)** — With everything green, refactor across module boundaries if needed.
+Bugs are inevitable; reporting them honestly is valued. Treat me as a PI: I need visible, empirical ways to check that every result is correct.
 
-## Discipline rules
+**Quality over quantity**
+- One test per behavior: only add a test that can fail independently of the others.
+- Deterministic: seed everything; no dependence on ordering or environment.
+- Slow tests may load real models: an actual forward pass is more trustworthy than a mock.
 
-- Never skip the red step. If you cannot articulate why a test fails, you do not yet understand the requirement.
+**Scientific checks**
+- Prefer sanity checks with a known answer (analytic solution, oracle, exact recovery on synthetic ground truth) over asserting incidental output values. If you can't think of one for significant new code, say so.
+- Controls: a method must return null when the signal is destroyed (shuffled labels, randomized outcomes) and detect a known injected signal. Shuffle controls are the standard data-leakage check.
+- Scrutinize results that confirm the hypothesis as hard as ones that don't.
+
+**Discipline**
+- When you find a bug, first write a failing test that reproduces it, then fix it.
+- Never delete, skip, or weaken a failing test to get green; fix the cause or flag it.
+- Run tests via `uv run python -m pytest` (`-m "not slow"` for the fast suite); all other commands: see README.
+
+---
+
+# Two modes of work
+
+Work is either fast iteration (quick run) or deliberate feature implementation; if I don't
+name the mode, state your assumption. Analysis usually starts as a quick run and hardens:
+when notebook logic is reused or supports a claim, promote it to the source modules as a feature.
+
+## Quick run
+
+Exploration in notebooks: trying an analysis, iterating on a figure. Quick means a shorter
+pipeline (no tests, no TDD), not lower standards; the code philosophy still applies.
+
+- Notebooks are thin percent-format `.py` files (no `.ipynb`): they call tested functions
+  from the source modules and render figures; real logic lives in the source modules.
+- State the math in a markdown cell before each analysis cell (no need for review pause).
+- Save figures to the gitignored cache, never commit them. Execute the notebook end-to-end
+  and confirm a clean run before finishing. (Workflow specifics: see README.)
+
+### Figures
+
+- Figures test a claim. Before generating a figure, state the acceptance criterion: what
+  should be visible if the hypothesis holds, and what would falsify it.
+- Open the saved PNG and judge it against that criterion. A clean run and good printed
+  metrics do not mean the figure is good.
+- Report the verdict explicitly ("criterion: X; the figure shows / does not show it"); fix
+  legibility problems when they obscure the verdict.
+
+## Feature implementation
+
+Durable additions to the source modules — promoted quick-run logic or new functionality — driven by TDD. Steps marked *(gate)* pause for my review before proceeding:
+
+1. **Math** *(gate)* — for mathematical code, state the equations or the computed quantity.
+2. **Interface** *(gate)* — function signatures with commented pseudocode of the approach.
+3. **Red (integration)** *(gate)* — write failing integration tests describing the observable behavior. Present the scientific tests — sanity checks, analytical results to reproduce, null controls — with their expected values for my approval; mechanical unit tests need no review.
+4. **Unit cycles** — repeat until the integration tests pass:
+   - **Red** — smallest failing unit test for the next missing piece.
+   - **Green** — minimum code to pass. No speculative code.
+   - **Refactor** — clean up while tests stay green.
+5. **Green (integration)** — re-run the integration tests; drop back into unit cycles if any still fail.
+
+Discipline:
+- Never skip red. If you can't articulate why a test fails, you don't yet understand the requirement.
 - One logical change per cycle.
-- Run only the relevant test after each green step, then the full suite before each checkpoint.
-- If a refactor breaks a test, revert the refactor — do not fix forward.
-
-# Environment
-
-`uv`-managed. Use `uv run python -m ...` so commands resolve the project venv. Fast tests:
-`uv run python -m pytest -m "not slow"`; full suite: `uv run python -m pytest`.
-
-**Run on the GPU compute node, never the login node** (the login node has no GPU and kills heavy
-processes, exit 144). The working shell is already inside an interactive GPU allocation, so **to run
-interactively just use `uv run …` directly** — no srun/sbatch needed. Default to interactive unless
-told to submit a SLURM job (then: no custom `--partition`/CPU/mem, wait with `monitor_jobs`).
-
-**Notebooks are thin.** Real logic lives in `src/code/` and is unit-tested there; a notebook only
-calls those tested functions and renders figures. Notebooks are percent-format `.py` files (no
-`.ipynb` in the repo), and figures are saved to the gitignored cache, never committed. Execute a
-notebook end-to-end and confirm it runs clean before finishing. (Workflow specifics — jupytext, the
-`figure_path`/`save_figure` helpers, cache paths — live in the README.)
-
-**Always look at the figures.** After running any analysis that produces a plot, open the saved
-figure and actually view it (`Read` the PNG) before reporting. A clean run and good printed metrics do not
-mean the figure is good — a 2D PCA scatter of a high-dimensional object, for instance, can be
-hijacked by a few outlier points and collapse everything else to a blob even when the underlying
-match is perfect. Inspect the visual, judge whether it conveys the claim, and fix it if it doesn't.
-
-# Architecture
-
-Hydra composes config from `conf/` and runs one **runner** (a top-level job: train or eval).
-
-- `conf/config.yaml` — base defaults (setting + model + train + runner), wandb toggle, Hydra run-dir layout.
-- `conf/{setting,model,train,runner}/` — composable groups. `runner/` files fully specify a job (which setting/model/train to use + any sweep params).
-- `src/code/config.py` — `Config` wraps the resolved `DictConfig`; seeds all RNGs; turns `save_steps_method` into a concrete checkpoint schedule.
-- `src/code/data.py` — `init_dataset` + dataset classes. Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
-- `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM / Bayesian baseline); all return logits via `.output_key`.
-- `src/code/train.py` — Hydra entry point. Sizes the model from the dataset, runs the HF `Trainer` with custom callbacks.
-- `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval → wandb), `CustomSaveCallback`.
-- `src/code/eval.py` — `EvalComponents` (fixed eval batches, built once, deterministic) + `Evaluator` (build once; `evaluate(model) -> (metrics, extras)` per checkpoint/step). `Evaluator.from_cache` reuses a prior run's batches so online and standalone eval score identically.
-- `src/code/analysis_utils.py` — `load_eval_results(..., source="local"|"wandb")` loads metrics into a tidy DataFrame from disk (offline, default) or from wandb; same schema either way. wandb is never assumed.
-
-## Key design patterns
-
-- **Build-once, evaluate-as-a-pure-function.** Eval setup (fixed batches) happens once; `evaluate(model)` is then a pure function of the model — reproducible across checkpoints.
-- **Config-driven, no hardcoding.** All knobs live in `conf/`. Model I/O dims are derived from the dataset, not hardcoded.
-- **wandb is optional.** `wandb.enabled=false` disables all logging (init + online metrics) for quick/debug runs.
-- **Reproducible artifacts.** Each run writes `config_resolved.yaml`; eval writes `metrics.pt` (+ `eval_batches.pt` for the cache loop).
+- During development, run only the tests covering the files you touched; run the fast suite before a commit and the full suite before a push.
+- If a refactor breaks a test, revert it; don't fix forward.

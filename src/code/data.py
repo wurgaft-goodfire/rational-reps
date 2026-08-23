@@ -125,15 +125,18 @@ class GraphCooccurrenceDataset(Dataset):
 
 ##### Feature-cube dataset (hypercube heat kernel + sparse item measure) #####
 
-def feature_cube(p, gamma):
-    """Hypercube heat kernel at time ``gamma`` plus a sparse item measure (feature i active with
-    probability p[i]), so log p(x'|x) = const + Z @ Lf exactly.
+def feature_cube(p, gamma, w_decay=1.0):
+    """Hypercube product kernel with per-feature couplings w_i = w0 * w_decay^i
+    (w0 = half log coth gamma; importance) plus a sparse item measure (feature i active with
+    probability p[i]; frequency), so log p(x'|x) = const + Z @ Lf exactly.
     Returns (logP (2^m, 2^m), pi (2^m,), Z (2^m, m) in ±1, Lf (m, 2^m))."""
     p = np.asarray(p, float)
     m = len(p)
-    logP = adjacency_conditional(hypercube(m), gamma, "heat")
     Z = 2.0 * cube_codes(m) - 1.0
-    Lf = 0.5 * np.log(1 / np.tanh(gamma)) * Z.T                # w = half log coth(gamma)
+    w = 0.5 * np.log(1 / np.tanh(gamma)) * w_decay ** np.arange(m)
+    f = 1.0 / (1.0 + np.exp(2.0 * w))                          # per-feature flip probability
+    logP = (Z * w) @ Z.T + 0.5 * np.log(f * (1 - f)).sum()
+    Lf = w[:, None] * Z.T
     on = Z > 0
     pi = (p ** on * (1 - p) ** ~on).prod(1)
     return logP, pi, Z, Lf
@@ -152,7 +155,8 @@ class FeatureCubeDataset(Dataset):
 
         m = config.get("n_features")
         p = config.get("sparsity") * config.get("p_decay") ** np.arange(m)
-        logP, self.pi, self.Z, self.Lf = feature_cube(p, config.get("gamma"))
+        logP, self.pi, self.Z, self.Lf = feature_cube(p, config.get("gamma"),
+                                                      config.get("w_decay", 1.0))
         self._L = logP
         self.n_items = len(logP)
         self.arity = 1
@@ -350,6 +354,7 @@ class HMMDataset(Dataset):
         self._L = adjacency_conditional(structure_adjacency(spec), spec["gamma"], spec["cooccurrence"])
         self.n_states = len(self._L)
         self.arity = 1
+        self.labels = config.get("labels", "tokens")
 
         T = torch.tensor(np.exp(self._L), dtype=torch.float64, device=self.device)
         self.T = T / T.sum(-1, keepdim=True)
@@ -374,8 +379,9 @@ class HMMDataset(Dataset):
         else:
             raise ValueError(f"unknown emission {emission!r} (expected 'bump' or 'permuted')")
 
-        self.item_tokens = torch.arange(self.n_symbols)           # emission symbols = outcome classes
         self.start_token = self.n_symbols                         # extra token to begin a sequence
+        offset = self.n_symbols + 1 if self.labels == "latent" else 0
+        self.item_tokens = offset + torch.arange(self.num_dims)
 
     @staticmethod
     def _stationary(T, iters=2000):
@@ -391,11 +397,11 @@ class HMMDataset(Dataset):
 
     @property
     def num_dims(self):
-        return self.n_symbols
+        return self.n_states if self.labels == "latent" else self.n_symbols
 
     @property
     def vocab_size(self):
-        return self.n_symbols + 1                                 # symbols + start token
+        return self.n_symbols + 1 + (self.n_states if self.labels == "latent" else 0)
 
     @property
     def seq_len(self):
@@ -417,13 +423,18 @@ class HMMDataset(Dataset):
 
         start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
         input_ids = torch.cat([start, x], dim=1)                  # (B, L+1)
-        return {"input_ids": input_ids, "labels": input_ids.clone()}
+        labels = input_ids.clone()
+        if self.labels == "latent":
+            labels[:, 1:] = s + self.n_symbols + 1
+        return {"input_ids": input_ids, "labels": labels}
 
     def optimal_predictions(self, input_ids):
-        """Bayes next-token distributions p(x_{t+1} | x_{1:t}) via the forward algorithm.
-        (B, L+1) -> (B, L, M)."""
+        """Bayes next-token or next-latent distributions via the forward algorithm."""
         x = input_ids[:, 1:]
         beliefs = self.forward_algorithm(x)                       # (B, L, n_states) = b_1..b_L
+        if self.labels == "latent":
+            prior = self.pi.expand(len(x), 1, -1)                 # predict s_1 before seeing x_1
+            return torch.cat([prior, beliefs[:, :-1] @ self.T], dim=1).float()
         pred_first = (self.pi @ self.Em).expand(len(x), 1, -1)    # predict x_1 from the prior
         pred_rest = (beliefs[:, :-1] @ self.T) @ self.Em          # predict x_{t+1}, t = 1..L-1
         return torch.cat([pred_first, pred_rest], dim=1).float()
@@ -455,18 +466,20 @@ class ExchangeableDataset(Dataset):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.rng = torch.Generator(device=self.device); self.rng.manual_seed(config.random_seed)
         self.arity = 1
+        self.labels = config.get("labels", "tokens")
 
     @property
     def num_dims(self):
-        return self.K
+        return self.M if self.labels == "latent" else self.K
 
     @property
     def vocab_size(self):
-        return self.K + 1                                         # outcome classes + start token
+        return self.K + 1 + (self.M if self.labels == "latent" else 0)
 
     @property
     def item_tokens(self):
-        return torch.arange(self.K)                               # emission symbols = outcome classes
+        offset = self.K + 1 if self.labels == "latent" else 0
+        return offset + torch.arange(self.num_dims)
 
     @property
     def start_token(self):
@@ -481,17 +494,23 @@ class ExchangeableDataset(Dataset):
 
     def __getitem__(self, i=None):
         B, L = self.config.training_kwargs["batch_size"], self.config.training_kwargs["context_length"]
-        theta = self.sample_emission(B)                           # (B, K) emission probs
+        theta, latent = self.sample_emission(B, return_labels=True)
         x = torch.multinomial(theta, L, replacement=True, generator=self.rng)   # (B, L) iid | theta
 
         start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
         input_ids = torch.cat([start, x], dim=1)                  # (B, L+1)
-        return {"input_ids": input_ids, "labels": input_ids.clone()}
+        labels = input_ids.clone()
+        if self.labels == "latent":
+            labels[:, 1:] = latent[:, None] + self.K + 1
+        return {"input_ids": input_ids, "labels": labels}
 
     def optimal_predictions(self, input_ids):
-        """Bayes next-token distributions: prior predictive for x_1, posterior predictive after.
-        References are float64; the returned batch tensor is float32. (B, L+1) -> (B, L, K)."""
+        """Bayes next-token or latent distributions at each prefix, returned as float32."""
         x = input_ids[:, 1:]
+        if self.labels == "latent":
+            prior = torch.full((len(x), 1, self.M), 1.0 / self.M, dtype=torch.float64,
+                               device=self.device)
+            return torch.cat([prior, self.posterior_weights(x)[:, :-1]], dim=1).float()
         pred = self.posterior_predictive(x)                       # p(x_{t+1} | x_{1:t}), t = 1..L
         prior = self.prior_predictive.expand(len(x), 1, -1)
         return torch.cat([prior, pred[:, :-1]], dim=1).float()
@@ -522,9 +541,10 @@ class DirichletCategoricalDataset(ExchangeableDataset):
     def prior_predictive(self):
         return self.alpha / self.alpha.sum()
 
-    def sample_emission(self, B):
-        return torch.tensor(self.np_rng.dirichlet(self._alpha_np, size=B),
-                            dtype=torch.float64, device=self.device)
+    def sample_emission(self, B, return_labels=False):
+        theta = torch.tensor(self.np_rng.dirichlet(self._alpha_np, size=B),
+                             dtype=torch.float64, device=self.device)
+        return (theta, None) if return_labels else theta
 
     def counts(self, obs):
         """Cumulative per-category counts of ``x_{1:t}`` at every position t — the belief state
@@ -570,9 +590,9 @@ class ExchangeableFamilyDataset(ExchangeableDataset):
     def prior_predictive(self):
         return self._prior_predictive
 
-    def sample_emission(self, B):
+    def sample_emission(self, B, return_labels=False):
         idx = torch.randint(self.M, (B,), device=self.device, generator=self.rng)
-        return self.atoms[idx]
+        return (self.atoms[idx], idx) if return_labels else self.atoms[idx]
 
     def posterior_weights(self, obs):
         """Posterior over atoms after ``x_{1:t}`` at every position t — the belief state.
@@ -1000,6 +1020,35 @@ def von_mises(n_mu=20, kappas=(1.5, 3.0, 4.5), x_n=200):
     return L, {"x": x, "params": theta, "natural": natural}
 
 
+def binary_concepts(p=0.65):
+    """Two hidden concepts emitting noisy yes/no observations."""
+    P = np.array([[p, 1 - p], [1 - p, p]])
+    return np.log(P), {"latent": np.array([-1.0, 1.0]), "observations": np.array([-1.0, 1.0])}
+
+
+def temperature_concepts(n_theta=5, n_observations=5, theta_lim=1.0, observation_lim=1.0):
+    """Discrete temperature line with sufficient statistics ``(1, mu_x)``."""
+    theta = np.linspace(-theta_lim, theta_lim, n_theta)
+    mu = np.linspace(-observation_lim, observation_lim, n_observations)
+    L = theta[:, None] * mu[None] - 0.5 * mu[None] ** 2
+    return L, {"latent": theta, "observations": mu}
+
+
+def word_attribute(m=8, gamma=0.03, alpha_decay=0.9, beta_step=0.0):
+    """Word -> attribute kernel: words are the 2^m corners of the feature cube, outcomes the
+    m attribute tokens plus a null reference (logit 0), with
+    log p(i|x)/p(null|x) = alpha_i x_i + beta_i, alpha_i = w0(gamma) * alpha_decay^i
+    (reliability), beta_i = -i * beta_step (attribute frequency).
+    Returns (L (2^m, m+1), {"Z" (2^m, m) in ±1, "alpha" (m,), "beta" (m,)})."""
+    from scipy.special import logsumexp
+    alpha = 0.5 * np.log(1 / np.tanh(gamma)) * alpha_decay ** np.arange(m)
+    beta = -beta_step * np.arange(m)
+    Z = 2.0 * cube_codes(m) - 1.0
+    G = np.column_stack([Z * alpha + beta, np.zeros(len(Z))])
+    L = G - logsumexp(G, axis=1, keepdims=True)
+    return L, {"Z": Z, "alpha": alpha, "beta": beta}
+
+
 def gaussian2d(n_mu=6, sigmas=(0.8, 1.3, 2.0), grid_n=16, xy_lim=5.0, mu_lim=2.0):
     """N(mu, s^2 I): sufficient statistic (x1, x2, |x|^2); natural (mu1/s^2, mu2/s^2, 1/s^2)."""
     mm = np.linspace(-mu_lim, mu_lim, n_mu)
@@ -1033,7 +1082,9 @@ def mixture(x_n=300):
 
 
 _FAMILY_BUILDERS = {"gaussian1d": gaussian1d, "gaussian2d": gaussian2d, "von_mises": von_mises,
-                    "categorical": categorical, "mixture": mixture}
+                    "categorical": categorical, "mixture": mixture,
+                    "binary_concepts": binary_concepts, "temperature_concepts": temperature_concepts,
+                    "word_attribute": word_attribute}
 
 
 def family_build(spec):

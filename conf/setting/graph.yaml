@@ -2,7 +2,7 @@
 # Order-1 latent-structure task: a graph -> diffusion co-occurrence -> log-conditional.
 # The predicted geometry is the structure's harmonics (ring -> circle, etc.).
 setting: graph-cooccurrence
-structure: ring          # graph shape (see src/code/structures.py)
+structure: ring          # graph shape (see the structure gallery in src/code/data.py)
 structure_kwargs:        # the full structure spec: shape params + the co-occurrence kernel
   n: 24                  # number of nodes / items
   gamma: 0.8             # diffusion decay for the co-occurrence kernel

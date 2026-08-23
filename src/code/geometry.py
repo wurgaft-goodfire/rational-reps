@@ -4,16 +4,17 @@ geometry a network should learn) and a decoder ``D`` (the readout). Derivations 
 import numpy as np
 
 
-def factor_logcond(L, drop_base_measure=False):
+def factor_logcond(L, drop_base_measure=False, w=None):
     """Correspondence-analysis SVD of a log-conditional ``L[theta, x]``: column-center
     (drop the per-row log-partition a softmax ignores); ``drop_base_measure=True`` also drops
-    the per-outcome mean. Returns ``(Lc, E, D, S, nu)`` with the scale split as ``sqrt(S)``
-    on each factor (the balanced split gradient descent learns), so ``E @ D = Lc``."""
+    the per-outcome mean. ``w`` is the row (item) measure, uniform by default. Returns
+    ``(Lc, E, D, S, nu)`` with the scale split as ``sqrt(S)`` on each factor (the balanced
+    split gradient descent learns), so ``E @ D = Lc``."""
     L = np.asarray(L, dtype=np.float64)
     N, _ = L.shape
-    w = np.full(N, 1.0 / N)                                   # uniform row (item) measure
+    w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
     pp = np.exp(L - L.max(1, keepdims=True)); pp /= pp.sum(1, keepdims=True)
-    nu = pp.mean(0); nu /= nu.sum()                           # natural column (outcome) measure
+    nu = w @ pp; nu /= nu.sum()                               # natural column (outcome) measure
     Lc = L
     if drop_base_measure:
         Lc = Lc - (w @ Lc)[None, :]                           # drop x-only base measure
@@ -150,35 +151,6 @@ def support_targets(Z, Lf):
     return softmax(Z @ Lf, axis=1)
 
 
-def _psd_sqrt(M):
-    lam, V = np.linalg.eigh(M)
-    lam = np.clip(lam, 0.0, None)
-    return (V * np.sqrt(lam)) @ V.T
-
-
-def factor_features(Lf, Z, d, w=None, fit_bias=True):
-    """Closed-form rank-d feature code under the Fisher surrogate: whiten by the feature
-    second moment and the outcome Fisher, truncate, unwhiten with a balanced sqrt(S) split.
-    With ``fit_bias`` the code is centered and b absorbs the mean logit row; without, b = 0.
-    Returns (A (d, m), D (d, n_x), b (n_x), S)."""
-    Lf = np.asarray(Lf, float); Z = np.asarray(Z, float)
-    N, m = Z.shape
-    w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
-    q = w @ support_targets(Z, Lf)
-    Fh = _psd_sqrt(np.diag(q) - np.outer(q, q))
-    zbar = w @ Z if fit_bias else np.zeros(m)
-    Zc = Z - zbar
-    C = (Zc * w[:, None]).T @ Zc
-    Ch = _psd_sqrt(C)
-    Chi, Fhi = np.linalg.pinv(Ch), np.linalg.pinv(Fh)
-    U, S, Vt = np.linalg.svd(Ch @ Lf @ Fh, full_matrices=False)
-    rootS = np.sqrt(S[:d])
-    A = (Chi @ (U[:, :d] * rootS)).T
-    D = (rootS[:, None] * Vt[:d]) @ Fhi
-    b = zbar @ (Lf - A.T @ D)
-    return A, D, b, S
-
-
 def expected_ce(Z, Lf, A, D, b, w=None):
     """Weighted expected CE (nats) of the linear-code model, and the Bayes CE. Returns (ce, bayes)."""
     from scipy.special import logsumexp, xlogy
@@ -263,9 +235,9 @@ def nuclear_features(Lf, Z, d, w=None, fit_bias=True, path=(0.5, 0.2, 0.08, 0.03
     """Rank-d code via the nuclear-norm regularization path of the exact-CE fit: the convex
     program CE(Z R + b) + lam*||R||_* is solved globally along a decreasing lam ladder
     (warm-started continuation), each solution is truncated to rank d and polished by joint
-    L-BFGS — the path proposes the basin, the polish converges within it; everything is
-    deterministic. Best exact CE wins; the scale is split balanced.
-    Returns (A (d, m), D (d, n_x), b (n_x), S)."""
+    L-BFGS, plus one polish from a small fixed init (the basin training's small-init
+    dynamics reach, which the path's truncations can miss); everything is deterministic.
+    Best exact CE wins; the scale is split balanced. Returns (A (d, m), D (d, n_x), b (n_x), S)."""
     Lf = np.asarray(Lf, float); Z = np.asarray(Z, float)
     N, m = Z.shape
     w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
@@ -286,10 +258,35 @@ def nuclear_features(Lf, Z, d, w=None, fit_bias=True, path=(0.5, 0.2, 0.08, 0.03
                                Z, P, w, fit_bias)
         if best is None or fit[3] < best[3]:
             best = fit
+    rng = np.random.default_rng(0)
+    fit = _polish_features(0.01 * rng.normal(size=(d, m)), 0.01 * rng.normal(size=(d, nx)),
+                           np.zeros(nx), Z, P, w, fit_bias)
+    if fit[3] < best[3]:
+        best = fit
     A, D, b, _ = best
     U2, S2, V2t = np.linalg.svd(A.T @ D)                          # plain balanced split
     rootS = np.sqrt(S2[:d])
     return (U2[:, :d] * rootS).T, rootS[:, None] * V2t[:d], b, S2[:d]
+
+
+def feature_vectors(H, Z, w=None):
+    """Weighted least-squares additive fit ``H ~ Z V + 1 v0``: effective feature vectors and
+    the constant (mean-code) component. Returns (V (m, d), v0 (d,))."""
+    H = np.asarray(H, float); Z = np.asarray(Z, float)
+    N = len(Z)
+    w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
+    X = np.column_stack([Z, np.ones(N)]) * np.sqrt(w)[:, None]
+    V = np.linalg.lstsq(X, np.sqrt(w)[:, None] * H, rcond=None)[0]
+    return V[:-1], V[-1]
+
+
+def attribute_stats(G, Z):
+    """Per-attribute swing and intercept of null-pinned logits ``G`` (N, m+1) on ±1 features
+    ``Z`` (N, m): a_hat_i = mean(z_i (G_i - G_null)), b_hat_i = mean(G_i - G_null).
+    Returns (a_hat (m,), b_hat (m,))."""
+    G = np.asarray(G, float); Z = np.asarray(Z, float)
+    Gp = G[:, :-1] - G[:, -1:]
+    return (Gp * Z).mean(0), Gp.mean(0)
 
 
 def superposition_measure(A):

@@ -1,5 +1,6 @@
-"""Budgeted CE-optimal codes (geometry.factor_features / nuclear_features) and the feature-cube
-setting: hypercube heat kernel + sparse item measure, log-conditional linear in the code."""
+"""Budgeted CE-optimal codes (geometry.factor_logcond truncation / nuclear_features) and the
+feature-cube setting: hypercube heat kernel + sparse item measure, log-conditional linear in
+the code."""
 import itertools
 
 import numpy as np
@@ -7,8 +8,15 @@ from omegaconf import OmegaConf
 
 from src.code.config import Config
 from src.code.data import FeatureCubeDataset, feature_cube
-from src.code.geometry import (factor_features, expected_ce, nuclear_features,
+from src.code.geometry import (factor_logcond, expected_ce, nuclear_features,
                                principal_angles, superposition_measure)
+
+
+def truncation(L, d, w=None):
+    """Rank-d prefix of the correspondence-analysis SVD: the free-row truncation oracle.
+    Returns (A (d, N), D (d, n_x)) for the identity lift."""
+    _, E, D, _, _ = factor_logcond(L, w=w)
+    return E[:, :d].T, D[:d]
 
 
 def all_supports(m, k):
@@ -43,19 +51,23 @@ def test_surrogate_is_the_support_averaged_fisher_quadratic():
     assert np.isclose(lhs, rhs)
 
 
-def test_full_rank_closed_form_recovers_bayes():
+def test_full_rank_truncation_recovers_bayes():
     Lf, Z = _setup(m=6, k=2, beta=2.0, decay=0.8)
-    A, D, b, S = factor_features(Lf, Z, d=6)
-    ce, bayes = expected_ce(Z, Lf, A, D, b)
+    L = Z @ Lf
+    I = np.eye(len(Z))
+    A, D = truncation(L, d=len(Z))
+    ce, bayes = expected_ce(I, L, A, D, np.zeros(L.shape[1]))
     assert np.isclose(ce, bayes, atol=1e-8)
 
 
-def test_closed_form_ce_is_monotone_in_budget():
+def test_truncation_ce_is_monotone_in_budget():
     Lf, Z = _setup(m=6, k=2, beta=2.0, decay=0.8)
+    L = Z @ Lf
+    I = np.eye(len(Z))
     ces = []
     for d in range(1, 7):
-        A, D, b, _ = factor_features(Lf, Z, d)
-        ces.append(expected_ce(Z, Lf, A, D, b)[0])
+        A, D = truncation(L, d)
+        ces.append(expected_ce(I, L, A, D, np.zeros(L.shape[1]))[0])
     assert all(a >= b - 1e-9 for a, b in zip(ces, ces[1:]))
 
 
@@ -63,11 +75,13 @@ def test_superposition_at_high_beta_truncation_at_low_beta():
     # equal-importance one-hot features, m=6 into d=2: the packing-vs-truncation phase
     for beta, packed in [(0.3, False), (8.0, True)]:
         Lf, Z = _setup(m=6, k=1, beta=beta)
-        A0, D0, b0, _ = factor_features(Lf, Z, d=2)
-        A, D, b, _ = nuclear_features(Lf, Z, d=2)
-        _, bayes = expected_ce(Z, Lf, A0, D0, b0)
-        ex_cf = expected_ce(Z, Lf, A0, D0, b0)[0] - bayes
-        ex_nuc = expected_ce(Z, Lf, A, D, b)[0] - bayes
+        L = Z @ Lf
+        I = np.eye(len(Z))
+        A0, D0 = truncation(L, d=2)
+        A, D, b, _ = nuclear_features(L, I, d=2, fit_bias=False)
+        _, bayes = expected_ce(I, L, A0, D0, np.zeros(L.shape[1]))
+        ex_cf = expected_ce(I, L, A0, D0, np.zeros(L.shape[1]))[0] - bayes
+        ex_nuc = expected_ce(I, L, A, D, b)[0] - bayes
         if packed:
             assert ex_nuc < 0.6 * ex_cf          # packing beats truncation
         else:
@@ -98,16 +112,28 @@ def test_nuclear_features_flat_matches_closed_form_and_sharp_packs():
     # the convex program reduces to the whitened SVD in the flat regime and packs at sharp
     for gamma, packed in [(0.6, False), (0.03, True)]:
         logP, pi, Z, Lf = feature_cube(0.5 * 0.7 ** np.arange(6), gamma)
-        cf = factor_features(Lf, Z, d=2, w=pi, fit_bias=False)
-        ce_cf, bayes = expected_ce(Z, Lf, *cf[:3], w=pi)
-        A, D, b, S = nuclear_features(Lf, Z, d=2, w=pi, fit_bias=False)
-        ce, _ = expected_ce(Z, Lf, A, D, b, w=pi)
+        I = np.eye(len(Z))
+        A0, D0 = truncation(logP, d=2, w=pi)
+        ce_cf, bayes = expected_ce(I, logP, A0, D0, np.zeros(logP.shape[1]), w=pi)
+        A, D, b, S = nuclear_features(logP, I, d=2, w=pi, fit_bias=False)
+        ce, _ = expected_ce(I, logP, A, D, b, w=pi)
         assert np.allclose(b, 0.0)
         assert ce <= ce_cf + 1e-4                          # never worse than truncation
         if packed:
             assert (ce - bayes) < 0.8 * (ce_cf - bayes)    # sharp: packing beats truncation
         else:
             assert (ce - bayes) > 0.8 * (ce_cf - bayes)    # flat: closed form ~ optimal
+
+
+def test_nuclear_features_escapes_the_truncation_basin():
+    # dense cell of the importance-ladder cube: every lambda-path truncation proposes the
+    # truncation basin (excess 1.64); the small-init candidate must find the packed one
+    logP, pi, Z, Lf = feature_cube(np.full(6, 0.5), 0.03, w_decay=0.9)
+    I = np.eye(len(Z))
+    A, D, b, S = nuclear_features(logP, I, 2, w=pi, fit_bias=False)
+    bayes = -(pi[:, None] * np.exp(logP) * logP).sum()
+    ce, _ = expected_ce(I, logP, A, D, b, w=pi)
+    assert ce - bayes < 1.45
 
 
 def test_superposition_measure():
@@ -150,11 +176,26 @@ def test_feature_cube_conditional_structure():
     assert np.allclose(Lf, w * Z.T)                               # coupling set by the heat time
 
 
+def test_feature_cube_importance_ladder():
+    # per-feature couplings w_i = w0 * w_decay^i decouple importance from frequency:
+    # still a symmetric, purely bilinear kernel; the measure only sees p
+    p, gamma, wd = np.full(3, 0.3), 0.1, 0.8
+    logP, pi, Z, Lf = feature_cube(p, gamma, w_decay=wd)
+    P = np.exp(logP)
+    assert np.allclose(P.sum(1), 1.0)
+    assert np.allclose(P, P.T)
+    w = 0.5 * np.log(1 / np.tanh(gamma)) * wd ** np.arange(3)
+    assert np.allclose(Lf, w[:, None] * Z.T)
+    R = logP - Z @ Lf
+    assert np.allclose(R, R[0, 0])                                # bilinear + one constant
+    assert np.allclose(pi, feature_cube(p, gamma)[1])             # measure independent of w
+
+
 def test_cube_full_rank_recovers_bayes():
     logP, pi, Z, Lf = feature_cube(np.array([0.4, 0.2, 0.1, 0.05]), gamma=0.3)
-    A, D, b, _ = factor_features(Lf, Z, d=4, w=pi, fit_bias=False)
-    assert np.allclose(b, 0.0)
-    ce, bayes = expected_ce(Z, Lf, A, D, b, w=pi)
+    I = np.eye(len(Z))
+    A, D = truncation(logP, d=len(Z), w=pi)
+    ce, bayes = expected_ce(I, logP, A, D, np.zeros(logP.shape[1]), w=pi)
     assert ce - bayes < 1e-8
 
 
@@ -163,7 +204,8 @@ def test_cube_full_rank_recovers_bayes():
 def _cube_config(sample_mode):
     cfg = OmegaConf.create({
         "setting": "feature_cube", "n_features": 4, "gamma": 0.25,
-        "sparsity": 0.4, "p_decay": 0.7, "sample_mode": sample_mode, "random_seed": 0,
+        "sparsity": 0.4, "p_decay": 0.7, "w_decay": 0.8, "sample_mode": sample_mode,
+        "random_seed": 0,
         "model_kwargs": {"model_type": "klinear"},
         "training_kwargs": {"batch_size": 64, "context_length": 3},
         "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
@@ -173,7 +215,7 @@ def _cube_config(sample_mode):
 
 def test_cube_dataset_pointwise_samples_the_sparse_marginal():
     ds = FeatureCubeDataset(_cube_config("pointwise"))
-    logP, pi, Z, Lf = feature_cube(0.4 * 0.7 ** np.arange(4), 0.25)
+    logP, pi, Z, Lf = feature_cube(0.4 * 0.7 ** np.arange(4), 0.25, w_decay=0.8)
     assert np.allclose(ds.pi, pi) and np.allclose(ds.Lf, Lf) and np.allclose(ds.Z, Z)
     assert ds.num_dims == 16 and ds.vocab_size == 16 and ds.arity == 1
     b = ds[0]

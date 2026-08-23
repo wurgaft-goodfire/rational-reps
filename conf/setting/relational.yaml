@@ -3,6 +3,6 @@
 # read out bilinearly. Graded ops (max/averaging/entailment) factor cleanly; group ops
 # (modular_add/mult, product) are degenerate and the trained model selects a frequency -> circle.
 setting: relational
-operation: modular_add   # see src/code/relations.py for the full gallery
+operation: modular_add   # see the operation gallery in src/code/data.py
 operation_kwargs:
   p: 12

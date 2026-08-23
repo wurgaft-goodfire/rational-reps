@@ -1,0 +1,11 @@
+# @package _global_
+# Word -> attribute family: words are the 2^m corners of the feature cube, outcomes the m
+# attribute tokens plus a null reference. alpha_i = w0(gamma) * alpha_decay^i (reliability),
+# beta_i = -i * beta_step (attribute frequency; beta_step is the dropout sweep variable).
+setting: distribution-family
+family: word_attribute
+family_kwargs:
+  m: 8
+  gamma: 0.03
+  alpha_decay: 0.9
+  beta_step: 0.0
