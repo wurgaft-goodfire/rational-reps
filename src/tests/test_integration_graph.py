@@ -32,7 +32,7 @@ def _run(module, cache_dir, *overrides):
 
 def test_ring_transformer_converges_to_predicted_circle(tmp_path):
     _run("src.code.train", tmp_path)
-    ckpts = tmp_path / "graph-cooccurrence" / "ci_graph" / "single" / "checkpoints"
+    ckpts = tmp_path / "graph-cooccurrence" / "single" / "checkpoints"
     final = torch.load(ckpts / "200" / "metrics.pt", weights_only=False)["metrics"]
     # the learned token embedding should match the closed-form circle (random init ~ 0)
     assert final["rsa_vs_predicted"] > 0.7, final
