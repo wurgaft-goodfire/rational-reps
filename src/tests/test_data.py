@@ -4,7 +4,7 @@ import torch
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import KernelDataset, LatentDataset, RelationalDataset
+from src.code.data import KernelDataset, RelationalDataset
 
 
 def _config(sample_mode, n=24, batch_size=8, context_length=6):
@@ -95,15 +95,16 @@ def test_chainable_kernel_walks_from_a_start_token():
     assert b["input_ids"].shape == (8, 6)
 
 
-def test_latent_input_is_inferred_from_the_prior_not_read_off_the_batch():
-    # z is hidden: Bayes starts at the prior predictive and converges on the true row
-    ds = _wa_dataset("tokens", n=8, m=5, cls=LatentDataset)
-    assert ds.start_token == ds.n_outcomes                        # z is never a token
-    z = 3
-    obs = torch.multinomial(ds.P[z], 60, replacement=True, generator=ds.rng).unsqueeze(0)
+def test_hidden_input_is_inferred_from_the_prior_not_read_off_the_batch():
+    # z -> x_{1:t} with z latent: it leaves the stream and Bayes infers it from the prefix
+    ds = _wa_dataset("tokens", n=8, m=5, latent=True)
+    assert ds.hidden and ds.start_token == ds.n_outcomes and ds.num_dims == ds.n_items
+    b = ds.__getitem__()
+    assert (b["input_ids"][:, 1:] < ds.n_outcomes).all()          # outcomes only, never z
+    assert torch.isin(b["labels"][:, 1:], ds.item_tokens.to(ds.device)).all()
+
+    obs = torch.multinomial(ds.P[3], 60, replacement=True, generator=ds.rng).unsqueeze(0)
+    ds.latent = False                                             # score the next outcome
     pred = ds._posterior_predictive(obs)[0]
-    prior_predictive = (ds.prior @ ds.P.double()).float()
-    assert torch.allclose(pred[0], prior_predictive, atol=1e-5)   # nothing seen yet
-    assert torch.allclose(pred[-1], ds.P[z], atol=2e-2)           # evidence pins the row
-    entropy = -(pred * (pred + 1e-12).log()).sum(-1)
-    assert entropy[-1] < entropy[0]                               # inference sharpens
+    assert torch.allclose(pred[0], (ds.prior @ ds.P.double()).float(), atol=1e-5)
+    assert torch.allclose(pred[-1], ds.P[3], atol=2e-2)           # evidence pins the row

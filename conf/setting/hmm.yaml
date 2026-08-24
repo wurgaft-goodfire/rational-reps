@@ -12,4 +12,4 @@ emission: bump           # emission shape placement: bump (Gaussian in hop dista
 emission_sigma: 1.0      # bump width in hops: small -> sharp / high SNR, large -> aliased (fills the belief disk)
 n_symbols: 24            # alphabet size (permuted only; bump forces n_symbols = n_states)
 sample_mode: tokens      # the HMM is a token stream by construction
-labels: tokens           # tokens | latent (next latent state given the observed prefix)
+latent: false            # false = predict the next token | true = predict the latent state

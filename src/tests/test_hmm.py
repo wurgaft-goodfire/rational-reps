@@ -13,13 +13,13 @@ from src.code.eval import cka
 
 
 def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0, structure="ring",
-         structure_kwargs=None, labels="tokens"):
+         structure_kwargs=None, latent=False):
     kwargs = {"n": n} if structure_kwargs is None else structure_kwargs
     return Config(OmegaConf.create({
         "setting": "hmm", "structure": structure,
         "structure_kwargs": {"gamma": 0.8, "cooccurrence": "diffusion", **kwargs},
         "emission": emission, "emission_sigma": sigma, "n_symbols": M,
-        "sample_mode": "tokens", "labels": labels, "random_seed": seed,
+        "sample_mode": "tokens", "latent": latent, "random_seed": seed,
         "model_kwargs": {"model_type": "transformer"},
         "training_kwargs": {"batch_size": 64, "context_length": 40},
         "eval_kwargs": {"num_eval_batches": 1, "output_hidden_states": False},
@@ -60,7 +60,7 @@ def test_batch_shapes_and_normalised_targets():
 
 
 def test_latent_labels_use_never_input_state_tokens_and_predictive_beliefs():
-    ds = HMMDataset(_cfg(emission="permuted", n=7, M=11, labels="latent")); b = ds[0]
+    ds = HMMDataset(_cfg(emission="permuted", n=7, M=11, latent=True)); b = ds[0]
 
     assert ds.num_dims == ds.n_states
     assert ds.item_tokens.tolist() == list(range(ds.n_symbols + 1,
@@ -145,3 +145,15 @@ def test_belief_references_are_float64_and_batches_float32():
     assert ds.transition.dtype == torch.float64 and ds.P.dtype == torch.float64
     assert ds.forward_algorithm(x).dtype == torch.float64
     assert ds.optimal_predictions(b["input_ids"]).dtype == torch.float32
+
+
+def test_bayes_infers_the_state_instead_of_reading_it_off_the_batch():
+    # the run never sees a state token, so Bayes starts at the prior predictive and sharpens
+    ds = HMMDataset(_cfg(n=12, M=12, sigma=0.5))
+    b = ds[0]
+    assert (b["input_ids"][:, 1:] < ds.n_outcomes).all()          # symbols only
+    pred = ds.optimal_predictions(b["input_ids"])
+    prior_predictive = (ds.prior @ ds.P).float()
+    assert torch.allclose(pred[:, 0], prior_predictive.expand(len(pred), -1), atol=1e-5)
+    entropy = -(pred * (pred + 1e-12).log()).sum(-1).mean(0)
+    assert entropy[-1] < entropy[0]                               # the prefix is informative
