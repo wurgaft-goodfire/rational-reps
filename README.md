@@ -68,6 +68,11 @@ Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `linear`, `sae`, `llm` (pre
 
 ## Output structure
 
+`override_dirname` is the override string, tidied by `clean_dirname`. It always names the
+structure, even when the structure came from the setting yaml rather than the command line:
+`graph`, `feature_cube` and `hypercube` all set `setting: graph-cooccurrence`, so the structure is
+the only thing that tells their runs apart.
+
 ```
 $CACHE_DIR/{setting}/{override_dirname}/{name}/
   config_resolved.yaml     # full resolved config (reproducibility + eval cache match)
@@ -80,17 +85,27 @@ $CACHE_DIR/{setting}/{override_dirname}/{name}/
 
 ## Notebooks
 
-Analysis notebooks in `src/notebooks/` are percent-format `.py` files
-([jupytext](https://jupytext.readthedocs.io/) / VS Code `# %%` cells) — no `.ipynb` in the repo.
-One notebook per setting (`word_attribute_analysis.py`, `hmm_analysis.py`, …) plus cross-setting
-geometry studies. Run them interactively, or headless:
+Analysis notebooks in `src/notebooks/` are [marimo](https://marimo.io/) notebooks: plain `.py`
+files, no `.ipynb` in the repo. One notebook per setting (`feature_cube_analysis.py`,
+`hmm_analysis.py`, …) plus cross-setting geometry studies.
 
 ```bash
-uv run jupytext --to notebook --execute src/notebooks/<name>.py -o /tmp/out.ipynb
+uv run marimo edit src/notebooks/<name>.py     # interactive, in the browser
+uv run python src/notebooks/<name>.py          # headless end-to-end run
+uv run marimo check src/notebooks/*.py         # lint the notebook format
 ```
 
+In VS Code, install the `marimo-team.vscode-marimo` extension and use **marimo: Open as marimo
+notebook** (or the editor-title icon) to edit a file as a notebook; pick `.venv/bin/python` as the
+kernel. Without the extension, run `marimo edit --headless` in a terminal and open the forwarded
+port.
+
+A cell reruns when a variable it reads changes, so position in the file decides nothing. Two cells
+cannot assign the same variable; marimo rejects the notebook if they do. Give throwaways like
+`fig`, `ax` and loop variables a leading underscore, which makes them private to their cell.
+
 The setup cell resolves the project root and `chdir`s to it, so notebooks find `conf/` and `src/`
-regardless of the kernel's working directory.
+regardless of the working directory.
 
 Notebooks train through `train.train_inline(overrides)`, which returns
 `(model, dataset, evaluator, history_df, config)` and transparently reuses a cached run when one
@@ -103,12 +118,16 @@ a figure to git by hand only when it is paper-final:
 from src.code.plot_utils import save_figure, figure_path
 
 save_figure(fig, figure_path(config, "cca_by_arch"))            # PNG (default)
-# -> $CACHE_DIR/{setting}/figures/{override_dirname}/cca_by_arch.png
+# -> $CACHE_DIR/{setting}/{override_dirname}/figures/cca_by_arch.png
 save_figure(fig, figure_path(config, "cca_by_arch", ext="pdf")) # vector, paper-final
 ```
 
-Figures are keyed by `{setting}/figures/{override_dirname}` (the per-model level is dropped), so
-all models trained on one structure share a figures dir.
+`save_figure` returns the figure, so ending a cell with the save call renders it in marimo.
+
+Figures are keyed by `{setting}/{override_dirname}/figures` (the per-model level is dropped), so
+all models trained on one structure share a figures dir. A notebook that trains nothing gets the
+same path from `train.resolve_config(overrides)`, which builds the config and its `run_dir` without
+running a job.
 
 ## Analysis
 

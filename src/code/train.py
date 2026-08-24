@@ -179,24 +179,30 @@ def _load_run(config, device=None):
     return model, dataset, evaluator, history
 
 
-def train_inline(overrides, name=None, cache_dir=None):
-    """Train in-process from a list of Hydra overrides (for notebooks) — the same job, run dir, and
-    save schedule as the CLI. Returns ``(model, dataset, evaluator, history_df, config)``. If that
-    exact run already exists on disk (and ``overwrite`` is not set), loads it instead of retraining."""
+def resolve_config(overrides, name=None, cache_dir=None, make_run_dirs=False):
+    """Compose the config for a list of Hydra overrides and key its run dir exactly as the CLI does:
+    ``{cache_dir}/{setting}/{clean_dirname}/{name}``. The path half of ``train_inline``, so a notebook
+    that trains nothing still gets a config-keyed ``figure_path``."""
     overrides = list(overrides) + ([f"name={name}"] if name is not None else [])
     GlobalHydra.instance().clear()
     with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
         cfg = compose(config_name="config", overrides=overrides, return_hydra_config=True)
     # override_dirname is only computed under Hydra; grab it, then drop the hydra node so the config
-    # resolves/saves cleanly, and key the run dir exactly as the CLI does (same clean_dirname).
-    override_dirname = clean_dirname(cfg.hydra.job.override_dirname)
+    # resolves/saves cleanly.
+    override_dirname = clean_dirname(cfg.hydra.job.override_dirname, cfg.get("structure"))
     with open_dict(cfg):
         del cfg["hydra"]
     cache_dir = cache_dir or os.getenv("CACHE_DIR") or str(here() / "outputs")
     cfg.cache_dir = cache_dir
     cfg.run_dir = os.path.join(cache_dir, cfg.setting, override_dirname, cfg.name)
-    config = Config(cfg, make_run_dirs=True)
+    return Config(cfg, make_run_dirs=make_run_dirs)
 
+
+def train_inline(overrides, name=None, cache_dir=None):
+    """Train in-process from a list of Hydra overrides (for notebooks) — the same job, run dir, and
+    save schedule as the CLI. Returns ``(model, dataset, evaluator, history_df, config)``. If that
+    exact run already exists on disk (and ``overwrite`` is not set), loads it instead of retraining."""
+    config = resolve_config(overrides, name=name, cache_dir=cache_dir, make_run_dirs=True)
     if _run_exists(config):
         return (*_load_run(config), config)
     result = train(config)

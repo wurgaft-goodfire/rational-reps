@@ -7,10 +7,11 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
 
-def clean_dirname(override_dirname):
+def clean_dirname(override_dirname, structure=None):
     """Turn Hydra's raw ``override_dirname`` into a tidy, config-keyed run/figure dir name: drops
     bookkeeping noise, compresses factor dicts, puts ``structure`` first, hashes overlong names.
-    Empty (no distinguishing overrides) -> ``default_run``."""
+    ``structure`` is the resolved value: several settings share one ``setting:``, so the key carries
+    it even when it came from the yaml rather than an override. Empty -> ``default_run``."""
     # split on top-level commas only — factor values like [{structure:ring,n:15},...] carry their own
     items, depth, cur = [], 0, ""
     for ch in str(override_dirname):
@@ -26,6 +27,8 @@ def clean_dirname(override_dirname):
         if not item or item.startswith("~") or item.startswith("setting="):
             continue
         parts.append(item.lstrip("+").replace("structure_kwargs.", ""))
+    if structure is not None and not any(p.startswith("structure=") for p in parts):
+        parts.append(f"structure={structure}")
     if not parts:
         return "default_run"
     parts.sort(key=lambda s: (not s.startswith("structure="), s))     # structure first, then the rest

@@ -76,11 +76,18 @@ when notebook logic is reused or supports a claim, promote it to the source modu
 Exploration in notebooks: trying an analysis, iterating on a figure. Quick means a shorter
 pipeline (no tests, no TDD), not lower standards; the code philosophy still applies.
 
-- Notebooks are thin percent-format `.py` files (no `.ipynb`): they call tested functions
-  from the source modules and render figures; real logic lives in the source modules.
+- Notebooks are thin marimo `.py` files (no `.ipynb`): they call tested functions from the
+  source modules and render figures; real logic lives in the source modules.
+- A cell reruns when a variable it reads changes, so position in the file decides nothing.
+  Two cells cannot assign the same variable; marimo rejects the notebook if they do. A name
+  that starts with `_` is private to its cell, so throwaways like `_fig` can repeat freely.
+- If a `marimo edit` session is live, the kernel owns the notebook and writes the `.py` itself:
+  edit through `marimo._code_mode` (the `marimo-pair` skill), never Edit/Write on the file.
 - State the math in a markdown cell before each analysis cell (no need for review pause).
 - Save figures to the gitignored cache, never commit them. Execute the notebook end-to-end
   and confirm a clean run before finishing. (Workflow specifics: see README.)
+- End a plotting cell with the save call: `save_figure` returns the figure and marimo renders
+a cell's last expression. A cell saving two figures shows only the second; split it.
 
 ### Figures
 

@@ -64,7 +64,8 @@ class FigureGenerator:
 
     def save_figure(self, fig, filepath, format=None, dpi=300):
         """Save figure with publication-quality settings and selective rasterization. ``format=None``
-        infers the format from the filepath extension (``.png`` for viewing, ``.pdf`` for papers)."""
+        infers the format from the filepath extension (``.png`` for viewing, ``.pdf`` for papers).
+        Returns the figure, so a save call at the end of a marimo cell renders it."""
         for ax in fig.get_axes():
             for collection in ax.collections:
                 if collection.__class__.__name__ in ['QuadMesh', 'AxesImage']:
@@ -74,6 +75,7 @@ class FigureGenerator:
                         collection.set_rasterized(True)
         fig.savefig(filepath, bbox_inches='tight', dpi=dpi, format=format)
         print(f"Saved figure to {filepath}")
+        return fig
 
 
 # Module-level singleton: importing plot_utils applies the house style.
@@ -81,8 +83,8 @@ FIG = FigureGenerator()
 
 
 def save_figure(fig, filepath, **kwargs):
-    """Save a figure with the house rasterization/quality settings."""
-    FIG.save_figure(fig, filepath, **kwargs)
+    """Save a figure with the house rasterization/quality settings; returns the figure."""
+    return FIG.save_figure(fig, filepath, **kwargs)
 
 
 def figure_path(config, name, ext="png"):
@@ -94,7 +96,7 @@ def figure_path(config, name, ext="png"):
     return str(path)
 
 
-######### Geometry-analysis plots (used by geometry_analysis.ipynb) #########
+######### Geometry-analysis plots (used by geometry_analysis.py) #########
 
 def _pca(X, k=2):
     """Top-k PCA coordinates of a representation (rows = items)."""

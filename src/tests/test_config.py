@@ -19,6 +19,15 @@ def test_clean_dirname_tidies_the_override_string():
     assert clean_dirname("setting=graph,~structure_kwargs") == "default_run"
 
 
+def test_clean_dirname_carries_the_structure_even_when_it_is_not_overridden():
+    # the structure usually comes from the setting yaml, and several settings share one `setting:`
+    # value — so it must key the dir, or their default runs collide.
+    assert clean_dirname("setting=feature_cube", "feature_cube") == "structure=feature_cube"
+    assert clean_dirname("setting=hmm,emission_sigma=2.5", "ring") == "structure=ring,emission_sigma=2.5"
+    assert clean_dirname("setting=graph,structure=chain", "chain") == "structure=chain"   # no duplicate
+    assert clean_dirname("", None) == "default_run"                    # settings without a structure
+
+
 def test_graph_overrides_carries_kernel_params_in_structure_kwargs():
     # The co-occurrence kernel (gamma / cooccurrence) is part of the structure spec, so it rides into
     # structure_kwargs alongside the shape params — graph_conditional reads it off the spec. A spec

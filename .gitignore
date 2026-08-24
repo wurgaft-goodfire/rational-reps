@@ -209,4 +209,6 @@ data/
 
 # PyTorch model files
 *.pt
-_nb_out.ipynb
+
+# marimo's per-notebook session/output cache
+__marimo__/

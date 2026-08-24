@@ -21,10 +21,10 @@ wandb:
 hydra:
   mode: MULTIRUN
   run:
-    dir: ${cache_dir}/${setting}/${clean_dirname:${hydra.job.override_dirname}}/${name}
+    dir: ${cache_dir}/${setting}/${clean_dirname:${hydra.job.override_dirname},${oc.select:structure,null}}/${name}
   sweep:
     dir: ${cache_dir}/${setting}
-    subdir: ${clean_dirname:${hydra.job.override_dirname}}/${name}
+    subdir: ${clean_dirname:${hydra.job.override_dirname},${oc.select:structure,null}}/${name}
   job:
     chdir: false
     config:
