@@ -108,3 +108,14 @@ def test_hidden_input_is_inferred_from_the_prior_not_read_off_the_batch():
     pred = ds._posterior_predictive(obs)[0]
     assert torch.allclose(pred[0], (ds.prior @ ds.P.double()).float(), atol=1e-5)
     assert torch.allclose(pred[-1], ds.P[3], atol=2e-2)           # evidence pins the row
+
+
+def test_observed_input_prefixes_as_many_exchangeable_draws_as_the_context():
+    # [z, x_1 .. x_L] matches the declared seq_len, and every draw comes from the same row
+    ds = _wa_dataset("tokens", context_length=6)
+    b = ds.__getitem__()
+    assert b["input_ids"].shape == (8, ds.seq_len) == (8, 7)
+    z, x = b["input_ids"][:, 0], b["input_ids"][:, 1:]
+    assert (z < ds.n_items).all() and (x >= ds.n_items).all()
+    targets = ds.optimal_predictions(b["input_ids"])
+    assert torch.allclose(targets, ds.P[z][:, None].expand(-1, 6, -1))

@@ -166,9 +166,9 @@ class KernelDataset(Dataset):
         if self.chained:                                          # [start, x_1 ... x_L]
             init = torch.randint(0, self.n_items, (B,), generator=self.rng, device=self.device)
             seq = torch.cat([self._start_column(B), self._markov_walk(self.P, init, L)], dim=1)
-        else:                                                     # [z, x]: one draw from the row
+        else:                                                     # [z, x_1 ... x_L], x_t iid | z
             z = torch.randint(self.n_items, (B, 1), generator=self.rng, device=self.device)
-            x = torch.multinomial(self.P[z[:, 0]], 1, generator=self.rng)
+            x = torch.multinomial(self.P[z[:, 0]], L, replacement=True, generator=self.rng)
             seq = torch.cat([z, self.n_items + x], dim=1)
         return {"input_ids": seq, "labels": seq.clone()}
 
