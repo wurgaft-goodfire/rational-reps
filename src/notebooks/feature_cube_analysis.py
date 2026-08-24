@@ -262,10 +262,10 @@ plot_utils.save_figure(fig, FIGDIR / "fig4_elhage_phase.png")
 # - **Saturation overshoot**: fitted swings of kept features exceed $\alpha$ (up to
 #   $\approx 2$, fig 3 right): once outputs are near one-hot, CE no longer penalizes
 #   overdriving the logits, so the packed code exaggerates what it keeps.
-# - **Trained k-linear tracks nuclear** (fig 2): 0.151 vs 0.142 at $p = 0.3$ (within 6%,
-#   no longer to four decimals — the saturated landscape is harder) and exactly 0.0078 at
-#   $p = 0.02$, with matching RDMs.
-# - **The MLP fails twice over** (0.91 vs 0.14 at $p = 0.3$). Immediate cause: at the
+# - **Trained linear tracks nuclear** (fig 2): 0.153 vs 0.145 dense (within 6% — the
+#   saturated landscape is harder than the soft one) and 0.011 vs 0.0085 sparse, with
+#   matching RDMs.
+# - **The MLP fails twice over** (1.10 vs 0.145 dense). Immediate cause: at the
 #   notebook's budget (8k steps) two of its three bottleneck ReLU units are dead — the
 #   code is effectively rank 1. Longer training (30–60k steps, lr 0.01–0.03) revives them
 #   but plateaus at ~0.22, still 1.5x nuclear. The residual gap is structural: the
@@ -273,11 +273,12 @@ plot_utils.save_figure(fig, FIGDIR / "fig4_elhage_phase.png")
 #   the signed optimum by shifting the code positive welds an unremovable outcome field
 #   $W c$ into every prediction (nuclear's own code shifted positive costs 0.51; the
 #   signed original 0.14).
-# - **Sequence models sit between linear and the MLP** (fig 2), both untuned, as in the
-#   feature cube. They train as causal LMs on [word, attribute_1 ... attribute_L] episodes
-#   — the word is the prefix, its features are exchangeable draws from the same kernel
-#   row — and their softmax spans the full token vocabulary, so leakage onto word tokens is
-#   priced too: a slightly harder objective than the pointwise soft-target CE.
+# - **Every architecture now trains on the same one-in-one-out kernel** (fig 2): the readout
+#   heads on the exact outcome row, the causal LMs on the outcome token of [word, feature].
+#   The GRU reaches 0.269 dense / 0.111 sparse and the width-3 transformer 0.426 / 0.175 —
+#   the GRU beating truncation at both corners, the transformer only at the sparse one. Both
+#   untuned, as in every prior setting, and both pay for reading a sampled token where the
+#   readout heads get the exact distribution.
 # - Excess CE is non-monotone in $p$ (fig 1, peak near $p \approx 0.3$); both ends
 #   trivialize. Below $p \approx 0.01$ the finite lexicon dominates ($N p \approx 1$–$3$
 #   carrier words per feature); swings there describe the sample, not the ensemble.
