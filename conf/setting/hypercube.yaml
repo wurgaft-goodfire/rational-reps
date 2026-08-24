@@ -9,4 +9,4 @@ structure_kwargs:        # the full structure spec: shape params + the co-occurr
   n: 5                   # number of binary attributes -> 2**n items
   gamma: 0.8             # heat diffusion time (beta) for exp(beta*A)
   cooccurrence: heat
-sample_mode: sequence    # sequence (Markov walks, for transformer/RNN) | pointwise (for k-linear/MLP)
+sample_mode: tokens      # tokens (for transformer/RNN) | pointwise (for the readout models)

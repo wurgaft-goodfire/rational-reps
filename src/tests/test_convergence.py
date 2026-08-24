@@ -17,7 +17,7 @@ pytestmark = pytest.mark.slow
 def _train_and_score(model_type, steps=500, lr=0.01, n=12):
     mc = {"vocab_size": 4, "num_classes": 4, "arity": 1, "embed_dim": 16,
           "hidden_size": 64, "num_layers": 1, "init_scale": 0.3}
-    sample_mode = "sequence" if model_type == "rnn" else "pointwise"   # rnn is a causal LM
+    sample_mode = "tokens" if model_type == "rnn" else "pointwise"   # rnn is a causal LM
     cfg = OmegaConf.create({
         "setting": "graph-cooccurrence", "structure": "ring", "structure_kwargs": {"n": n},
         "gamma": 0.8, "sample_mode": sample_mode, "random_seed": 0,

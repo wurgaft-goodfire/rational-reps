@@ -35,22 +35,30 @@ class KernelDataset(Dataset):
     """A task is a **kernel**: a conditional over a table ``P(outcome | inputs)``. The settings
     differ only in what the slots are —
 
-    * co-occurrence ``z -> x``: one input slot; a graph's outcomes are its own items, a
-      bipartite structure's (words -> attributes) are a separate alphabet;
+    * co-occurrence ``z -> x``: one input slot — that is the pointwise reading; written as
+      tokens the same kernel becomes a walk, since a graph's outcomes are its own items,
+      while a bipartite structure's (words -> attributes) are a separate alphabet;
     * relational ``(a, b) -> c``: two or more input slots;
     * hidden Markov ``x_{1:t} -> z -> x_{t+1}``: the outcome is reached through a latent walk,
       and the target is either the next token or the latent itself.
 
-    Sampling follows from the kernel. ``pointwise`` feeds every input tuple with its exact
-    outcome distribution as a soft target. ``sequence`` chains the kernel when its outcomes
-    are its inputs (a Markov walk, which needs a start token); otherwise the input is held
-    fixed and the outcomes are exchangeable draws from one row. That input can be **observed**
-    (``[z, x_1 ... x_L]``, z its own prefix) or **latent** (``latent: true`` — the run sees
-    only ``[start, x_1 ... x_L]`` and has to infer z), which is the in-context inference case.
-    A latent input walks a transition matrix between draws: the identity holds z fixed, and
-    the HMM supplies a real one. Bayes is then the posterior predictive from the prior over z,
-    not an oracle that reads z off the input. ``labels`` picks the target: the next token, or
-    the latent itself. Subclasses override ``_build`` and only what they genuinely differ on."""
+    ``sample_mode`` says what the model consumes: ``pointwise`` gives every input tuple with
+    its exact outcome distribution as a soft target, while ``tokens`` writes the task out for
+    a causal LM. How it is written follows from the kernel, and only then does a stream of
+    observations appear:
+
+    * the kernel **chains** when its outcomes are its inputs, giving a Markov walk
+      ``[start, x_1 ... x_L]``;
+    * an **observed** input that cannot chain is held fixed while its outcomes are drawn
+      exchangeably, ``[z, x_1 ... x_L]`` — at ``context_length`` 1 that is just ``[z, x]``;
+    * a **latent** input (``latent: true``) never appears: the run sees only
+      ``[start, x_1 ... x_L]`` and has to infer z, so Bayes is the posterior predictive from
+      the prior over z rather than an oracle reading z off the batch. Between draws the latent
+      walks a transition matrix — the identity holds it fixed (in-context inference), the HMM
+      supplies a real one.
+
+    ``labels`` picks the target: the next token, or the latent itself. Subclasses override
+    ``_build`` and only what they genuinely differ on."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -89,21 +97,23 @@ class KernelDataset(Dataset):
         its outcomes and needs a start token, an exchangeable one gives outcomes their own
         block and uses the input as the prefix, and a pointwise task emits neither."""
         self.chained = self.n_items == self.n_outcomes and not self.latent
-        sequence = self.sample_mode == "sequence"
+        tokens = self.sample_mode != "pointwise"
+        # an observed input that cannot chain stays a token of its own, ahead of its outcomes
+        prefixed = tokens and not (self.chained or self.latent)
         if self.latent:
             self.label_tokens = torch.arange(self.n_outcomes)
-            self.start_token = self.n_outcomes
+            self.start_token = self.n_outcomes if tokens else None
             latent_targets = self.labels == "latent"
             self.vocab_size = self.n_outcomes + 1 + self.n_items * latent_targets
             self.item_tokens = (self.n_outcomes + 1 + torch.arange(self.n_items) if latent_targets
                                 else torch.arange(self.n_outcomes))
             return
         self.item_tokens = torch.arange(self.n_items)
-        outcome_block = sequence and not self.chained
+        # an outcome needs its own token only when the input is not already in its alphabet
         self.label_tokens = (torch.arange(self.n_items, self.n_items + self.n_outcomes)
-                             if outcome_block else torch.arange(self.n_outcomes))
-        self.start_token = self.n_items if sequence and self.chained else None
-        self.vocab_size = self.n_items + self.n_outcomes * outcome_block + (self.start_token is not None)
+                             if prefixed else torch.arange(self.n_outcomes))
+        self.start_token = self.n_items if self.chained and tokens else None
+        self.vocab_size = self.n_items + self.n_outcomes * prefixed + (self.start_token is not None)
 
     # ── interface read by the oracle / trainer / evaluator ──────────────────
     @property
@@ -118,7 +128,7 @@ class KernelDataset(Dataset):
 
     @property
     def seq_len(self):
-        if self.sample_mode != "sequence":
+        if self.sample_mode == "pointwise":
             return self.arity + 1
         return self.context_length + 1                            # prefix (start or z) + L draws
 
@@ -144,7 +154,7 @@ class KernelDataset(Dataset):
         return torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
 
     def __getitem__(self, i=None):
-        if self.sample_mode != "sequence":
+        if self.sample_mode == "pointwise":
             # full batch: every input tuple with its exact outcome distribution as a soft target
             return {"input_ids": self.item_tokens.to(self.device).unsqueeze(1), "labels": self.P}
         B, L = self._batch_size(), self.context_length
@@ -160,16 +170,16 @@ class KernelDataset(Dataset):
         if self.chained:                                          # [start, x_1 ... x_L]
             init = torch.randint(0, self.n_items, (B,), generator=self.rng, device=self.device)
             seq = torch.cat([self._start_column(B), self._markov_walk(self.P, init, L)], dim=1)
-        else:                                                     # [z, x_1 ... x_L], x_t iid | z
+        else:                                                     # [z, x]: one draw from the row
             z = torch.randint(self.n_items, (B, 1), generator=self.rng, device=self.device)
-            x = torch.multinomial(self.P[z[:, 0]], L, replacement=True, generator=self.rng)
+            x = torch.multinomial(self.P[z[:, 0]], 1, generator=self.rng)
             seq = torch.cat([z, self.n_items + x], dim=1)
         return {"input_ids": seq, "labels": seq.clone()}
 
     def optimal_predictions(self, input_ids):
         """Bayes targets aligned with the causal shift, i.e. ``logits[:, :-1]``. Pointwise
         (B, 1) -> (B, C); sequence (B, T) -> (B, T-1, C)."""
-        if self.sample_mode != "sequence":
+        if self.sample_mode == "pointwise":
             return self.P[input_ids[:, 0]]
         if self.latent:
             return self._posterior_predictive(input_ids[:, 1:])

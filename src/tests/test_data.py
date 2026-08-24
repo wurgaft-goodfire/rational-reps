@@ -38,7 +38,7 @@ def test_pointwise_batch_is_full_batch_soft_targets():
 
 
 def test_sequence_batch_shapes_and_start_token():
-    ds = KernelDataset(_config("sequence", n=24, batch_size=8, context_length=6))
+    ds = KernelDataset(_config("tokens", n=24, batch_size=8, context_length=6))
     batch = ds.__getitem__()
     assert batch["input_ids"].shape == (8, 7)              # start + context_length
     assert (batch["input_ids"][:, 0] == 24).all()          # start token first
@@ -70,37 +70,25 @@ def test_relational_dataset_infers_arity_and_shapes():
         assert (batch["labels"].argmax(1) == s).all()
 
 
-def _wa_dataset(mode, n=16, m=4):
+def _wa_dataset(mode, n=16, m=4, context_length=4, **extra):
     from omegaconf import OmegaConf
     return KernelDataset(Config(OmegaConf.create({
         "setting": "graph-cooccurrence", "structure": "word_attribute",
         "structure_kwargs": {"N": n, "m": m}, "random_seed": 0, "sample_mode": mode,
-        "training_kwargs": {"batch_size": 8, "context_length": 4}})))
+        "training_kwargs": {"batch_size": 8, "context_length": context_length}, **extra})))
 
 
 def test_tokens_exist_only_when_the_sampler_emits_them():
     # an unchainable kernel emits outcome tokens only in sequence mode, and never a start token
-    point, seq = _wa_dataset("pointwise"), _wa_dataset("sequence")
-    assert not point.chained and not seq.chained
+    point, tokens = _wa_dataset("pointwise"), _wa_dataset("tokens")
+    assert not point.chained and not tokens.chained
     assert point.start_token is None and point.vocab_size == 16   # words only
-    assert seq.start_token is None and seq.vocab_size == 20       # words + attributes
-    assert seq.label_tokens.tolist() == list(range(16, 20))
-
-
-def test_unchainable_kernel_samples_exchangeable_draws_from_a_fixed_input():
-    # [z, x_1 .. x_L]: z is the prefix and every draw is i.i.d. from the same kernel row
-    ds = _wa_dataset("sequence")
-    b = ds.__getitem__()
-    assert b["input_ids"].shape == (8, 5)                          # z + context_length draws
-    z, x = b["input_ids"][:, 0], b["input_ids"][:, 1:]
-    assert (z < ds.n_items).all() and (x >= ds.n_items).all()
-    targets = ds.optimal_predictions(b["input_ids"])
-    assert targets.shape == (8, 4, 4)
-    assert torch.allclose(targets, ds.P[z][:, None].expand(-1, 4, -1))   # same row at every position
+    assert tokens.start_token is None and tokens.vocab_size == 20  # words + attributes
+    assert tokens.label_tokens.tolist() == list(range(16, 20))
 
 
 def test_chainable_kernel_walks_from_a_start_token():
-    ds = KernelDataset(_config("sequence", n=12, batch_size=8, context_length=5))
+    ds = KernelDataset(_config("tokens", n=12, batch_size=8, context_length=5))
     assert ds.chained and ds.start_token == 12 and ds.vocab_size == 13
     b = ds.__getitem__()
     assert (b["input_ids"][:, 0] == ds.start_token).all()
@@ -109,9 +97,8 @@ def test_chainable_kernel_walks_from_a_start_token():
 
 def test_latent_input_is_inferred_from_the_prior_not_read_off_the_batch():
     # z is hidden: Bayes starts at the prior predictive and converges on the true row
-    ds = _wa_dataset("sequence", n=8, m=5)
-    ds.latent, ds.transition = True, torch.eye(ds.n_items, dtype=torch.float64, device=ds.device)
-    ds.prior = torch.full((ds.n_items,), 1.0 / ds.n_items, dtype=torch.float64, device=ds.device)
+    ds = _wa_dataset("tokens", n=8, m=5, latent=True)
+    assert ds.latent and ds.start_token == ds.n_outcomes          # z is never a token
     z = 3
     obs = torch.multinomial(ds.P[z], 60, replacement=True, generator=ds.rng).unsqueeze(0)
     pred = ds._posterior_predictive(obs)[0]

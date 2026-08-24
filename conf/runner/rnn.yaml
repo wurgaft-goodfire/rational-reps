@@ -8,6 +8,6 @@ defaults:
 
 name: rnn
 output_dir: ${run_dir}/checkpoints
-sample_mode: sequence
+sample_mode: tokens
 training_kwargs:
   learning_rate: 0.005     # sequence LM wants a lower lr than the readouts
