@@ -65,6 +65,8 @@ def train(config):
         if config.cfg.model_kwargs.model_type in MODEL_CLASSES:
             mc.num_classes = dataset.num_dims          # model ladder: outcome classes + arity
             mc.arity = dataset.arity
+            if config.cfg.model_kwargs.model_type == "sae":
+                mc.embed_dim = dataset.features.shape[1]   # the SAE reads feature codes, not ids
             print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
                   f"num_classes={dataset.num_dims}, arity={dataset.arity}")
         else:
@@ -73,6 +75,8 @@ def train(config):
                   f"max_position_embeddings={dataset.seq_len}")
 
     model = init_model(config)
+    if hasattr(model, "load_features"):
+        model.load_features(dataset.features)
 
     # Pre-batched data collator: the dataset returns a full batch per __getitem__.
     data_collator = PreBatchedDataCollator()

@@ -79,9 +79,22 @@ def _wa_config():
 def test_word_attribute_dataset_exposes_exact_targets():
     ds = CooccurrenceDataset(_wa_config())
     logP, _ = word_attribute(32, 4, 0.3, 0.8, 1.5, 2)
-    assert ds.vocab_size == ds.start_token + 1 and ds.num_dims == 4 and ds.arity == 1
+    assert ds.vocab_size == 32 and ds.start_token is None   # pointwise: words only
+    assert ds.num_dims == 4 and ds.arity == 1
     assert np.allclose(ds.conditional, logP)
     b = ds[0]
     assert b["input_ids"].shape == (32, 1)
     assert (b["input_ids"][:, 0].cpu().numpy() == np.arange(32)).all()
     assert np.allclose(b["labels"].cpu().numpy(), np.exp(logP), atol=1e-6)
+
+
+def test_sae_trains_from_the_shared_pipeline_on_feature_codes():
+    # the SAE reads the item feature codes, so its frozen embedding is exactly Z
+    from src.code.train import train_inline
+    model, ds, evaluator, *_ = train_inline(
+        ["setting=word_attribute", "runner=sae", "structure_kwargs.N=64", "structure_kwargs.m=5",
+         "model_kwargs.model_config.hidden_size=2", "training_kwargs.train_steps=50",
+         "name=sae_pipeline_test"])
+    assert np.allclose(model.embedding.weight.detach().cpu().numpy(), ds.features)
+    assert not model.embedding.weight.requires_grad
+    assert evaluator.item_representations(model).shape == (64, 2)   # the bottleneck code

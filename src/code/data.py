@@ -9,15 +9,6 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 from .config import Config
 
-def _markov_walk(P, init, length, rng):
-    """Sample (B, length) walks under transition ``P``, starting from states ``init``."""
-    walk = torch.empty(len(init), length, dtype=torch.long, device=P.device)
-    walk[:, 0] = init
-    for t in range(1, length):
-        walk[:, t] = torch.multinomial(P[walk[:, t - 1]], 1, generator=rng).squeeze(1)
-    return walk
-
-
 def _spec(config, name_key, kwargs_key):
     """Merge a setting's name and its ``*_kwargs`` block into one spec dict."""
     from omegaconf import OmegaConf
@@ -38,219 +29,210 @@ def init_dataset(config, overwrite_data: bool = False):
     raise ValueError(f"Unsupported setting: {config.setting}")
 
 
-##### Co-occurrence dataset (order-1) #####
+##### Co-occurrence dataset (order-1) — the base every task specializes #####
 
 class CooccurrenceDataset(Dataset):
-    """Order-1 task defined by a log-conditional table ``L`` (n_items, n_outcomes).
-    *Bidirectional* (square: outcomes are the items themselves, e.g. a graph) or *bipartite*
-    (outcomes are their own token block, e.g. words -> attributes). ``sample_mode``:
-    "pointwise" (every item with its exact outcome distribution as a soft target) or
-    "sequence" (bidirectional -> Markov walks; bipartite -> [start, item, outcome] triples
-    with the loss on the outcome only)."""
+    """Order-1 task over a log-conditional table ``L`` (n_items, n_outcomes): items are the
+    input tokens and each row is the exact outcome distribution. Outcomes are the items
+    themselves when the table is square, otherwise their own token block (*bipartite*).
+    ``sample_mode``: "pointwise" (full batch of items with soft targets) or "sequence"
+    (square -> Markov walks; bipartite -> [start, item, outcome] triples, loss on the
+    outcome). Subclasses override ``_build`` and, where their sampler differs, ``__getitem__``
+    and ``optimal_predictions``."""
 
     def __init__(self, config: Config):
         self.config = config
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.rng = torch.Generator(device=self.device)
         self.rng.manual_seed(config.random_seed)
-
-        self._L, self.bipartite = _conditional_table(config)      # (n_items, n_outcomes) numpy
-        self.n_items, self.n_outcomes = self._L.shape
-        self.arity = 1
         self.sample_mode = config.get("sample_mode", "pointwise")
-        self.item_tokens = torch.arange(self.n_items)
-        # outcomes get their own token block when they are not the items themselves
-        self.label_tokens = (torch.arange(self.n_items, self.n_items + self.n_outcomes)
-                             if self.bipartite else self.item_tokens)
-        self.start_token = self.n_items + self.n_outcomes if self.bipartite else self.n_items
+        self.arity = 1
 
-        P = torch.tensor(np.exp(self._L), dtype=torch.float32, device=self.device)
+        self._cond, P = self._build(config)
         self.P = P / P.sum(-1, keepdim=True)                      # p(outcome | item)
-        self.marginal = self.P.mean(0)                            # dist after the start token
+        self.n_outcomes = self.P.shape[-1]
+        self._layout()
+
+    def _build(self, config):
+        """``(conditional, P)``: the log-conditional the oracle factors and the row-wise
+        outcome distribution. Also sets ``n_items`` and any task-specific tensors."""
+        spec = _spec(config, "structure", "structure_kwargs")
+        L, self.info = graph_build(spec)
+        self.n_items = len(L)
+        self.features = self.info.get("Z")                        # item feature codes, if any
+        return L, torch.tensor(np.exp(L), dtype=torch.float32, device=self.device)
+
+    def _layout(self):
+        """Token layout. Items are always tokens. Outcomes get their own block only when the
+        sampler emits them as tokens (bipartite sequence mode), and the start token exists
+        only in sequence mode — a pointwise task needs neither."""
+        self.bipartite = self.n_items != self.n_outcomes
+        sequence = self.sample_mode == "sequence"
+        outcome_block = self.bipartite and sequence
+        self.item_tokens = torch.arange(self.n_items)
+        self.label_tokens = (torch.arange(self.n_items, self.n_items + self.n_outcomes)
+                             if outcome_block else torch.arange(self.n_outcomes))
+        n_tokens = self.n_items + self.n_outcomes * outcome_block
+        self.start_token = n_tokens if sequence else None
+        self.vocab_size = n_tokens + sequence
 
     # ── interface read by the oracle / trainer / evaluator ──────────────────
     @property
     def conditional(self):
-        """The order-1 log-conditional the geometry oracle factors."""
-        return self._L
+        """The conditional the geometry oracle factors."""
+        return self._cond
 
     @property
     def num_dims(self):
-        """Number of outcome classes; used by the Evaluator remap + the linear head."""
+        """Number of outcome classes; used by the Evaluator remap and the model heads."""
         return self.n_outcomes
-
-    @property
-    def vocab_size(self):
-        return self.start_token + 1                               # items (+ outcomes) + start
 
     @property
     def seq_len(self):
         if self.sample_mode != "sequence":
             return self.arity + 1
-        return 3 if self.bipartite else self.config.training_kwargs["context_length"] + 1
+        return 3 if self.bipartite else self.context_length + 1
+
+    @property
+    def context_length(self):
+        return self.config.training_kwargs["context_length"]
 
     def __len__(self):
         return 1
 
+    def _batch_size(self):
+        return self.config.training_kwargs["batch_size"]
+
+    def _markov_walk(self, P, init, length):
+        """Sample (B, length) walks under transition ``P``, starting from states ``init``."""
+        walk = torch.empty(len(init), length, dtype=torch.long, device=P.device)
+        walk[:, 0] = init
+        for t in range(1, length):
+            walk[:, t] = torch.multinomial(P[walk[:, t - 1]], 1, generator=self.rng).squeeze(1)
+        return walk
+
+    def _start_column(self, B):
+        return torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
+
     def __getitem__(self, i=None):
         if self.sample_mode != "sequence":
             # full batch: every item with its exact outcome distribution as a soft target
-            items = torch.arange(self.n_items, device=self.device)
-            return {"input_ids": items.unsqueeze(1), "labels": self.P}
-        B = self.config.training_kwargs["batch_size"]
-        start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
+            return {"input_ids": self.item_tokens.to(self.device).unsqueeze(1), "labels": self.P}
+        B = self._batch_size()
         if self.bipartite:                                        # [start, item, outcome]
             items = torch.randint(self.n_items, (B, 1), generator=self.rng, device=self.device)
             outcomes = torch.multinomial(self.P[items[:, 0]], 1, generator=self.rng)
-            input_ids = torch.cat([start, items, self.n_items + outcomes], dim=1)
+            input_ids = torch.cat([self._start_column(B), items, self.n_items + outcomes], dim=1)
             labels = torch.full_like(input_ids, -100)             # loss on the outcome only
             labels[:, -1] = input_ids[:, -1]
             return {"input_ids": input_ids, "labels": labels}
-        L = self.config.training_kwargs["context_length"]
         init = torch.randint(0, self.n_items, (B,), generator=self.rng, device=self.device)
-        walk = _markov_walk(self.P, init, L, self.rng)
-        input_ids = torch.cat([start, walk], dim=1)               # (B, L+1)
+        walk = self._markov_walk(self.P, init, self.context_length)
+        input_ids = torch.cat([self._start_column(B), walk], dim=1)          # (B, L+1)
         return {"input_ids": input_ids, "labels": input_ids.clone()}
 
     def optimal_predictions(self, input_ids):
-        """Bayes targets aligned with the causal shift, i.e. logits[:, :-1]. Pointwise
-        (B, 1) -> (B, C); sequence (B, T) -> (B, T-1, C). Bipartite scores only the
-        attribute position (the others are all-zero rows, which the metric skips)."""
+        """Bayes targets aligned with the causal shift, i.e. ``logits[:, :-1]``. Pointwise
+        (B, 1) -> (B, C); sequence (B, T) -> (B, T-1, C). Bipartite scores only the outcome
+        position; the rest are all-zero rows, which the metric skips."""
         if self.sample_mode != "sequence":
             return self.P[input_ids[:, 0]]
-        if self.bipartite:                                        # [start, item, outcome]
+        if self.bipartite:
             targets = torch.zeros(len(input_ids), input_ids.shape[1] - 1, self.n_outcomes,
                                   device=self.device)
             targets[:, -1] = self.P[input_ids[:, 1]]              # predicted after reading the item
             return targets
-        dist_table = torch.cat([self.P, self.marginal.unsqueeze(0)], dim=0)  # (vocab, C)
-        return dist_table[input_ids[:, :-1]]
+        marginal = self.P.mean(0, keepdim=True)                   # dist after the start token
+        return torch.cat([self.P, marginal], 0)[input_ids[:, :-1]]
 
     def compute_metrics(self, eval_pred, return_all=True):
         return _kl_metrics(eval_pred, return_all)
 
 
-def _conditional_table(config):
-    """``(log-conditional, bipartite)`` for the config's structure: a graph's outcomes are its
-    own items (square); a bipartite structure has no adjacency and its own outcome block.
-    gamma / cooccurrence (the kernel) ride in structure_kwargs."""
-    spec = _spec(config, "structure", "structure_kwargs")
-    struct = _STRUCTURES.get(spec["structure"])
-    return graph_conditional(spec), struct is not None and struct.adjacency is None
-
-
 ##### Relational dataset (order >= 2, combination) #####
 
-class RelationalDataset(Dataset):
+class RelationalDataset(CooccurrenceDataset):
     """Operation task c = a*b: ``.conditional`` is the tensor ``T[a, b, ..., c]``, with arity
-    inferred from its shape. Pointwise sampler: every input tuple (a, b, ...) with its exact
-    ``p(c | a, b, ...)`` as a soft target."""
+    inferred from its shape. Every input tuple carries its exact ``p(c | a, b, ...)``."""
 
-    def __init__(self, config: Config):
-        self.config = config
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.rng = torch.Generator(device=self.device)
-        self.rng.manual_seed(config.random_seed)
-
-        T = relation_tensor(_spec(config, "operation", "operation_kwargs"))                          # (n_items,)*arity + (n_outcomes,)
-
-        self.arity = T.ndim - 1
+    def _build(self, config):
+        T = relation_tensor(_spec(config, "operation", "operation_kwargs"))
+        self.arity = T.ndim - 1                                   # (n_items,)*arity + (n_outcomes,)
         self.n_items = T.shape[0]
-        self.n_outcomes = T.shape[-1]
-        self._T = T
-        self.item_tokens = torch.arange(self.n_items)
-        self.label_tokens = torch.arange(self.n_outcomes)
-        # per-input-tuple outcome distribution, flattened over the input tuple for fast lookup
-        flat = T.reshape(-1, self.n_outcomes)
-        P = torch.tensor(flat, dtype=torch.float32, device=self.device)
-        self.P = P / P.sum(-1, keepdim=True)
-
-    @property
-    def conditional(self):
-        return self._T                                            # tensor -> factor_tensor in the oracle
-
-    @property
-    def num_dims(self):
-        return self.n_outcomes
-
-    @property
-    def vocab_size(self):
-        return self.n_items
-
-    @property
-    def seq_len(self):
-        return self.arity + 1
-
-    def __len__(self):
-        return 1
+        self.features = None
+        # per-input-tuple outcome distribution, flattened over the tuple for fast lookup
+        flat = torch.tensor(T.reshape(-1, T.shape[-1]), dtype=torch.float32, device=self.device)
+        return T, flat
 
     def __getitem__(self, i=None):
         # full batch: every input tuple with its exact p(c | a, b, ...) as a soft target
-        items = torch.arange(self.n_items, device=self.device)
-        inputs = torch.cartesian_prod(*([items] * self.arity))   # (n^arity, arity)
+        items = self.item_tokens.to(self.device)
+        inputs = torch.cartesian_prod(*([items] * self.arity))    # (n^arity, arity)
         if self.arity == 1:
             inputs = inputs.unsqueeze(1)
         flat = torch.zeros(len(inputs), dtype=torch.long, device=self.device)
         for j in range(self.arity):
             flat = flat * self.n_items + inputs[:, j]             # row-major over the item axes
-        dist = self.P[flat]
-        return {"input_ids": inputs, "labels": dist}
-
-    def compute_metrics(self, eval_pred, return_all=True):
-        return _kl_metrics(eval_pred, return_all)
+        return {"input_ids": inputs, "labels": self.P[flat]}
 
 
 ##### Hidden-Markov dataset (latent graph walk + emissions) #####
 
-class HMMDataset(Dataset):
+class HMMDataset(CooccurrenceDataset):
     """Latent states walk the structure's graph; each state emits an observable token and the
-    network sees only tokens. ``emission``: "bump" (Gaussian in hop distance, symbols = states) or
-    "permuted" (a peaked template permuted per state); ``emission_sigma`` sets its width. Sequence-only."""
+    network sees only tokens. ``emission``: "bump" (Gaussian in hop distance, symbols = states)
+    or "permuted" (a peaked template permuted per state); ``emission_sigma`` sets its width.
+    Sequence-only; ``labels`` selects token or latent-state targets."""
 
-    def __init__(self, config: Config):
-        self.config = config
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.rng = torch.Generator(device=self.device); self.rng.manual_seed(config.random_seed)
-
-        from omegaconf import OmegaConf
-        sk = config.get("structure_kwargs")
-        structure_kwargs = OmegaConf.to_container(sk, resolve=True) if sk else {}
-        spec = {"structure": config.get("structure"), **structure_kwargs}
-        # The HMM treats every structure as its adjacency graph: the latent walks the graph's nodes
-        # (tree included — all nodes are states, not only leaves), so the transition and the bump
-        # emission share one geometry. gamma / cooccurrence are required structure_kwargs.
-        self._L = adjacency_conditional(structure_adjacency(spec), spec["gamma"], spec["cooccurrence"])
-        self.n_states = len(self._L)
-        self.arity = 1
+    def _build(self, config):
+        spec = _spec(config, "structure", "structure_kwargs")
+        # The HMM treats every structure as its adjacency graph: the latent walks the graph's
+        # nodes (tree included — all nodes are states, not only leaves), so the transition and
+        # the bump emission share one geometry. gamma / cooccurrence are required.
+        L = adjacency_conditional(structure_adjacency(spec), spec["gamma"], spec["cooccurrence"])
+        self.n_states = len(L)
         self.labels = config.get("labels", "tokens")
+        self.features = None
 
-        T = torch.tensor(np.exp(self._L), dtype=torch.float64, device=self.device)
+        T = torch.tensor(np.exp(L), dtype=torch.float64, device=self.device)
         self.T = T / T.sum(-1, keepdim=True)
         self.pi = self._stationary(self.T)                        # prior = stationary distribution
+        self.Em = self._emissions(config, spec)
+        self.n_items = self.n_symbols
+        outcomes = self.n_states if self.labels == "latent" else self.n_symbols
+        return L, torch.ones(self.n_symbols, outcomes, device=self.device)   # sampler-driven
 
+    def _emissions(self, config, spec):
+        """Emission matrix (n_states, n_symbols); also fixes ``n_symbols``."""
         self.n_symbols = int(config.get("n_symbols", self.n_states))
         emission = config.get("emission", "bump")
         sigma = float(config.get("emission_sigma", 1.0))
         if emission == "bump":
             # Gaussian in hop distance on the structure's graph; symbols correspond to states
-            # (M = n_states), so sigma reads directly as 'how many hops does an emission alias'
-            D = structure_distance(spec)
-            Em = np.exp(-(D ** 2) / (2 * sigma ** 2)); self.n_symbols = self.n_states
-            self.Em = torch.tensor(Em / Em.sum(1, keepdims=True), dtype=torch.float64, device=self.device)
-        elif emission == "permuted":
+            # (M = n_states), so sigma reads as 'how many hops does an emission alias'
+            Em = np.exp(-(structure_distance(spec) ** 2) / (2 * sigma ** 2))
+            self.n_symbols = self.n_states
+            return torch.tensor(Em / Em.sum(1, keepdims=True), dtype=torch.float64, device=self.device)
+        if emission == "permuted":
             # one peaked template over the M symbols, independently permuted per state
             j = np.arange(self.n_symbols); template = np.exp(-(j ** 2) / (2 * sigma ** 2))
             g = torch.Generator(device=self.device); g.manual_seed(config.random_seed + 1)
             perms = torch.stack([torch.randperm(self.n_symbols, generator=g, device=self.device)
                                  for _ in range(self.n_states)])
-            self.Em = torch.tensor(template / template.sum(), dtype=torch.float64, device=self.device)[perms]
-        else:
-            raise ValueError(f"unknown emission {emission!r} (expected 'bump' or 'permuted')")
+            return torch.tensor(template / template.sum(), dtype=torch.float64,
+                                device=self.device)[perms]
+        raise ValueError(f"unknown emission {emission!r} (expected 'bump' or 'permuted')")
 
-        self.start_token = self.n_symbols                         # extra token to begin a sequence
-        offset = self.n_symbols + 1 if self.labels == "latent" else 0
-        self.item_tokens = offset + torch.arange(self.num_dims)
+    def _layout(self):
+        """Symbols are the input tokens, then the start token; latent targets get their own
+        block after it, so the states a run predicts are never tokens it reads."""
+        self.bipartite = False
         self.label_tokens = torch.arange(self.n_symbols)
+        self.start_token = self.n_symbols
+        latent = self.labels == "latent"
+        self.vocab_size = self.n_symbols + 1 + (self.n_states if latent else 0)
+        self.item_tokens = (self.n_symbols + 1 + torch.arange(self.n_states) if latent
+                            else torch.arange(self.n_symbols))
 
     @staticmethod
     def _stationary(T, iters=2000):
@@ -262,34 +244,19 @@ class HMMDataset(Dataset):
     @property
     def latent_conditional(self):
         """Log-conditional of the latent transition — factor for the predicted latent geometry."""
-        return self._L
-
-    @property
-    def num_dims(self):
-        return self.n_states if self.labels == "latent" else self.n_symbols
-
-    @property
-    def vocab_size(self):
-        return self.n_symbols + 1 + (self.n_states if self.labels == "latent" else 0)
+        return self._cond
 
     @property
     def seq_len(self):
-        return self.config.training_kwargs["context_length"] + 1
-
-    def __len__(self):
-        return 1
-
-    def _batch_size(self):
-        return self.config.training_kwargs["batch_size"]
+        return self.context_length + 1
 
     def __getitem__(self, i=None):
-        B = self._batch_size(); L = self.config.training_kwargs["context_length"]
+        B, L = self._batch_size(), self.context_length
         init = torch.multinomial(self.pi, B, replacement=True, generator=self.rng)
-        s = _markov_walk(self.T, init, L, self.rng)               # latent walk: s_1 ~ pi
+        s = self._markov_walk(self.T, init, L)                    # latent walk: s_1 ~ pi
         x = torch.multinomial(self.Em[s.reshape(-1)], 1, generator=self.rng).reshape(B, L)  # emit
 
-        start = torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
-        input_ids = torch.cat([start, x], dim=1)                  # (B, L+1)
+        input_ids = torch.cat([self._start_column(B), x], dim=1)  # (B, L+1)
         labels = input_ids.clone()
         if self.labels == "latent":
             labels[:, 1:] = s + self.n_symbols + 1
@@ -316,9 +283,6 @@ class HMMDataset(Dataset):
             b = b / b.sum(-1, keepdim=True)
             out.append(b.clone())
         return torch.stack(out, 1)                                # (B, L, n_states)
-
-    def compute_metrics(self, eval_pred, return_all=True):
-        return _kl_metrics(eval_pred, return_all)
 
 
 def _kl_metrics(eval_pred, return_all=True):
@@ -539,7 +503,7 @@ _STRUCTURES = {
     "hypercube": _Structure(hypercube), "complete": _Structure(complete),
     "tree": _Structure(_tree_graph, tree_conditional),
     # bipartite (no adjacency): words -> attributes
-    "word_attribute": _Structure(None, lambda **kw: word_attribute(**kw)[0]),
+    "word_attribute": _Structure(None, word_attribute),
 }
 
 
@@ -554,7 +518,19 @@ def _build_adjacency(name, params):
     return _STRUCTURES[name].adjacency(**params)
 
 
+def graph_build(spec, gamma=0.8, cooccurrence="diffusion"):
+    """``(L, info)`` for a structure spec: the log-conditional plus whatever the structure
+    exposes about its items (e.g. the feature codes ``Z`` of a bipartite structure)."""
+    out = _graph_conditional(spec, gamma, cooccurrence)
+    return out if isinstance(out, tuple) else (out, {})
+
+
 def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
+    """The log-conditional of a structure spec (see ``graph_build`` for the item info)."""
+    return graph_build(spec, gamma, cooccurrence)[0]
+
+
+def _graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
     """Log-conditional for a structure spec ``{'structure': name, **params}``. A structure with its
     own conditional (tree) uses it directly; otherwise ``adjacency_conditional`` converts the
     adjacency. ``gamma`` and ``cooccurrence`` may also be passed as spec keys, overriding the args."""

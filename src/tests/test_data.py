@@ -25,7 +25,7 @@ def test_conditional_is_square_and_arity_one():
     assert ds.conditional.shape == (24, 24)
     assert ds.arity == 1
     assert ds.num_dims == 24
-    assert ds.vocab_size == 25  # + start token
+    assert ds.vocab_size == 24  # pointwise: no start token
 
 
 def test_pointwise_batch_is_full_batch_soft_targets():
@@ -68,3 +68,18 @@ def test_relational_dataset_infers_arity_and_shapes():
         # modular addition is deterministic: argmax(c | a,b,...) == (sum of inputs) mod p
         s = batch["input_ids"].sum(1) % ds.n_items
         assert (batch["labels"].argmax(1) == s).all()
+
+
+def test_start_and_outcome_tokens_exist_only_when_the_sampler_emits_them():
+    # pointwise: items only; sequence: + the outcome block (bipartite) + a start token
+    from omegaconf import OmegaConf
+    def wa(mode):
+        return CooccurrenceDataset(Config(OmegaConf.create({
+            "setting": "graph-cooccurrence", "structure": "word_attribute",
+            "structure_kwargs": {"N": 16, "m": 4}, "random_seed": 0, "sample_mode": mode,
+            "training_kwargs": {"batch_size": 8, "context_length": 4}})))
+    point, seq = wa("pointwise"), wa("sequence")
+    assert point.bipartite and seq.bipartite
+    assert point.start_token is None and point.vocab_size == 16
+    assert seq.start_token == 20 and seq.vocab_size == 21
+    assert seq.label_tokens.tolist() == list(range(16, 20))

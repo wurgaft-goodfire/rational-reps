@@ -181,26 +181,37 @@ class RNNModel(_ModelBase):
 
 
 class SAEModel(_ModelBase):
-    """Softmax autoencoder with a ReLU bottleneck on feature activations x (B, m): code
-    h = relu(We x + be), logits Wd h (bias-free readout), CE against the target distribution
-    (+ l1 * mean|h|). Bottleneck = hidden_size; feature dim = num_classes."""
+    """Sparse autoencoder over the item feature codes z: h = relu(We z + be), logits Wd h
+    (bias-free), CE against the target distribution plus ``l1 * mean|h|``. The embedding is
+    the frozen feature table (``load_features``), so it trains from the same pointwise batches
+    as the rest of the ladder. Bottleneck = hidden_size."""
 
     def __init__(self, config):
         super().__init__(config)
-        self.encoder = nn.Linear(config.num_classes, config.hidden_size)
+        self.embedding.weight.requires_grad_(False)         # the feature table is data, not a parameter
+        self.encoder = nn.Linear(config.embed_dim, config.hidden_size)
         self.decoder = nn.Linear(config.hidden_size, config.num_classes, bias=False)
         for lin in (self.encoder, self.decoder):
             nn.init.normal_(lin.weight, std=config.init_scale)
         nn.init.zeros_(self.encoder.bias)
 
+    def load_features(self, features):
+        """Install the per-item feature codes (n_items, embed_dim) as the frozen embedding."""
+        with torch.no_grad():
+            self.embedding.weight.copy_(torch.as_tensor(features, dtype=self.embedding.weight.dtype))
+
+    def _code(self, item_ids):
+        return torch.relu(self.encoder(self.embedding(item_ids).flatten(1)))
+
     def forward(self, input_ids, labels=None, **kwargs):
-        h = torch.relu(self.encoder(input_ids.float()))
-        out = {"logits": self.decoder(h)}
+        h = self._code(input_ids)
+        out = self._finish(self.decoder(h), labels)
         if labels is not None:
-            logp = F.log_softmax(out["logits"], dim=-1)
-            out["loss"] = -(labels.float() * logp).sum(-1).mean() \
-                + self.config.l1 * h.abs().mean()
+            out["loss"] = out["loss"] + self.config.l1 * h.abs().mean()
         return out
+
+    def item_reps(self, item_ids, start_token=None):
+        return self._code(item_ids.view(-1, 1))             # the bottleneck code
 
 
 MODEL_CLASSES = {"linear": LinearModel, "mlp": MLPModel, "rnn": RNNModel,
