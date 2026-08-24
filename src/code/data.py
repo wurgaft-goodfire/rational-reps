@@ -53,8 +53,9 @@ class KernelDataset(Dataset):
     ``latent: true`` makes the input the target: it drops out of the stream, which becomes
     ``[start, x_1 ... x_L]``, and the run has to infer it — so Bayes is the posterior
     predictive from the prior over z, filtered through the prefix, rather than a lookup.
-    Between draws the input walks a transition matrix; without one it is held fixed, which is
-    the exchangeable ``z -> x_{1:t}`` case. Subclasses override ``_build`` and only what they
+    With no dynamics the input is held fixed — the exchangeable ``z -> x_{1:t}`` case, where
+    the posterior is just the prior times the accumulated likelihood — while a subclass that
+    moves it between draws (the HMM) filters instead. Subclasses override ``_build`` and only what they
     genuinely differ on."""
 
     def __init__(self, config: Config):
@@ -71,8 +72,7 @@ class KernelDataset(Dataset):
         self.P = P / P.sum(-1, keepdim=True)                      # the kernel p(outcome | z)
         self.n_outcomes = self.P.shape[-1]
         self.hidden = self.latent or self.transition is not None  # is z absent from the stream?
-        if self.hidden and self.transition is None:
-            self.transition = torch.eye(self.n_items, dtype=torch.float64, device=self.device)
+        if self.hidden and self.prior is None:                    # no dynamics: z is held fixed
             self.prior = torch.full((self.n_items,), 1.0 / self.n_items,
                                     dtype=torch.float64, device=self.device)
         self._layout()
@@ -155,7 +155,8 @@ class KernelDataset(Dataset):
         B, L = self._batch_size(), self.context_length
         if self.hidden:                                           # [start, x_1 ... x_L], z inferred
             init = torch.multinomial(self.prior, B, replacement=True, generator=self.rng)
-            z = self._markov_walk(self.transition, init, L)       # identity transition holds z fixed
+            z = (self._markov_walk(self.transition, init, L) if self.transition is not None
+                 else init[:, None].expand(-1, L))                # no dynamics: one z per episode
             x = torch.multinomial(self.P[z.reshape(-1)], 1, generator=self.rng).reshape(B, L)
             seq = torch.cat([self._start_column(B), x], dim=1)
             labels = seq.clone()
@@ -185,28 +186,21 @@ class KernelDataset(Dataset):
         return self.P[input_ids[:, 0], None].expand(-1, input_ids.shape[1] - 1, -1)
 
     def _posterior_predictive(self, obs):
-        """Bayes for a hidden z: start from the prior, filter the prefix, push through the
-        transition. Returns the next-token (or next-state) distribution at every position."""
-        beliefs = self.forward_algorithm(obs)                     # (B, L, n_items) = b_1..b_L
-        pushed = beliefs[:, :-1] @ self.transition
-        if self.latent:
-            prior = self.prior.expand(len(obs), 1, -1)            # predict s_1 before seeing x_1
-            return torch.cat([prior, pushed], dim=1).float()
-        first = (self.prior @ self.P.double()).expand(len(obs), 1, -1)   # x_1 from the prior alone
-        return torch.cat([first, pushed @ self.P.double()], dim=1).float()
+        """Bayes for a hidden input: the posterior over z hypotheses after each prefix, pushed
+        back through the kernel. z is held fixed, so the posterior is just the prior times the
+        accumulated likelihood. obs: (B, L) -> (B, L, num_dims)."""
+        logp = self.P.double().log()[:, obs]                      # (n_items, B, L)
+        beliefs = torch.log_softmax(self.prior.log()[:, None, None] + logp.cumsum(-1), dim=0)
+        beliefs = beliefs.permute(1, 2, 0).exp()                  # (B, L, n_items) = b_1 .. b_L
+        return self._predict_from(beliefs, len(obs))
 
-    def forward_algorithm(self, obs):
-        """Per-position posteriors ``b_t = p(z_t | x_{1:t})``. obs: (B, L) -> (B, L, n_items)."""
-        emission = self.P.double()
-        b = self.prior.expand(len(obs), -1).clone()
-        out = []
-        for t in range(obs.shape[1]):
-            if t > 0:
-                b = b @ self.transition                           # not before the first emission
-            b = b * emission[:, obs[:, t]].T                      # emission update
-            b = b / b.sum(-1, keepdim=True)
-            out.append(b.clone())
-        return torch.stack(out, 1)
+    def _predict_from(self, beliefs, B):
+        """Next-position targets from the per-prefix posteriors, shifted so position t predicts
+        what follows it: the prior (or its predictive) leads, then each belief in turn."""
+        if self.latent:
+            return torch.cat([self.prior.expand(B, 1, -1), beliefs[:, :-1]], dim=1).float()
+        first = (self.prior @ self.P.double()).expand(B, 1, -1)   # x_1 from the prior alone
+        return torch.cat([first, beliefs[:, :-1] @ self.P.double()], dim=1).float()
 
     def compute_metrics(self, eval_pred, return_all=True):
         """KL(model || true) over the outcome distribution. Handles pointwise (logits (B,C)) and
@@ -310,6 +304,25 @@ class HMMDataset(KernelDataset):
         for _ in range(iters):
             v = v @ T
         return v / v.sum()
+
+    def _posterior_predictive(self, obs):
+        """The state moves between emissions, so the posterior is the forward recursion rather
+        than a running product: transition, then reweight by the emission."""
+        beliefs = self.forward_algorithm(obs)                     # (B, L, n_states) = b_1 .. b_L
+        return self._predict_from(beliefs @ self.transition, len(obs))
+
+    def forward_algorithm(self, obs):
+        """Per-position posteriors ``b_t = p(s_t | x_{1:t})``. obs: (B, L) -> (B, L, n_states)."""
+        emission = self.P.double()
+        b = self.prior.expand(len(obs), -1).clone()
+        out = []
+        for t in range(obs.shape[1]):
+            if t > 0:
+                b = b @ self.transition                           # not before the first emission
+            b = b * emission[:, obs[:, t]].T                      # emission update
+            b = b / b.sum(-1, keepdim=True)
+            out.append(b.clone())
+        return torch.stack(out, 1)
 
     @property
     def latent_conditional(self):
