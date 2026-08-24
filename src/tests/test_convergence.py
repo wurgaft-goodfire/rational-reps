@@ -35,7 +35,7 @@ def _train_and_score(model_type, steps=500, lr=0.01, n=12):
     model.train()
     for _ in range(steps):
         batch = dataset.__getitem__()
-        out = model(batch["input_ids"], labels=batch["labels"])
+        out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward(); opt.step()
     metrics, _ = Evaluator(config, dataset).evaluate(model)
     return metrics
@@ -49,10 +49,12 @@ def test_architecture_converges_to_predicted_circle(model_type):
 
 
 def _train_features(steps=600, lr=0.01):
+    # a large init would leave the task's unused embedding directions at their random values,
+    # which shows up in the RDM: the repo default keeps the measured code the learned one
     mc = {"vocab_size": 4, "num_classes": 4, "arity": 1, "embed_dim": 16,
-          "hidden_size": 64, "num_layers": 1, "init_scale": 0.3}
+          "hidden_size": 64, "num_layers": 1, "init_scale": 0.02}
     cfg = OmegaConf.create({
-        "setting": "graph-cooccurrence", "structure": "features", "random_seed": 0,
+        "setting": "graph-cooccurrence", "structure": "feature_cube", "random_seed": 0,
         "structure_kwargs": {"N": 32, "m": 4, "p": 0.3},
         "model_kwargs": {"model_type": "linear", "model_config": mc},
         "training_kwargs": {"batch_size": 256, "context_length": 6},
@@ -68,7 +70,7 @@ def _train_features(steps=600, lr=0.01):
     model.train()
     for _ in range(steps):
         batch = dataset.__getitem__()
-        out = model(batch["input_ids"], labels=batch["labels"])
+        out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward(); opt.step()
     return Evaluator(config, dataset).evaluate(model)[0]
 
@@ -105,7 +107,7 @@ def test_bilinear_modular_addition_learns_a_circle():
     model.train()
     for _ in range(6000):
         batch = dataset.__getitem__()
-        out = model(batch["input_ids"], labels=batch["labels"])
+        out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)   # stabilize the high-wd regime
         opt.step()
