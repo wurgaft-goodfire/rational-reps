@@ -68,10 +68,10 @@ n = ds.n_states
 B, L = 128, 40                                                        # fixed eval sequences
 ds.rng.manual_seed(0)                       # reseed: training consumes the generator on a fresh run
 s = torch.empty(B, L, dtype=torch.long, device=ds.device)
-s[:, 0] = torch.multinomial(ds.pi, B, replacement=True, generator=ds.rng)
+s[:, 0] = torch.multinomial(ds.prior, B, replacement=True, generator=ds.rng)
 for t in range(1, L):
-    s[:, t] = torch.multinomial(ds.T[s[:, t-1]], 1, generator=ds.rng).squeeze(1)
-x = torch.multinomial(ds.Em[s.reshape(-1)], 1, generator=ds.rng).reshape(B, L)
+    s[:, t] = torch.multinomial(ds.transition[s[:, t-1]], 1, generator=ds.rng).squeeze(1)
+x = torch.multinomial(ds.P[s.reshape(-1)], 1, generator=ds.rng).reshape(B, L)
 ids = torch.cat([torch.full((B, 1), ds.start_token, dtype=torch.long, device=ds.device), x], 1)
 with torch.no_grad():
     out = model(ids, output_hidden_states=True)
@@ -79,10 +79,10 @@ H = out['hidden_states'][-1][:, 1:].reshape(-1, model.config.hidden_size).cpu().
 bel = ds.forward_algorithm(x); belf = bel.reshape(-1, n).cpu().numpy()  # exact beliefs
 
 p_model = torch.softmax(out['logits'][:, :-1][..., ds.item_tokens], -1).cpu().numpy()
-p_bayes = torch.cat([(ds.pi @ ds.Em).expand(B, 1, -1), (bel[:, :-1] @ ds.T) @ ds.Em], 1).cpu().numpy()
+p_bayes = torch.cat([(ds.prior @ ds.P).expand(B, 1, -1), (bel[:, :-1] @ ds.transition) @ ds.P], 1).cpu().numpy()
 kl = lambda p, q: float((p * (np.log(p + 1e-9) - np.log(q + 1e-9))).sum(-1).mean())
 print(f'KL(bayes || model) = {kl(p_bayes, p_model):.4f}   (marginal baseline '
-      f'{kl(p_bayes, (ds.pi @ ds.Em).cpu().numpy()[None, None]):.3f})')
+      f'{kl(p_bayes, (ds.prior @ ds.P).cpu().numpy()[None, None]):.3f})')
 
 # %% [markdown]
 # ## 3. Belief dynamics over the context
@@ -103,7 +103,7 @@ print(f'KL(bayes || model) = {kl(p_bayes, p_model):.4f}   (marginal baseline '
 # side by side, Bayes vs network.
 
 # %%
-q = ((bel @ ds.T) @ ds.Em).double().reshape(-1, ds.n_symbols).cpu().numpy()   # Bayes output
+q = ((bel @ ds.transition) @ ds.P).double().reshape(-1, ds.n_symbols).cpu().numpy()   # Bayes output
 lq = np.log(q); lq -= lq.mean(1, keepdims=True)                       # output logit code
 st = s.reshape(-1).cpu().numpy()                                      # true latent state per position
 

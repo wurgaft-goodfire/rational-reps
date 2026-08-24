@@ -121,8 +121,9 @@ plot_utils.save_figure(fig, FIGDIR / "fig1_excess_sweep.png")
 # ## Figure 2 — trained architectures vs the oracles (code RDMs)
 #
 # Trained architectures at $d = 3$ (linear and MLP pointwise; GRU and transformer as
-# causal LMs over [start, word, attribute] triples with loss on the attribute only) at a
-# dense and a sparse corner, next to the truncation and nuclear codes. Excess CE is the
+# causal LMs over [word, attribute_1 ... attribute_L] episodes: the word is the prefix and
+# its attributes are drawn exchangeably from the same kernel row) at a dense and a sparse
+# corner, next to the truncation and nuclear codes. Excess CE is the
 # evaluator's KL against the Bayes targets, so every architecture is scored identically.
 # Criterion: trained excess and RDM match nuclear, as in the feature cube.
 
@@ -271,12 +272,11 @@ plot_utils.save_figure(fig, FIGDIR / "fig4_elhage_phase.png")
 #   the signed optimum by shifting the code positive welds an unremovable outcome field
 #   $W c$ into every prediction (nuclear's own code shifted positive costs 0.51; the
 #   signed original 0.14).
-# - **Sequence models sit between linear and the MLP** (fig 2): the width-3 GRU reaches
-#   0.28 dense / 0.11 sparse (beating truncation at both corners) and the width-3
-#   transformer 0.43 / 0.20 — both untuned, as in the feature cube. They train as causal
-#   LMs on [start, word, attribute] triples (loss on the attribute only), and their
-#   softmax spans the full token vocab, so leakage onto word tokens is also priced —
-#   a slightly harder objective than the pointwise soft-target CE.
+# - **Sequence models sit between linear and the MLP** (fig 2), both untuned, as in the
+#   feature cube. They train as causal LMs on [word, attribute_1 ... attribute_L] episodes
+#   — the word is the prefix, its attributes are exchangeable draws from the same kernel
+#   row — and their softmax spans the full token vocabulary, so leakage onto word tokens is
+#   priced too: a slightly harder objective than the pointwise soft-target CE.
 # - Excess CE is non-monotone in $p$ (fig 1, peak near $p \approx 0.3$); both ends
 #   trivialize. Below $p \approx 0.01$ the finite lexicon dominates ($N p \approx 1$–$3$
 #   carrier words per attribute); swings there describe the sample, not the ensemble.

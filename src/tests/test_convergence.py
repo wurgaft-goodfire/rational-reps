@@ -7,7 +7,7 @@ import torch
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import CooccurrenceDataset
+from src.code.data import KernelDataset
 from src.code.models import init_model
 from src.code.eval import Evaluator
 
@@ -26,7 +26,7 @@ def _train_and_score(model_type, steps=500, lr=0.01, n=12):
         "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     config = Config(cfg)
-    dataset = CooccurrenceDataset(config)
+    dataset = KernelDataset(config)
     config.cfg.model_kwargs.model_config.vocab_size = dataset.vocab_size
     config.cfg.model_kwargs.model_config.num_classes = dataset.num_dims
     config.cfg.model_kwargs.model_config.arity = dataset.arity
@@ -59,7 +59,7 @@ def _train_word_attribute(steps=600, lr=0.01):
         "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     config = Config(cfg)
-    dataset = CooccurrenceDataset(config)
+    dataset = KernelDataset(config)
     config.cfg.model_kwargs.model_config.vocab_size = dataset.vocab_size
     config.cfg.model_kwargs.model_config.num_classes = dataset.num_dims
     config.cfg.model_kwargs.model_config.arity = dataset.arity

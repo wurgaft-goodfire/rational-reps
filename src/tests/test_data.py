@@ -4,7 +4,7 @@ import torch
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import CooccurrenceDataset, RelationalDataset
+from src.code.data import KernelDataset, RelationalDataset
 
 
 def _config(sample_mode, n=24, batch_size=8, context_length=6):
@@ -21,7 +21,7 @@ def _config(sample_mode, n=24, batch_size=8, context_length=6):
 
 
 def test_conditional_is_square_and_arity_one():
-    ds = CooccurrenceDataset(_config("pointwise", n=24))
+    ds = KernelDataset(_config("pointwise", n=24))
     assert ds.conditional.shape == (24, 24)
     assert ds.arity == 1
     assert ds.num_dims == 24
@@ -29,7 +29,7 @@ def test_conditional_is_square_and_arity_one():
 
 
 def test_pointwise_batch_is_full_batch_soft_targets():
-    ds = CooccurrenceDataset(_config("pointwise", n=24, batch_size=8))
+    ds = KernelDataset(_config("pointwise", n=24, batch_size=8))
     batch = ds.__getitem__()
     assert batch["input_ids"].shape == (24, 1)             # full batch: every item
     assert batch["labels"].shape == (24, 24)               # soft targets = true conditional
@@ -38,7 +38,7 @@ def test_pointwise_batch_is_full_batch_soft_targets():
 
 
 def test_sequence_batch_shapes_and_start_token():
-    ds = CooccurrenceDataset(_config("sequence", n=24, batch_size=8, context_length=6))
+    ds = KernelDataset(_config("sequence", n=24, batch_size=8, context_length=6))
     batch = ds.__getitem__()
     assert batch["input_ids"].shape == (8, 7)              # start + context_length
     assert (batch["input_ids"][:, 0] == 24).all()          # start token first
@@ -47,7 +47,7 @@ def test_sequence_batch_shapes_and_start_token():
 
 
 def test_ring_conditional_is_circulant():
-    ds = CooccurrenceDataset(_config("pointwise", n=12))
+    ds = KernelDataset(_config("pointwise", n=12))
     L = ds.conditional
     # circulant: every row is a shift of the first (translation symmetry)
     for i in range(1, 12):
@@ -70,16 +70,53 @@ def test_relational_dataset_infers_arity_and_shapes():
         assert (batch["labels"].argmax(1) == s).all()
 
 
-def test_start_and_outcome_tokens_exist_only_when_the_sampler_emits_them():
-    # pointwise: items only; sequence: + the outcome block (bipartite) + a start token
+def _wa_dataset(mode, n=16, m=4):
     from omegaconf import OmegaConf
-    def wa(mode):
-        return CooccurrenceDataset(Config(OmegaConf.create({
-            "setting": "graph-cooccurrence", "structure": "word_attribute",
-            "structure_kwargs": {"N": 16, "m": 4}, "random_seed": 0, "sample_mode": mode,
-            "training_kwargs": {"batch_size": 8, "context_length": 4}})))
-    point, seq = wa("pointwise"), wa("sequence")
-    assert point.bipartite and seq.bipartite
-    assert point.start_token is None and point.vocab_size == 16
-    assert seq.start_token == 20 and seq.vocab_size == 21
+    return KernelDataset(Config(OmegaConf.create({
+        "setting": "graph-cooccurrence", "structure": "word_attribute",
+        "structure_kwargs": {"N": n, "m": m}, "random_seed": 0, "sample_mode": mode,
+        "training_kwargs": {"batch_size": 8, "context_length": 4}})))
+
+
+def test_tokens_exist_only_when_the_sampler_emits_them():
+    # an unchainable kernel emits outcome tokens only in sequence mode, and never a start token
+    point, seq = _wa_dataset("pointwise"), _wa_dataset("sequence")
+    assert not point.chained and not seq.chained
+    assert point.start_token is None and point.vocab_size == 16   # words only
+    assert seq.start_token is None and seq.vocab_size == 20       # words + attributes
     assert seq.label_tokens.tolist() == list(range(16, 20))
+
+
+def test_unchainable_kernel_samples_exchangeable_draws_from_a_fixed_input():
+    # [z, x_1 .. x_L]: z is the prefix and every draw is i.i.d. from the same kernel row
+    ds = _wa_dataset("sequence")
+    b = ds.__getitem__()
+    assert b["input_ids"].shape == (8, 5)                          # z + context_length draws
+    z, x = b["input_ids"][:, 0], b["input_ids"][:, 1:]
+    assert (z < ds.n_items).all() and (x >= ds.n_items).all()
+    targets = ds.optimal_predictions(b["input_ids"])
+    assert targets.shape == (8, 4, 4)
+    assert torch.allclose(targets, ds.P[z][:, None].expand(-1, 4, -1))   # same row at every position
+
+
+def test_chainable_kernel_walks_from_a_start_token():
+    ds = KernelDataset(_config("sequence", n=12, batch_size=8, context_length=5))
+    assert ds.chained and ds.start_token == 12 and ds.vocab_size == 13
+    b = ds.__getitem__()
+    assert (b["input_ids"][:, 0] == ds.start_token).all()
+    assert b["input_ids"].shape == (8, 6)
+
+
+def test_latent_input_is_inferred_from_the_prior_not_read_off_the_batch():
+    # z is hidden: Bayes starts at the prior predictive and converges on the true row
+    ds = _wa_dataset("sequence", n=8, m=5)
+    ds.latent, ds.transition = True, torch.eye(ds.n_items, dtype=torch.float64, device=ds.device)
+    ds.prior = torch.full((ds.n_items,), 1.0 / ds.n_items, dtype=torch.float64, device=ds.device)
+    z = 3
+    obs = torch.multinomial(ds.P[z], 60, replacement=True, generator=ds.rng).unsqueeze(0)
+    pred = ds._posterior_predictive(obs)[0]
+    prior_predictive = (ds.prior @ ds.P.double()).float()
+    assert torch.allclose(pred[0], prior_predictive, atol=1e-5)   # nothing seen yet
+    assert torch.allclose(pred[-1], ds.P[z], atol=2e-2)           # evidence pins the row
+    entropy = -(pred * (pred + 1e-12).log()).sum(-1)
+    assert entropy[-1] < entropy[0]                               # inference sharpens

@@ -71,8 +71,8 @@ def test_latent_labels_use_never_input_state_tokens_and_predictive_beliefs():
 
     x = b["input_ids"][:, 1:]
     expected = torch.cat([
-        ds.pi.expand(len(x), 1, -1),
-        ds.forward_algorithm(x)[:, :-1] @ ds.T,
+        ds.prior.expand(len(x), 1, -1),
+        ds.forward_algorithm(x)[:, :-1] @ ds.transition,
     ], dim=1).float()
     assert torch.allclose(ds.optimal_predictions(b["input_ids"]), expected, atol=1e-6)
 
@@ -82,10 +82,10 @@ def _belief_geometry_cka(sigma):
     ds = HMMDataset(_cfg(sigma=sigma))
     E = predicted_geometry(ds.latent_conditional)             # predicted latent ring
     L = 600; s = torch.empty(1, L, dtype=torch.long, device=ds.device)
-    s[:, 0] = torch.multinomial(ds.pi, 1, generator=ds.rng)
+    s[:, 0] = torch.multinomial(ds.prior, 1, generator=ds.rng)
     for t in range(1, L):
-        s[:, t] = torch.multinomial(ds.T[s[:, t - 1]], 1, generator=ds.rng).squeeze(1)
-    x = torch.multinomial(ds.Em[s.reshape(-1)], 1, generator=ds.rng).reshape(1, L)
+        s[:, t] = torch.multinomial(ds.transition[s[:, t - 1]], 1, generator=ds.rng).squeeze(1)
+    x = torch.multinomial(ds.P[s.reshape(-1)], 1, generator=ds.rng).reshape(1, L)
     b = ds.forward_algorithm(x)[0].cpu().numpy(); st = s[0].cpu().numpy()
     codes = np.vstack([b[st == k].mean(0) for k in range(ds.n_states)]) @ E    # (n_states, d)
     return cka(codes, E)
@@ -109,7 +109,7 @@ def test_shipped_hmm_config_has_learnable_signal():
         cfg = compose(config_name="config", overrides=["runner=hmm_transformer"])
     ds = HMMDataset(Config(cfg))
     bayes = ds.optimal_predictions(ds[0]["input_ids"])         # (B, L, M) forward-algorithm targets
-    stationary = ds.pi @ ds.Em
+    stationary = ds.prior @ ds.P
     kl = (bayes * (bayes / stationary).log()).sum(-1)
     assert kl[:, 1:].mean() > 0.05                             # past the first token, context matters
 
@@ -120,20 +120,20 @@ def test_bump_emissions_are_gaussian_in_hop_distance():
     ds = HMMDataset(_cfg(sigma=1.0, n=12))
     hops = np.minimum(np.arange(12), 12 - np.arange(12)).astype(float)
     expected = np.exp(-hops ** 2 / 2.0); expected /= expected.sum()
-    np.testing.assert_allclose(ds.Em[0].cpu().numpy(), expected, atol=1e-6)
+    np.testing.assert_allclose(ds.P[0].cpu().numpy(), expected, atol=1e-6)
 
     # tree: states are all nodes of the tree graph; hops through the tree order the aliasing.
     # DFS pre-order for n=2,k=2: 0 root, 1 (2 3) subtree, 4 (5 6) subtree.
     ds = HMMDataset(_cfg(structure="tree", structure_kwargs={"n": 2, "k": 2}))
     assert ds.n_states == 7
-    Em = ds.Em.cpu().numpy()
+    Em = ds.P.cpu().numpy()
     assert Em[2, 1] > Em[2, 3] > Em[2, 5]                      # leaf 2: parent (1 hop) > sibling (2) > cousin (4)
 
 
 def test_bump_and_permuted_emissions_have_uniform_per_state_entropy():
     """Both emission modes give every state the same peakiness -> even belief coverage."""
     for emission in ("bump", "permuted"):
-        Em = HMMDataset(_cfg(emission=emission, sigma=1.0, n=16, M=16)).Em.cpu().numpy()
+        Em = HMMDataset(_cfg(emission=emission, sigma=1.0, n=16, M=16)).P.cpu().numpy()
         ent = -(Em * np.log(Em + 1e-12)).sum(1)
         assert ent.std() < 0.02 * ent.mean()                # near-identical entropy across states
 
@@ -142,6 +142,6 @@ def test_belief_references_are_float64_and_batches_float32():
     ds = HMMDataset(_cfg())
     b = ds[0]
     x = b["input_ids"][:, 1:]
-    assert ds.T.dtype == torch.float64 and ds.Em.dtype == torch.float64
+    assert ds.transition.dtype == torch.float64 and ds.P.dtype == torch.float64
     assert ds.forward_algorithm(x).dtype == torch.float64
     assert ds.optimal_predictions(b["input_ids"]).dtype == torch.float32

@@ -4,7 +4,7 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import CooccurrenceDataset, word_attribute
+from src.code.data import KernelDataset, word_attribute
 from src.code.geometry import (attribute_stats, expected_ce, feature_vectors,
                                nuclear_features, truncation_features as truncation)
 
@@ -77,7 +77,7 @@ def _wa_config():
 
 
 def test_word_attribute_dataset_exposes_exact_targets():
-    ds = CooccurrenceDataset(_wa_config())
+    ds = KernelDataset(_wa_config())
     logP, _ = word_attribute(32, 4, 0.3, 0.8, 1.5, 2)
     assert ds.vocab_size == 32 and ds.start_token is None   # pointwise: words only
     assert ds.num_dims == 4 and ds.arity == 1
@@ -88,13 +88,13 @@ def test_word_attribute_dataset_exposes_exact_targets():
     assert np.allclose(b["labels"].cpu().numpy(), np.exp(logP), atol=1e-6)
 
 
-def test_sae_trains_from_the_shared_pipeline_on_feature_codes():
+def test_sae_trains_from_the_shared_pipeline_on_feature_codes(tmp_path):
     # the SAE reads the item feature codes, so its frozen embedding is exactly Z
     from src.code.train import train_inline
     model, ds, evaluator, *_ = train_inline(
         ["setting=word_attribute", "runner=sae", "structure_kwargs.N=64", "structure_kwargs.m=5",
-         "model_kwargs.model_config.hidden_size=2", "training_kwargs.train_steps=50",
-         "name=sae_pipeline_test"])
+         "model_kwargs.model_config.hidden_size=2", "training_kwargs.train_steps=50"],
+        name="sae_pipeline_test", cache_dir=str(tmp_path))
     assert np.allclose(model.embedding.weight.detach().cpu().numpy(), ds.features)
     assert not model.embedding.weight.requires_grad
     assert evaluator.item_representations(model).shape == (64, 2)   # the bottleneck code

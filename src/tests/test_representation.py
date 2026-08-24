@@ -9,7 +9,7 @@ import torch.nn as nn
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import CooccurrenceDataset
+from src.code.data import KernelDataset
 from src.code.eval import Evaluator, cka, rsa
 
 
@@ -48,7 +48,7 @@ def test_metrics_helpers_are_invariant_and_bounded():
 
 def test_evaluator_scores_matching_embedding_near_one_and_shuffled_lower():
     config = _config(n=16)
-    dataset = CooccurrenceDataset(config)
+    dataset = KernelDataset(config)
     evaluator = Evaluator(config, dataset)
     E = evaluator.predicted_E                                # (16, k)
 
@@ -67,7 +67,7 @@ def test_evaluator_scores_matching_embedding_near_one_and_shuffled_lower():
 
 def test_no_rep_metrics_when_model_lacks_embedding():
     config = _config(n=16)
-    dataset = CooccurrenceDataset(config)
+    dataset = KernelDataset(config)
     evaluator = Evaluator(config, dataset)
 
     class _NoEmb:
