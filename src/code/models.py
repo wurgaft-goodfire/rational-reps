@@ -35,19 +35,20 @@ def init_model(config):
 
 
 def _wrap_causal_lm(model):
-    """Give an HF causal LM the interface the Evaluator reads: logits key + item_reps. It also
-    drops ``distribution_labels``, which only the readout heads consume."""
+    """Give an HF causal LM the interface the Evaluator reads: logits key + item_reps."""
     model.output_key = "logits"
     model.item_reps = types.MethodType(_causal_lm_item_reps, model)
-    inner = model.forward
-    model.forward = lambda *a, distribution_labels=None, **kw: inner(*a, **kw)
     return model
 
 
 def _start_prefixed(item_ids, start_token):
-    """The minimal context [start, item] for each item. (n_items, 2)."""
-    start = torch.full((len(item_ids), 1), int(start_token), dtype=torch.long, device=item_ids.device)
-    return torch.cat([start, item_ids.view(-1, 1)], dim=1)
+    """The minimal context for each item: [start, item], or the item alone when the task has
+    no start token (a pointwise batch begins with the item itself)."""
+    ids = item_ids.view(-1, 1)
+    if start_token is None:
+        return ids
+    start = torch.full((len(ids), 1), int(start_token), dtype=torch.long, device=ids.device)
+    return torch.cat([start, ids], dim=1)
 
 
 def _causal_lm_item_reps(self, item_ids, start_token):

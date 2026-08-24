@@ -52,9 +52,12 @@ def test_fixed_batches_make_evaluate_deterministic():
     assert evaluator.evaluate(model)[0] == evaluator.evaluate(model)[0]
 
 
-def test_collator_unwraps_the_prebatched_dict():
-    batch = {"input_ids": torch.zeros(2, 3), "labels": torch.zeros(2, 3)}
-    assert PreBatchedDataCollator()([batch]) is batch
+def test_collator_unwraps_the_prebatched_dict_and_drops_what_the_model_rejects():
+    batch = {"input_ids": torch.zeros(2, 3), "labels": torch.zeros(2, 3),
+             "distribution_labels": torch.zeros(2, 4)}
+    assert PreBatchedDataCollator()([batch]) == batch
+    lm = PreBatchedDataCollator(drop=("distribution_labels",))([batch])
+    assert set(lm) == {"input_ids", "labels"}                  # a causal LM never sees the row
 
 
 def test_cca_ignores_float32_scale_junk_directions():

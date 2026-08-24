@@ -78,8 +78,10 @@ def train(config):
     if hasattr(model, "load_features"):
         model.load_features(dataset.features)
 
-    # Pre-batched data collator: the dataset returns a full batch per __getitem__.
-    data_collator = PreBatchedDataCollator()
+    # Pre-batched data collator: the dataset returns a full batch per __getitem__. Only the
+    # readout heads consume the exact outcome distribution; a causal LM would reject the key.
+    readout = config.cfg.model_kwargs.model_type in MODEL_CLASSES
+    data_collator = PreBatchedDataCollator(drop=() if readout else ("distribution_labels",))
     train_batch_size = 1  # batch is built in the dataset, so the loader batch size is 1
 
     config.process_save_steps()

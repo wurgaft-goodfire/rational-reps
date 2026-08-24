@@ -134,9 +134,10 @@ ARCH = {
     "mlp": ["runner=mlp", f"model_kwargs.model_config.hidden_size={D_PANEL}",
             "model_kwargs.model_config.num_layers=1",
             "training_kwargs.learning_rate=0.003", "training_kwargs.train_steps=8000"],
-    "rnn": ["runner=rnn", f"model_kwargs.model_config.hidden_size={D_PANEL}",
+    "rnn": ["runner=rnn", "sample_mode=pointwise", f"model_kwargs.model_config.hidden_size={D_PANEL}",
             "training_kwargs.learning_rate=0.002", "training_kwargs.train_steps=12000"],
-    "transformer": ["runner=transformer", f"model_kwargs.model_config.hidden_size={D_PANEL}",
+    "transformer": ["runner=transformer", "sample_mode=pointwise",
+                    f"model_kwargs.model_config.hidden_size={D_PANEL}",
                     "model_kwargs.model_config.num_attention_heads=1",
                     "model_kwargs.model_config.intermediate_size=16",
                     "training_kwargs.learning_rate=0.001", "training_kwargs.train_steps=12000"],
@@ -206,7 +207,7 @@ ax[0].set_ylabel(r"fitted swing $\hat\alpha_i/\alpha_i$")
 fig.legend(*ax[0].get_legend_handles_labels(), title="feature", fontsize=9,
            title_fontsize=9.5, loc="center right")
 fig.tight_layout(rect=(0, 0, 0.92, 1))
-plot_utils.save_figure(fig, FIGDIR / "fig3_attribute_regimes.png")
+plot_utils.save_figure(fig, FIGDIR / "fig3_feature_regimes.png")
 
 # %% [markdown]
 # ## Figure 4 — phase panel across the sweep ($d = 3$)

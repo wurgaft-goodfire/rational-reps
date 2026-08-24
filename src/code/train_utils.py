@@ -12,11 +12,15 @@ from .eval import Evaluator
 #########################
 
 class PreBatchedDataCollator:
-    """Datasets here already return a full batch from __getitem__, so the
-    DataLoader hands us a single-element list. Unwrap it."""
+    """Datasets here already return a full batch from __getitem__, so the DataLoader hands us
+    a single-element list. Unwrap it, dropping keys this model does not take — a causal LM
+    trains on the outcome token and never sees ``distribution_labels``."""
+
+    def __init__(self, drop=()):
+        self.drop = set(drop)
 
     def __call__(self, features):
-        return features[0]
+        return {k: v for k, v in features[0].items() if k not in self.drop}
 
 
 #########################
