@@ -4,7 +4,7 @@ import torch
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import KernelDataset, RelationalDataset
+from src.code.data import KernelDataset, LatentDataset, RelationalDataset
 
 
 def _config(sample_mode, n=24, batch_size=8, context_length=6):
@@ -70,9 +70,9 @@ def test_relational_dataset_infers_arity_and_shapes():
         assert (batch["labels"].argmax(1) == s).all()
 
 
-def _wa_dataset(mode, n=16, m=4, context_length=4, **extra):
+def _wa_dataset(mode, n=16, m=4, context_length=4, cls=KernelDataset, **extra):
     from omegaconf import OmegaConf
-    return KernelDataset(Config(OmegaConf.create({
+    return cls(Config(OmegaConf.create({
         "setting": "graph-cooccurrence", "structure": "word_attribute",
         "structure_kwargs": {"N": n, "m": m}, "random_seed": 0, "sample_mode": mode,
         "training_kwargs": {"batch_size": 8, "context_length": context_length}, **extra})))
@@ -97,8 +97,8 @@ def test_chainable_kernel_walks_from_a_start_token():
 
 def test_latent_input_is_inferred_from_the_prior_not_read_off_the_batch():
     # z is hidden: Bayes starts at the prior predictive and converges on the true row
-    ds = _wa_dataset("tokens", n=8, m=5, latent=True)
-    assert ds.latent and ds.start_token == ds.n_outcomes          # z is never a token
+    ds = _wa_dataset("tokens", n=8, m=5, cls=LatentDataset)
+    assert ds.start_token == ds.n_outcomes                        # z is never a token
     z = 3
     obs = torch.multinomial(ds.P[z], 60, replacement=True, generator=ds.rng).unsqueeze(0)
     pred = ds._posterior_predictive(obs)[0]

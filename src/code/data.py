@@ -21,7 +21,7 @@ def _spec(config, name_key, kwargs_key):
 def init_dataset(config, overwrite_data: bool = False):
     """Initialize a dataset from the config's `setting`."""
     if config.setting == "graph-cooccurrence":
-        return KernelDataset(config)
+        return LatentDataset(config) if config.get("latent") else KernelDataset(config)
     if config.setting == "relational":
         return RelationalDataset(config)
     if config.setting == "hmm":
@@ -42,23 +42,14 @@ class KernelDataset(Dataset):
     * hidden Markov ``x_{1:t} -> z -> x_{t+1}``: the outcome is reached through a latent walk,
       and the target is either the next token or the latent itself.
 
-    ``sample_mode`` says what the model consumes: ``pointwise`` gives every input tuple with
-    its exact outcome distribution as a soft target, while ``tokens`` writes the task out for
-    a causal LM. How it is written follows from the kernel, and only then does a stream of
-    observations appear:
-
-    * the kernel **chains** when its outcomes are its inputs, giving a Markov walk
-      ``[start, x_1 ... x_L]``;
-    * an **observed** input that cannot chain is held fixed while its outcomes are drawn
-      exchangeably, ``[z, x_1 ... x_L]`` — at ``context_length`` 1 that is just ``[z, x]``;
-    * a **latent** input (``latent: true``) never appears: the run sees only
-      ``[start, x_1 ... x_L]`` and has to infer z, so Bayes is the posterior predictive from
-      the prior over z rather than an oracle reading z off the batch. Between draws the latent
-      walks a transition matrix — the identity holds it fixed (in-context inference), the HMM
-      supplies a real one.
-
-    ``labels`` picks the target: the next token, or the latent itself. Subclasses override
-    ``_build`` and only what they genuinely differ on."""
+    Here the input is **observed**. ``sample_mode`` says what the model consumes:
+    ``pointwise`` gives every input tuple with its exact outcome distribution as a soft
+    target, while ``tokens`` writes the task out for a causal LM. How it is written follows
+    from the kernel, and only then does a stream of observations appear — the kernel *chains*
+    when its outcomes are its inputs, giving a Markov walk ``[start, x_1 ... x_L]``; otherwise
+    the input is held fixed and its outcomes drawn exchangeably, ``[z, x_1 ... x_L]``, which
+    at ``context_length`` 1 is just the pair ``[z, x]``. When the input is hidden instead, the
+    task is a ``LatentDataset``. Subclasses override ``_build`` and only what differs."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -68,17 +59,9 @@ class KernelDataset(Dataset):
         self.sample_mode = config.get("sample_mode", "pointwise")
         self.arity = 1
 
-        self.labels = config.get("labels", "tokens")
-        self.prior = self.transition = None                       # set by _build when z is latent
         self._cond, P = self._build(config)
         self.P = P / P.sum(-1, keepdim=True)                      # the kernel p(outcome | z)
         self.n_outcomes = self.P.shape[-1]
-        # an unchainable kernel may hide its input; without a transition, z is held fixed
-        self.latent = bool(config.get("latent", False)) or self.transition is not None
-        if self.latent and self.transition is None:
-            self.transition = torch.eye(self.n_items, dtype=torch.float64, device=self.device)
-            self.prior = torch.full((self.n_items,), 1.0 / self.n_items,
-                                    dtype=torch.float64, device=self.device)
         self._layout()
 
     def _build(self, config):
@@ -91,23 +74,13 @@ class KernelDataset(Dataset):
         return L, torch.tensor(np.exp(L), dtype=torch.float32, device=self.device)
 
     def _layout(self):
-        """Token layout, which follows from the sampler. A latent input is never a token, so
-        the stream is outcomes plus a start token (plus a latent block when the targets are
-        the states themselves). An observed input is a token: a chained kernel reuses it for
-        its outcomes and needs a start token, an exchangeable one gives outcomes their own
-        block and uses the input as the prefix, and a pointwise task emits neither."""
-        self.chained = self.n_items == self.n_outcomes and not self.latent
+        """Token layout, which follows from the sampler. A chained kernel reuses the input
+        tokens for its outcomes and needs a start token; an exchangeable one gives outcomes
+        their own block and uses the input as the prefix; a pointwise task emits neither."""
+        self.chained = self.n_items == self.n_outcomes
         tokens = self.sample_mode != "pointwise"
         # an observed input that cannot chain stays a token of its own, ahead of its outcomes
-        prefixed = tokens and not (self.chained or self.latent)
-        if self.latent:
-            self.label_tokens = torch.arange(self.n_outcomes)
-            self.start_token = self.n_outcomes if tokens else None
-            latent_targets = self.labels == "latent"
-            self.vocab_size = self.n_outcomes + 1 + self.n_items * latent_targets
-            self.item_tokens = (self.n_outcomes + 1 + torch.arange(self.n_items) if latent_targets
-                                else torch.arange(self.n_outcomes))
-            return
+        prefixed = tokens and not self.chained
         self.item_tokens = torch.arange(self.n_items)
         # an outcome needs its own token only when the input is not already in its alphabet
         self.label_tokens = (torch.arange(self.n_items, self.n_items + self.n_outcomes)
@@ -123,8 +96,8 @@ class KernelDataset(Dataset):
 
     @property
     def num_dims(self):
-        """Number of target classes: outcomes, or the latent states when they are the target."""
-        return self.n_items if self.labels == "latent" else self.n_outcomes
+        """Number of target classes."""
+        return self.n_outcomes
 
     @property
     def seq_len(self):
@@ -158,15 +131,6 @@ class KernelDataset(Dataset):
             # full batch: every input tuple with its exact outcome distribution as a soft target
             return {"input_ids": self.item_tokens.to(self.device).unsqueeze(1), "labels": self.P}
         B, L = self._batch_size(), self.context_length
-        if self.latent:                                           # [start, x_1 ... x_L], z hidden
-            z = torch.multinomial(self.prior, B, replacement=True, generator=self.rng)
-            s = self._markov_walk(self.transition, z, L)          # identity transition holds z fixed
-            x = torch.multinomial(self.P[s.reshape(-1)], 1, generator=self.rng).reshape(B, L)
-            seq = torch.cat([self._start_column(B), x], dim=1)
-            labels = seq.clone()
-            if self.labels == "latent":
-                labels[:, 1:] = s + self.n_outcomes + 1
-            return {"input_ids": seq, "labels": labels}
         if self.chained:                                          # [start, x_1 ... x_L]
             init = torch.randint(0, self.n_items, (B,), generator=self.rng, device=self.device)
             seq = torch.cat([self._start_column(B), self._markov_walk(self.P, init, L)], dim=1)
@@ -181,37 +145,11 @@ class KernelDataset(Dataset):
         (B, 1) -> (B, C); sequence (B, T) -> (B, T-1, C)."""
         if self.sample_mode == "pointwise":
             return self.P[input_ids[:, 0]]
-        if self.latent:
-            return self._posterior_predictive(input_ids[:, 1:])
         if self.chained:
             marginal = self.P.mean(0, keepdim=True)               # dist after the start token
             return torch.cat([self.P, marginal], 0)[input_ids[:, :-1]]
         # z observed as the prefix: every later position predicts the same row P(.|z)
         return self.P[input_ids[:, 0], None].expand(-1, input_ids.shape[1] - 1, -1)
-
-    def _posterior_predictive(self, obs):
-        """Bayes for a hidden z: start from the prior, filter the prefix, push through the
-        transition. Returns the next-token (or next-state) distribution at every position."""
-        beliefs = self.forward_algorithm(obs)                     # (B, L, n_items) = b_1..b_L
-        pushed = beliefs[:, :-1] @ self.transition
-        if self.labels == "latent":
-            prior = self.prior.expand(len(obs), 1, -1)            # predict z_1 before seeing x_1
-            return torch.cat([prior, pushed], dim=1).float()
-        first = (self.prior @ self.P.double()).expand(len(obs), 1, -1)   # x_1 from the prior alone
-        return torch.cat([first, pushed @ self.P.double()], dim=1).float()
-
-    def forward_algorithm(self, obs):
-        """Per-position posteriors ``b_t = p(z_t | x_{1:t})``. obs: (B, L) -> (B, L, n_items)."""
-        emission = self.P.double()
-        b = self.prior.expand(len(obs), -1).clone()
-        out = []
-        for t in range(obs.shape[1]):
-            if t > 0:
-                b = b @ self.transition                           # not before the first emission
-            b = b * emission[:, obs[:, t]].T                      # emission update
-            b = b / b.sum(-1, keepdim=True)
-            out.append(b.clone())
-        return torch.stack(out, 1)
 
     def compute_metrics(self, eval_pred, return_all=True):
         """KL(model || true) over the outcome distribution. Handles pointwise (logits (B,C)) and
@@ -266,9 +204,88 @@ class RelationalDataset(KernelDataset):
         return {"input_ids": inputs, "labels": self.P[flat]}
 
 
+##### Latent-input dataset (in-context inference) #####
+
+class LatentDataset(KernelDataset):
+    """The kernel's input is hidden: the run sees only ``[start, x_1 ... x_L]`` and has to
+    infer z, so Bayes is the posterior predictive from the prior — filter the prefix, push
+    through the transition — rather than an oracle reading z off the batch. Between draws the
+    latent walks that transition: the identity holds it fixed (exchangeable in-context
+    inference), and an HMM supplies a real one. ``labels`` picks the target: the next token,
+    or the latent itself. Token-mode only, since the inference is the task."""
+
+    def __init__(self, config: Config):
+        self.labels = config.get("labels", "tokens")
+        self.prior = self.transition = None                       # a subclass may supply its own
+        super().__init__(config)
+
+    def _layout(self):
+        """z is never a token: the stream is outcomes plus a start token, and the states get a
+        block of their own when they are the target."""
+        self.chained = False
+        if self.transition is None:                               # no dynamics: z is held fixed
+            self.transition = torch.eye(self.n_items, dtype=torch.float64, device=self.device)
+            self.prior = torch.full((self.n_items,), 1.0 / self.n_items,
+                                    dtype=torch.float64, device=self.device)
+        latent_targets = self.labels == "latent"
+        self.label_tokens = torch.arange(self.n_outcomes)
+        self.start_token = self.n_outcomes
+        self.vocab_size = self.n_outcomes + 1 + self.n_items * latent_targets
+        self.item_tokens = (self.n_outcomes + 1 + torch.arange(self.n_items) if latent_targets
+                            else torch.arange(self.n_outcomes))
+
+    @property
+    def num_dims(self):
+        """Number of target classes: outcomes, or the latent states when they are the target."""
+        return self.n_items if self.labels == "latent" else self.n_outcomes
+
+    @property
+    def seq_len(self):
+        return self.context_length + 1
+
+    def __getitem__(self, i=None):
+        B, L = self._batch_size(), self.context_length
+        z = torch.multinomial(self.prior, B, replacement=True, generator=self.rng)
+        s = self._markov_walk(self.transition, z, L)              # identity transition holds z fixed
+        x = torch.multinomial(self.P[s.reshape(-1)], 1, generator=self.rng).reshape(B, L)
+        seq = torch.cat([self._start_column(B), x], dim=1)
+        labels = seq.clone()
+        if self.labels == "latent":
+            labels[:, 1:] = s + self.n_outcomes + 1
+        return {"input_ids": seq, "labels": labels}
+
+    def optimal_predictions(self, input_ids):
+        """Bayes over a hidden input: the posterior predictive at every position."""
+        return self._posterior_predictive(input_ids[:, 1:])
+
+    def _posterior_predictive(self, obs):
+        """Bayes for a hidden z: start from the prior, filter the prefix, push through the
+        transition. Returns the next-token (or next-state) distribution at every position."""
+        beliefs = self.forward_algorithm(obs)                     # (B, L, n_items) = b_1..b_L
+        pushed = beliefs[:, :-1] @ self.transition
+        if self.labels == "latent":
+            prior = self.prior.expand(len(obs), 1, -1)            # predict z_1 before seeing x_1
+            return torch.cat([prior, pushed], dim=1).float()
+        first = (self.prior @ self.P.double()).expand(len(obs), 1, -1)   # x_1 from the prior alone
+        return torch.cat([first, pushed @ self.P.double()], dim=1).float()
+
+    def forward_algorithm(self, obs):
+        """Per-position posteriors ``b_t = p(z_t | x_{1:t})``. obs: (B, L) -> (B, L, n_items)."""
+        emission = self.P.double()
+        b = self.prior.expand(len(obs), -1).clone()
+        out = []
+        for t in range(obs.shape[1]):
+            if t > 0:
+                b = b @ self.transition                           # not before the first emission
+            b = b * emission[:, obs[:, t]].T                      # emission update
+            b = b / b.sum(-1, keepdim=True)
+            out.append(b.clone())
+        return torch.stack(out, 1)
+
+
 ##### Hidden-Markov dataset (latent graph walk + emissions) #####
 
-class HMMDataset(KernelDataset):
+class HMMDataset(LatentDataset):
     """The kernel is an emission matrix and the latent walks the structure's graph, so this is
     the latent case with a real transition in place of the identity. ``emission``: "bump"
     (Gaussian in hop distance, symbols = states) or "permuted" (a peaked template permuted per
