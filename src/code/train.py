@@ -63,7 +63,7 @@ def train(config):
     with open_dict(mc):
         mc.vocab_size = dataset.vocab_size
         if config.cfg.model_kwargs.model_type in MODEL_CLASSES:
-            mc.num_classes = dataset.num_dims          # model ladder: outcome classes + arity
+            mc.num_classes = dataset.num_dims          # our models: outcome classes + arity
             mc.arity = dataset.arity
             if config.cfg.model_kwargs.model_type == "sae":
                 mc.embed_dim = dataset.features.shape[1]   # the SAE reads feature codes, not ids
@@ -78,10 +78,10 @@ def train(config):
     if hasattr(model, "load_features"):
         model.load_features(dataset.features)
 
-    # Pre-batched data collator: the dataset returns a full batch per __getitem__. Only the
-    # readout heads consume the exact outcome distribution; a causal LM would reject the key.
-    readout = config.cfg.model_kwargs.model_type in MODEL_CLASSES
-    data_collator = PreBatchedDataCollator(drop=() if readout else ("distribution_labels",))
+    # Pre-batched data collator: the dataset returns a full batch per __getitem__. Our own
+    # models ignore batch keys they do not use; a HuggingFace one rejects them outright.
+    custom_model = config.cfg.model_kwargs.model_type in MODEL_CLASSES
+    data_collator = PreBatchedDataCollator(drop=() if custom_model else ("distribution_labels",))
     train_batch_size = 1  # batch is built in the dataset, so the loader batch size is 1
 
     config.process_save_steps()

@@ -13,8 +13,9 @@ from .eval import Evaluator
 
 class PreBatchedDataCollator:
     """Datasets here already return a full batch from __getitem__, so the DataLoader hands us
-    a single-element list. Unwrap it, dropping keys this model does not take — a causal LM
-    trains on the outcome token and never sees ``distribution_labels``."""
+    a single-element list. Unwrap it, dropping keys this model does not take: our own models
+    ignore what they do not use, but a HuggingFace one rejects an undeclared keyword, so
+    ``distribution_labels`` is stripped for those."""
 
     def __init__(self, drop=()):
         self.drop = set(drop)
