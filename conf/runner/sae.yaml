@@ -1,7 +1,7 @@
 # @package _global_
 # Sparse-autoencoder runner — the item feature codes are the input; choose the task with
-# `setting=` (it must expose feature codes, e.g. setting=word_attribute).
-#   python -m src.code.train runner=sae setting=word_attribute
+# `setting=` (it must expose feature codes, e.g. setting=feature_cube).
+#   python -m src.code.train runner=sae setting=feature_cube
 defaults:
   - override /model: sae
   - override /train: default

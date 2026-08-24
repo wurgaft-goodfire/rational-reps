@@ -13,7 +13,7 @@ defaults:
 # the name is the only thing separating this preset from a generic transformer-on-hmm run.
 name: hmm_transformer
 output_dir: ${run_dir}/checkpoints
-sample_mode: tokens
+sample_mode: sequence
 model_kwargs:
   model_config:
     hidden_size: 128

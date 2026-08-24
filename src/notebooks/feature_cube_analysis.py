@@ -13,10 +13,10 @@
 # ---
 
 # %% [markdown]
-# # Word → attribute: sparsity vs importance under a rank budget
+# # Word → feature: sparsity vs importance under a rank budget
 #
 # $N$ words, each a bundle of $m$ features drawn i.i.d. Bernoulli($p$) in $\{0, 1\}$;
-# **sparsity** $= 1 - p$. Outcomes are the $m$ attribute tokens:
+# **sparsity** $= 1 - p$. Outcomes are the $m$ feature tokens:
 # $\log p(i \mid x) = \mathrm{log\,softmax}_i(\alpha_i Z_{xi})$, $\alpha_i = s \cdot r^i$.
 # Knobs: $p$ = co-activation (the TMS sparsity dial), $r$ = importance ladder, $s$ =
 # sharpness. No null token: the softmax gauge absorbs one dimension, so effective rank is
@@ -29,7 +29,7 @@
 # Oracles in the trained model's class (free per-item codes, bias-free readout):
 # **truncation** (`factor_logcond`, rank-$d$ prefix) and **nuclear**
 # (`nuclear_features(logP, I, d)`, the exact-CE optimum). Dropout is read from the fitted
-# per-attribute swing $\hat\alpha_i$ (`attribute_stats`: gauge-free least squares
+# per-feature swing $\hat\alpha_i$ (`feature_stats`: gauge-free least squares
 # $G_{xi} \sim a_i Z_{xi} + b_i + c_x$).
 
 # %%
@@ -40,14 +40,14 @@ import numpy as np
 
 ROOT = Path(sys.prefix).parent            # <repo>/.venv -> <repo>
 os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-from src.code.data import word_attribute
+from src.code.data import feature_cube
 from src.code.geometry import (truncation_features, nuclear_features, expected_ce,
-                               attribute_stats, feature_vectors, superposition_measure)
+                               feature_stats, feature_vectors, superposition_measure)
 from src.code.train import train_inline
 from src.code import plot_utils
 import matplotlib.pyplot as plt
 
-FIGDIR = Path("outputs/word_attribute/figures")
+FIGDIR = Path("outputs/feature_cube/figures")
 FIGDIR.mkdir(parents=True, exist_ok=True)
 
 N, M, DECAY, SCALE, SEED = 256, 8, 0.9, 8.0, 0
@@ -73,8 +73,8 @@ def sparsity_ticks(ax):
 @lru_cache(maxsize=None)
 def oracle(p, d):
     """Truncation and nuclear fits at (p, d): task, codes/readouts, excesses over Bayes,
-    and fitted per-attribute (swing, intercept)."""
-    logP, info = word_attribute(N, M, p, DECAY, SCALE, SEED)
+    and fitted per-feature (swing, intercept)."""
+    logP, info = feature_cube(N, M, p, DECAY, SCALE, SEED)
     I = np.eye(len(logP))
     zeros = np.zeros(logP.shape[1])
     A_cf, D_cf = truncation_features(logP, d)
@@ -83,9 +83,9 @@ def oracle(p, d):
     ce_nuc, _ = expected_ce(I, logP, A, D, b)
     return dict(**info,
                 cf=dict(E=A_cf.T, ex=ce_cf - bayes,
-                        stats=attribute_stats(A_cf.T @ D_cf, info["Z"])),
+                        stats=feature_stats(A_cf.T @ D_cf, info["Z"])),
                 nuc=dict(E=A.T, ex=ce_nuc - bayes,
-                         stats=attribute_stats(A.T @ D, info["Z"])))
+                         stats=feature_stats(A.T @ D, info["Z"])))
 
 # %% [markdown]
 # ## Figure 1 — excess CE across the sparsity sweep
@@ -122,7 +122,7 @@ plot_utils.save_figure(fig, FIGDIR / "fig1_excess_sweep.png")
 #
 # Trained architectures at $d = 3$ (linear and MLP pointwise; GRU and transformer as
 # causal LMs over [word, attribute_1 ... attribute_L] episodes: the word is the prefix and
-# its attributes are drawn exchangeably from the same kernel row) at a dense and a sparse
+# its features are drawn exchangeably from the same kernel row) at a dense and a sparse
 # corner, next to the truncation and nuclear codes. Excess CE is the
 # evaluator's KL against the Bayes targets, so every architecture is scored identically.
 # Criterion: trained excess and RDM match nuclear, as in the feature cube.
@@ -147,7 +147,7 @@ P_CORNERS = [P_SWEEP[1], P_SWEEP[6]]              # on the sweep grid: dense / s
 def trained_run(p, ov_arch):
     """Excess CE over Bayes (the evaluator's KL) and the item code, for one architecture."""
     model, ds, evaluator, *_ = train_inline(
-        ["setting=word_attribute", f"structure_kwargs.p={p}"] + ov_arch)
+        ["setting=feature_cube", f"structure_kwargs.p={p}"] + ov_arch)
     metrics, _ = evaluator.evaluate(model)
     return dict(ex=metrics["loss"], E=np.asarray(evaluator.item_representations(model), float))
 
@@ -178,17 +178,17 @@ for row, p in enumerate(P_CORNERS):
 plot_utils.save_figure(fig, FIGDIR / "fig2_geometry_rdms.png")
 
 # %% [markdown]
-# ## Figure 3 — attribute regimes across sparsity
+# ## Figure 3 — feature regimes across sparsity
 #
 # How each point is computed: build the task at this sparsity, fit the oracle at
 # $d = 3$, form its logits $\hat G = E D$ ($N \times m$), and run the gauge-free least
 # squares $\hat G_{xi} \sim a_i Z_{xi} + b_i + c_x$; the plotted value is
-# $\hat a_i / \alpha_i$ — the fraction of attribute $i$'s true log-odds swing the code
+# $\hat a_i / \alpha_i$ — the fraction of feature $i$'s true log-odds swing the code
 # actually delivers (1 = fully represented, 0 = dropped). Criterion (TMS): sparsifying
 # should let the unimportant tail back in (graded, superposed); densifying should force
 # dropout. Swings above 1 are saturation overshoot: once predictions are near one-hot, CE
 # no longer penalizes overdriving the kept logits. Caveat at the extreme sparse end: with
-# $N = 256$, $p = 0.005$ leaves $\approx N p = 1.3$ carrier words per attribute, so
+# $N = 256$, $p = 0.005$ leaves $\approx N p = 1.3$ carrier words per feature, so
 # swings there reflect the sampled lexicon, not the ensemble.
 
 # %%
@@ -203,7 +203,7 @@ for a, which in zip(ax, ["cf", "nuc"]):
     plot_utils.FIG.style_axes(a)
 sparsity_ticks(ax[0])                         # shared axis
 ax[0].set_ylabel(r"fitted swing $\hat\alpha_i/\alpha_i$")
-fig.legend(*ax[0].get_legend_handles_labels(), title="attribute", fontsize=9,
+fig.legend(*ax[0].get_legend_handles_labels(), title="feature", fontsize=9,
            title_fontsize=9.5, loc="center right")
 fig.tight_layout(rect=(0, 0, 0.92, 1))
 plot_utils.save_figure(fig, FIGDIR / "fig3_attribute_regimes.png")
@@ -212,7 +212,7 @@ plot_utils.save_figure(fig, FIGDIR / "fig3_attribute_regimes.png")
 # ## Figure 4 — phase panel across the sweep ($d = 3$)
 #
 # Per sparsity and oracle: signal-direction Gram $\hat V \hat V^\top$ (each row of
-# $\hat V$ is attribute $i$'s effective direction in code space; red diagonal = own
+# $\hat V$ is feature $i$'s effective direction in code space; red diagonal = own
 # dimension, off-diagonal structure = interference) and swing bars colored by
 # superposition (yellow = shares dimensions); dotted line = full delivery.
 
@@ -254,11 +254,11 @@ plot_utils.save_figure(fig, FIGDIR / "fig4_elhage_phase.png")
 # ## Summary
 #
 # - **The full TMS phase transition, driven by sparsity.** At $p = 0.5$ the $d = 3$ code
-#   keeps the top 3–4 attributes and drops the tail; by $p \le 0.1$ all eight attributes
+#   keeps the top 3–4 features and drops the tail; by $p \le 0.1$ all eight features
 #   are represented, superposed into three dimensions (figs 3, 4). Sharpness makes packing
 #   pay: nuclear beats truncation by ~64% at $p = 0.3$ and ~94% at $p = 0.02$ (fig 1) —
 #   at the sparse end nuclear at $d$ even beats truncation at $d + 1$.
-# - **Saturation overshoot**: fitted swings of kept attributes exceed $\alpha$ (up to
+# - **Saturation overshoot**: fitted swings of kept features exceed $\alpha$ (up to
 #   $\approx 2$, fig 3 right): once outputs are near one-hot, CE no longer penalizes
 #   overdriving the logits, so the packed code exaggerates what it keeps.
 # - **Trained k-linear tracks nuclear** (fig 2): 0.151 vs 0.142 at $p = 0.3$ (within 6%,
@@ -274,9 +274,9 @@ plot_utils.save_figure(fig, FIGDIR / "fig4_elhage_phase.png")
 #   signed original 0.14).
 # - **Sequence models sit between linear and the MLP** (fig 2), both untuned, as in the
 #   feature cube. They train as causal LMs on [word, attribute_1 ... attribute_L] episodes
-#   — the word is the prefix, its attributes are exchangeable draws from the same kernel
+#   — the word is the prefix, its features are exchangeable draws from the same kernel
 #   row — and their softmax spans the full token vocabulary, so leakage onto word tokens is
 #   priced too: a slightly harder objective than the pointwise soft-target CE.
 # - Excess CE is non-monotone in $p$ (fig 1, peak near $p \approx 0.3$); both ends
 #   trivialize. Below $p \approx 0.01$ the finite lexicon dominates ($N p \approx 1$–$3$
-#   carrier words per attribute); swings there describe the sample, not the ensemble.
+#   carrier words per feature); swings there describe the sample, not the ensemble.

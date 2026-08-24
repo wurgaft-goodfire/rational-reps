@@ -37,26 +37,35 @@ class KernelDataset(Dataset):
 
     * co-occurrence ``z -> x``: one input slot — that is the pointwise reading; written as
       tokens the same kernel becomes a walk, since a graph's outcomes are its own items,
-      while a bipartite structure's (words -> attributes) are a separate alphabet;
+      while a bipartite structure's (words -> features) are a separate alphabet;
     * relational ``(a, b) -> c``: two or more input slots;
     * hidden Markov ``x_{1:t} -> z -> x_{t+1}``: the outcome is reached through a latent walk,
       and the target is either the next token or the latent itself.
 
-    Here the input is **observed**. ``sample_mode`` says what the model consumes:
-    ``pointwise`` gives every input tuple with its exact outcome distribution as a soft
-    target, while ``tokens`` writes the task out for a causal LM. How it is written follows
-    from the kernel, and only then does a stream of observations appear — the kernel *chains*
-    when its outcomes are its inputs, giving a Markov walk ``[start, x_1 ... x_L]``; otherwise
-    the input is held fixed and its outcomes drawn exchangeably, ``[z, x_1 ... x_L]``, which
-    at ``context_length`` 1 is just the pair ``[z, x]``.
+    ``sample_mode`` picks between the two things you can do with a kernel.
 
-    ``latent: true`` makes the input the target: it drops out of the stream, which becomes
-    ``[start, x_1 ... x_L]``, and the run has to infer it — so Bayes is the posterior
-    predictive from the prior over z, filtered through the prefix, rather than a lookup.
-    With no dynamics the input is held fixed — the exchangeable ``z -> x_{1:t}`` case, where
-    the posterior is just the prior times the accumulated likelihood — while a subclass that
-    moves it between draws (the HMM) filters instead. Subclasses override ``_build`` and only what they
-    genuinely differ on."""
+    **pointwise** — one input, one outcome, the input observed. Every input tuple is written
+    as ``[z_1 ... z_arity, x]`` with a sampled outcome, and the batch also carries the exact
+    row as ``distribution_labels``: a causal LM predicts the outcome token, a readout model
+    trains on the exact distribution, and both see the same kernel. Bayes is the kernel row.
+
+    **sequence** — a stream of observations, which a kernel produces in exactly one of two
+    ways, decided by the kernel rather than by config:
+
+    * it **chains**, its outcomes being its own inputs, so the stream is a Markov walk
+      ``[start, x_1 ... x_L]`` and each observation conditions the next;
+    * it does **not** chain, so a stream can only come from one hidden input generating many
+      outcomes: ``[start, x_1 ... x_L]`` with z absent. Held fixed here (``z -> x_{1:t}``),
+      walked by a subclass with dynamics (the HMM).
+
+    Prefixing an observed z to its own outcomes is not a third case — the draws are i.i.d.
+    given z, so a stream states nothing the pointwise kernel does not.
+
+    ``infer_latent`` then picks the target within a sequence: the next observation, or the
+    hidden input behind it. It needs a hidden input, so a walk rejects it. Bayes with a hidden
+    input is the posterior predictive from the prior over z, not a lookup: with no dynamics the
+    posterior is the prior times the accumulated likelihood; with dynamics a subclass filters.
+    Subclasses override ``_build`` and only what they genuinely differ on."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -66,13 +75,20 @@ class KernelDataset(Dataset):
         self.sample_mode = config.get("sample_mode", "pointwise")
         self.arity = 1
 
-        self.latent = bool(config.get("latent", False))           # infer the input, not the outcome
+        self.infer_latent = bool(config.get("infer_latent", False))
         self.prior = self.transition = None                       # a subclass may supply dynamics
         self._cond, P = self._build(config)
         self.P = P / P.sum(-1, keepdim=True)                      # the kernel p(outcome | z)
         self.n_outcomes = self.P.shape[-1]
-        self.hidden = self.latent or self.transition is not None  # is z absent from the stream?
-        if self.hidden and self.prior is None:                    # no dynamics: z is held fixed
+
+        self.sequential = self.sample_mode == "sequence"
+        # outcomes that are the inputs connect into a chain; otherwise the kernel is bipartite
+        self.connected = self.n_items == self.n_outcomes and self.transition is None
+        self.bipartite = not self.connected
+        if self.infer_latent and not (self.sequential and self.bipartite):
+            raise ValueError("infer_latent needs a hidden input: a connected stream has none, "
+                             "and a pointwise task states its input outright")
+        if self.sequential and self.bipartite and self.prior is None:   # z stands still
             self.prior = torch.full((self.n_items,), 1.0 / self.n_items,
                                     dtype=torch.float64, device=self.device)
         self._layout()
@@ -87,28 +103,24 @@ class KernelDataset(Dataset):
         return L, torch.tensor(np.exp(L), dtype=torch.float32, device=self.device)
 
     def _layout(self):
-        """Token layout, which follows from the sampler. A hidden input is never a token, so
-        the stream is outcomes plus a start token, and the inputs get a block of their own when
-        they are the target. An observed one is a token: a chained kernel reuses it for its
-        outcomes and needs a start token, an exchangeable one puts it ahead of its own outcome
-        block, and a pointwise task emits neither."""
-        self.chained = self.n_items == self.n_outcomes and not self.hidden
-        tokens = self.sample_mode != "pointwise"
-        if self.hidden:
+        """Token layout, which follows from the sampler. A bipartite stream hides its input, so
+        the tokens are the outcomes plus a start, and the inputs get a block of their own only
+        when they are the target. A connected stream reuses the input tokens for its outcomes
+        and needs a start token. A pointwise batch writes the input tuple, then its outcome."""
+        if self.sequential and self.bipartite:
+            self.item_tokens = (self.n_outcomes + 1 + torch.arange(self.n_items)
+                                if self.infer_latent else torch.arange(self.n_outcomes))
             self.label_tokens = torch.arange(self.n_outcomes)
             self.start_token = self.n_outcomes
-            self.vocab_size = self.n_outcomes + 1 + self.n_items * self.latent
-            self.item_tokens = (self.n_outcomes + 1 + torch.arange(self.n_items) if self.latent
-                                else torch.arange(self.n_outcomes))
+            self.vocab_size = self.n_outcomes + 1 + self.n_items * self.infer_latent
             return
-        # an observed input that cannot chain stays a token of its own, ahead of its outcomes
-        prefixed = tokens and not self.chained
         self.item_tokens = torch.arange(self.n_items)
-        # an outcome needs its own token only when the input is not already in its alphabet
+        # an outcome needs a token of its own only when it is not already an input
         self.label_tokens = (torch.arange(self.n_items, self.n_items + self.n_outcomes)
-                             if prefixed else torch.arange(self.n_outcomes))
-        self.start_token = self.n_items if self.chained and tokens else None
-        self.vocab_size = self.n_items + self.n_outcomes * prefixed + (self.start_token is not None)
+                             if self.bipartite else torch.arange(self.n_outcomes))
+        self.start_token = self.n_items if self.sequential else None
+        self.vocab_size = (self.n_items + self.n_outcomes * self.bipartite
+                           + (self.start_token is not None))
 
     # ── interface read by the oracle / trainer / evaluator ──────────────────
     @property
@@ -119,13 +131,13 @@ class KernelDataset(Dataset):
     @property
     def num_dims(self):
         """Target classes: the outcomes, or the inputs when they are what we infer."""
-        return self.n_items if self.latent else self.n_outcomes
+        return self.n_items if self.infer_latent else self.n_outcomes
 
     @property
     def seq_len(self):
-        if self.sample_mode == "pointwise":
-            return self.arity + 1
-        return self.context_length + 1                            # prefix (start or z) + L draws
+        if self.sequential:
+            return self.context_length + 1                        # start + L observations
+        return self.arity + 1                                     # the input tuple, then its outcome
 
     @property
     def context_length(self):
@@ -149,41 +161,68 @@ class KernelDataset(Dataset):
         return torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
 
     def __getitem__(self, i=None):
-        if self.sample_mode == "pointwise":
-            # full batch: every input tuple with its exact outcome distribution as a soft target
-            return {"input_ids": self.item_tokens.to(self.device).unsqueeze(1), "labels": self.P}
-        B, L = self._batch_size(), self.context_length
-        if self.hidden:                                           # [start, x_1 ... x_L], z inferred
-            init = torch.multinomial(self.prior, B, replacement=True, generator=self.rng)
-            z = (self._markov_walk(self.transition, init, L) if self.transition is not None
-                 else init[:, None].expand(-1, L))                # no dynamics: one z per episode
-            x = torch.multinomial(self.P[z.reshape(-1)], 1, generator=self.rng).reshape(B, L)
-            seq = torch.cat([self._start_column(B), x], dim=1)
-            labels = seq.clone()
-            if self.latent:
-                labels[:, 1:] = z + self.n_outcomes + 1
-            return {"input_ids": seq, "labels": labels}
-        if self.chained:                                          # [start, x_1 ... x_L]
+        B = self._batch_size()
+        if not self.sequential:
+            return self._pointwise_batch()
+        L = self.context_length
+        if self.connected:                                        # keep sampling from the chain
             init = torch.randint(0, self.n_items, (B,), generator=self.rng, device=self.device)
             seq = torch.cat([self._start_column(B), self._markov_walk(self.P, init, L)], dim=1)
-        else:                                                     # [z, x_1 ... x_L], x_t iid | z
-            z = torch.randint(self.n_items, (B, 1), generator=self.rng, device=self.device)
-            x = torch.multinomial(self.P[z[:, 0]], L, replacement=True, generator=self.rng)
-            seq = torch.cat([z, self.n_items + x], dim=1)
-        return {"input_ids": seq, "labels": seq.clone()}
+            return {"input_ids": seq, "labels": seq.clone()}
+        init = torch.multinomial(self.prior, B, replacement=True, generator=self.rng)
+        z = (self._markov_walk(self.transition, init, L) if self.transition is not None
+             else init[:, None].expand(-1, L))                    # no dynamics: one z per episode
+        x = torch.multinomial(self.P[z.reshape(-1)], 1, generator=self.rng).reshape(B, L)
+        seq = torch.cat([self._start_column(B), x], dim=1)
+        labels = seq.clone()
+        if self.infer_latent:
+            labels[:, 1:] = z + self.n_outcomes + 1
+        return {"input_ids": seq, "labels": labels}
+
+    def _pointwise_batch(self):
+        """Every input tuple as ``[z..., x]`` with a sampled outcome, plus the exact row. The
+        readout models train on ``distribution_labels``, a causal LM on the outcome token."""
+        inputs = self._input_tuples()
+        rows = self.P[self._row_index(inputs)]
+        x = torch.multinomial(rows, 1, generator=self.rng)
+        outcome = x + (self.n_items if self.n_items != self.n_outcomes else 0)
+        seq = torch.cat([inputs, outcome], dim=1)
+        return {"input_ids": seq, "labels": seq.clone(), "distribution_labels": rows}
+
+    def _input_tuples(self):
+        """Every input tuple, one per row: (n_items ** arity, arity)."""
+        return self.item_tokens.to(self.device).unsqueeze(1)
+
+    def _row_index(self, inputs):
+        """Row of ``P`` addressed by each input tuple."""
+        return inputs[:, 0]
+
+    def _pointwise_batch(self):
+        """Every input tuple as ``[z..., x]`` with a sampled outcome, plus the exact row: a
+        causal LM predicts the outcome token, a readout model trains on the distribution."""
+        inputs = self._input_tuples()
+        rows = self.P[self._row_index(inputs)]
+        x = torch.multinomial(rows, 1, generator=self.rng) + self.n_items * self.bipartite
+        seq = torch.cat([inputs, x], dim=1)
+        return {"input_ids": seq, "labels": seq.clone(), "distribution_labels": rows}
+
+    def _input_tuples(self):
+        """Every input tuple, one per row: ``(n_items ** arity, arity)``."""
+        return self.item_tokens.to(self.device).unsqueeze(1)
+
+    def _row_index(self, inputs):
+        """Row of ``P`` addressed by each input tuple."""
+        return inputs[:, 0]
 
     def optimal_predictions(self, input_ids):
         """Bayes targets aligned with the causal shift, i.e. ``logits[:, :-1]``. Pointwise
         (B, 1) -> (B, C); sequence (B, T) -> (B, T-1, C)."""
-        if self.sample_mode == "pointwise":
-            return self.P[input_ids[:, 0]]
-        if self.hidden:
-            return self._posterior_predictive(input_ids[:, 1:])
-        if self.chained:
+        if not self.sequential:                                   # z is stated: Bayes is the row
+            return self.P[self._row_index(input_ids)]
+        if self.connected:
             marginal = self.P.mean(0, keepdim=True)               # dist after the start token
             return torch.cat([self.P, marginal], 0)[input_ids[:, :-1]]
-        # z observed as the prefix: every later position predicts the same row P(.|z)
-        return self.P[input_ids[:, 0], None].expand(-1, input_ids.shape[1] - 1, -1)
+        return self._posterior_predictive(input_ids[:, 1:])
 
     def _posterior_predictive(self, obs):
         """Bayes for a hidden input: the posterior over z hypotheses after each prefix, pushed
@@ -197,7 +236,7 @@ class KernelDataset(Dataset):
     def _predict_from(self, beliefs, B):
         """Next-position targets from the per-prefix posteriors, shifted so position t predicts
         what follows it: the prior (or its predictive) leads, then each belief in turn."""
-        if self.latent:
+        if self.infer_latent:
             return torch.cat([self.prior.expand(B, 1, -1), beliefs[:, :-1]], dim=1).float()
         first = (self.prior @ self.P.double()).expand(B, 1, -1)   # x_1 from the prior alone
         return torch.cat([first, beliefs[:, :-1] @ self.P.double()], dim=1).float()
@@ -211,7 +250,7 @@ class KernelDataset(Dataset):
         if logits.ndim == 3 and labels.ndim == 3:
             logits = logits[:, :-1, :]                                # causal shift
         elif logits.ndim == 3 and labels.ndim == 2:
-            logits = logits[:, -1, :]                                 # pointwise input through a sequence model
+            logits = logits[:, -2, :]                                 # the slot that predicts the outcome
 
         log_probs = torch.log_softmax(logits, dim=-1)
         with torch.no_grad():
@@ -231,8 +270,9 @@ class KernelDataset(Dataset):
 ##### Relational dataset (order >= 2, combination) #####
 
 class RelationalDataset(KernelDataset):
-    """Operation task c = a*b: ``.conditional`` is the tensor ``T[a, b, ..., c]``, with arity
-    inferred from its shape. Every input tuple carries its exact ``p(c | a, b, ...)``."""
+    """Operation task ``c = a * b``: ``.conditional`` is the tensor ``T[a, b, ..., c]``, with
+    arity inferred from its shape. Pointwise by construction — extra input slots are the only
+    thing that differs from any other kernel."""
 
     def _build(self, config):
         T = relation_tensor(_spec(config, "operation", "operation_kwargs"))
@@ -243,26 +283,26 @@ class RelationalDataset(KernelDataset):
         flat = torch.tensor(T.reshape(-1, T.shape[-1]), dtype=torch.float32, device=self.device)
         return T, flat
 
-    def __getitem__(self, i=None):
-        # full batch: every input tuple with its exact p(c | a, b, ...) as a soft target
+    def _input_tuples(self):
         items = self.item_tokens.to(self.device)
-        inputs = torch.cartesian_prod(*([items] * self.arity))    # (n^arity, arity)
-        if self.arity == 1:
-            inputs = inputs.unsqueeze(1)
+        tuples = torch.cartesian_prod(*([items] * self.arity))    # (n ** arity, arity)
+        return tuples.unsqueeze(1) if self.arity == 1 else tuples
+
+    def _row_index(self, inputs):
         flat = torch.zeros(len(inputs), dtype=torch.long, device=self.device)
         for j in range(self.arity):
             flat = flat * self.n_items + inputs[:, j]             # row-major over the item axes
-        return {"input_ids": inputs, "labels": self.P[flat]}
+        return flat
 
 
 ##### Hidden-Markov dataset (latent graph walk + emissions) #####
 
 class HMMDataset(KernelDataset):
-    """The hidden-input case with real dynamics: the state walks the structure's graph instead
-    of being held fixed, and the kernel is an emission matrix. ``emission``: "bump" (Gaussian
-    in hop distance, symbols = states) or "permuted" (a peaked template permuted per state);
-    ``emission_sigma`` sets its width. As everywhere, ``latent: true`` makes the state the
-    target instead of the next token."""
+    """The hidden-input sequence with real dynamics: the state walks the structure's graph
+    instead of standing still, and the kernel is an emission matrix. ``emission``: "bump"
+    (Gaussian in hop distance, symbols = states) or "permuted" (a peaked template permuted per
+    state); ``emission_sigma`` sets its width. As everywhere, ``infer_latent`` chooses between
+    predicting the next symbol and predicting the state."""
 
     def _build(self, config):
         spec = _spec(config, "structure", "structure_kwargs")
@@ -386,12 +426,12 @@ def communities(n=25, k=3, p_in=0.45, p_out=0.04, seed=0):
 
 
 def cube_codes(n):
-    """Binary attribute codes of the hypercube's 2^n nodes, (2^n, n), in node order."""
+    """Binary feature codes of the hypercube's 2^n nodes, (2^n, n), in node order."""
     return np.array([[(v >> b) & 1 for b in range(n)] for v in range(2 ** n)], float)
 
 
 def hypercube(n):
-    """Binary attribute cube: n attributes -> 2^n nodes, neighbors differ in one bit -> analogies."""
+    """Binary feature cube: n features -> 2^n nodes, neighbors differ in one bit -> analogies."""
     B = cube_codes(n)
     H = (B[:, None] != B[None]).sum(-1)
     return (H == 1).astype(float)
@@ -499,9 +539,9 @@ def _tree_graph(n=2, k=2, parents=None, **_):
     return tree_adjacency(tree_parents(n, k, parents))
 
 
-def word_attribute(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0):
-    """Bipartite word -> attribute structure: N words with i.i.d. Bernoulli(p) features
-    Z in {0, 1}, outcomes the m attribute tokens, log p(i|x) = log_softmax_i(alpha_i Z_xi)
+def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0):
+    """Bipartite word -> feature structure: N words with i.i.d. Bernoulli(p) features
+    Z in {0, 1}, outcomes the m feature tokens, log p(i|x) = log_softmax_i(alpha_i Z_xi)
     with alpha_i = scale * decay^i (p = sparsity, decay = importance, scale = sharpness).
     Returns (L (N, m), {"Z" (N, m), "alpha" (m,)})."""
     from scipy.special import logsumexp
@@ -521,8 +561,8 @@ _STRUCTURES = {
     "sphere": _Structure(sphere), "communities": _Structure(communities),
     "hypercube": _Structure(hypercube), "complete": _Structure(complete),
     "tree": _Structure(_tree_graph, tree_conditional),
-    # bipartite (no adjacency): words -> attributes
-    "word_attribute": _Structure(None, word_attribute),
+    # bipartite (no adjacency): words -> features
+    "feature_cube": _Structure(None, feature_cube),
 }
 
 

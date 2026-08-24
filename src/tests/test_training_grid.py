@@ -40,10 +40,10 @@ def test_graph_training_runs(structure, kw, arch, tmp_path):
     _check(history, dataset, model)
 
 
-def test_word_attribute_training_runs(tmp_path):
+def test_features_training_runs(tmp_path):
     model, dataset, evaluator, history, _ = train_inline(
-        ["setting=word_attribute", "runner=linear"] + _QUICK,
-        name="grid_word_attribute", cache_dir=str(tmp_path))
+        ["setting=feature_cube", "runner=linear"] + _QUICK,
+        name="grid_features", cache_dir=str(tmp_path))
     _check(history, dataset, model)
 
 

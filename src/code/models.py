@@ -35,9 +35,12 @@ def init_model(config):
 
 
 def _wrap_causal_lm(model):
-    """Give an HF causal LM the interface the Evaluator reads: logits key + item_reps."""
+    """Give an HF causal LM the interface the Evaluator reads: logits key + item_reps. It also
+    drops ``distribution_labels``, which only the readout heads consume."""
     model.output_key = "logits"
     model.item_reps = types.MethodType(_causal_lm_item_reps, model)
+    inner = model.forward
+    model.forward = lambda *a, distribution_labels=None, **kw: inner(*a, **kw)
     return model
 
 
@@ -105,6 +108,8 @@ class _ModelBase(transformers.PreTrainedModel):
         self.embedding = module
 
     def _finish(self, logits, labels):
+        """``labels`` is the exact outcome distribution (``distribution_labels``) for the
+        readout heads, so cross-entropy takes it as class probabilities."""
         out = {"logits": logits}
         if labels is not None:
             out["loss"] = F.cross_entropy(logits, labels)
@@ -122,12 +127,13 @@ class LinearModel(_ModelBase):
         shape = (config.num_classes,) + (config.embed_dim,) * config.arity
         self.readout = nn.Parameter(torch.randn(*shape) * config.init_scale)
 
-    def forward(self, input_ids, labels=None, **kwargs):
+    def forward(self, input_ids, distribution_labels=None, **kwargs):
+        input_ids = input_ids[:, :self.arity]               # the outcome column is the LM's target
         e = self.embedding(input_ids)                       # (B, arity, d)
         letters = "ijklmn"[: self.arity]
         eq = f"c{letters}," + ",".join("b" + l for l in letters) + "->bc"
         logits = torch.einsum(eq, self.readout, *[e[:, j] for j in range(self.arity)])
-        return self._finish(logits, labels)
+        return self._finish(logits, distribution_labels)
 
     def item_reps(self, item_ids, start_token=None):
         return self.embedding(item_ids)                     # pre-decode code == the embedding
@@ -145,9 +151,9 @@ class MLPModel(_ModelBase):
         layers.append(nn.Linear(in_dim, config.num_classes, bias=False))
         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, input_ids, labels=None, **kwargs):
-        e = self.embedding(input_ids).flatten(1)            # (B, arity*d)
-        return self._finish(self.mlp(e), labels)
+    def forward(self, input_ids, distribution_labels=None, **kwargs):
+        e = self.embedding(input_ids[:, :self.config.arity]).flatten(1)   # (B, arity*d)
+        return self._finish(self.mlp(e), distribution_labels)
 
     def item_reps(self, item_ids, start_token=None):
         return self.mlp[:-1](self.embedding(item_ids))      # penultimate activation (pre-decode)
@@ -196,17 +202,20 @@ class SAEModel(_ModelBase):
         nn.init.zeros_(self.encoder.bias)
 
     def load_features(self, features):
-        """Install the per-item feature codes (n_items, embed_dim) as the frozen embedding."""
+        """Install the per-item feature codes (n_items, embed_dim) as the frozen embedding. The
+        vocabulary also names the outcomes, which the SAE never reads, so those rows stay zero."""
+        codes = torch.as_tensor(features, dtype=self.embedding.weight.dtype)
         with torch.no_grad():
-            self.embedding.weight.copy_(torch.as_tensor(features, dtype=self.embedding.weight.dtype))
+            self.embedding.weight.zero_()
+            self.embedding.weight[:len(codes)] = codes
 
     def _code(self, item_ids):
         return torch.relu(self.encoder(self.embedding(item_ids).flatten(1)))
 
-    def forward(self, input_ids, labels=None, **kwargs):
-        h = self._code(input_ids)
-        out = self._finish(self.decoder(h), labels)
-        if labels is not None:
+    def forward(self, input_ids, distribution_labels=None, **kwargs):
+        h = self._code(input_ids[:, :self.config.arity])
+        out = self._finish(self.decoder(h), distribution_labels)
+        if distribution_labels is not None:
             out["loss"] = out["loss"] + self.config.l1 * h.abs().mean()
         return out
 

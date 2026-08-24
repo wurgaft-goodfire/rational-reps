@@ -28,17 +28,19 @@ def test_conditional_is_square_and_arity_one():
     assert ds.vocab_size == 24  # pointwise: no start token
 
 
-def test_pointwise_batch_is_full_batch_soft_targets():
+def test_pointwise_batch_pairs_every_item_with_a_draw_and_its_exact_row():
     ds = KernelDataset(_config("pointwise", n=24, batch_size=8))
     batch = ds.__getitem__()
-    assert batch["input_ids"].shape == (24, 1)             # full batch: every item
-    assert batch["labels"].shape == (24, 24)               # soft targets = true conditional
+    assert batch["input_ids"].shape == (24, 2)             # full batch: every item, then a draw
+    assert batch["labels"].shape == (24, 2)                # the LM predicts the outcome token
+    assert batch["distribution_labels"].shape == (24, 24)  # readouts get the exact conditional
+    assert torch.allclose(batch["distribution_labels"], ds.P)
     assert ds.optimal_predictions(batch["input_ids"]).shape == (24, 24)
-    assert torch.allclose(batch["labels"].sum(1), torch.ones(24, device=batch["labels"].device))
+    assert (batch["labels"] == batch["input_ids"]).all()   # the LM target is the token stream
 
 
 def test_sequence_batch_shapes_and_start_token():
-    ds = KernelDataset(_config("tokens", n=24, batch_size=8, context_length=6))
+    ds = KernelDataset(_config("sequence", n=24, batch_size=8, context_length=6))
     batch = ds.__getitem__()
     assert batch["input_ids"].shape == (8, 7)              # start + context_length
     assert (batch["input_ids"][:, 0] == 24).all()          # start token first
@@ -63,33 +65,34 @@ def test_relational_dataset_infers_arity_and_shapes():
         ds = RelationalDataset(Config(cfg))
         assert ds.arity == arity
         batch = ds.__getitem__()
-        assert batch["input_ids"].shape == (ds.n_items ** arity, arity)   # full batch: all tuples
-        assert batch["labels"].shape == (ds.n_items ** arity, ds.n_outcomes)  # soft targets
+        # full batch: every tuple, then its sampled outcome
+        assert batch["input_ids"].shape == (ds.n_items ** arity, arity + 1)
+        assert batch["distribution_labels"].shape == (ds.n_items ** arity, ds.n_outcomes)
         # modular addition is deterministic: argmax(c | a,b,...) == (sum of inputs) mod p
-        s = batch["input_ids"].sum(1) % ds.n_items
-        assert (batch["labels"].argmax(1) == s).all()
+        inputs = batch["input_ids"][:, :arity]
+        assert (batch["distribution_labels"].argmax(1) == inputs.sum(1) % ds.n_items).all()
 
 
-def _wa_dataset(mode, n=16, m=4, context_length=4, cls=KernelDataset, **extra):
+def _cube_dataset(mode, n=16, m=4, context_length=4, cls=KernelDataset, **extra):
     from omegaconf import OmegaConf
     return cls(Config(OmegaConf.create({
-        "setting": "graph-cooccurrence", "structure": "word_attribute",
+        "setting": "graph-cooccurrence", "structure": "feature_cube",
         "structure_kwargs": {"N": n, "m": m}, "random_seed": 0, "sample_mode": mode,
         "training_kwargs": {"batch_size": 8, "context_length": context_length}, **extra})))
 
 
 def test_tokens_exist_only_when_the_sampler_emits_them():
-    # an unchainable kernel emits outcome tokens only in sequence mode, and never a start token
-    point, tokens = _wa_dataset("pointwise"), _wa_dataset("tokens")
-    assert not point.chained and not tokens.chained
-    assert point.start_token is None and point.vocab_size == 16   # words only
-    assert tokens.start_token is None and tokens.vocab_size == 20  # words + attributes
-    assert tokens.label_tokens.tolist() == list(range(16, 20))
+    # a bipartite kernel names its outcomes; only a hidden input drops out of the vocabulary
+    point, seq = _cube_dataset("pointwise"), _cube_dataset("sequence")
+    assert point.bipartite and seq.bipartite
+    assert point.start_token is None and point.vocab_size == 20   # inputs + outcome block
+    assert point.label_tokens.tolist() == list(range(16, 20))
+    assert seq.start_token == 4 and seq.vocab_size == 5           # a hidden input is not a token
 
 
 def test_chainable_kernel_walks_from_a_start_token():
-    ds = KernelDataset(_config("tokens", n=12, batch_size=8, context_length=5))
-    assert ds.chained and ds.start_token == 12 and ds.vocab_size == 13
+    ds = KernelDataset(_config("sequence", n=12, batch_size=8, context_length=5))
+    assert ds.connected and ds.start_token == 12 and ds.vocab_size == 13
     b = ds.__getitem__()
     assert (b["input_ids"][:, 0] == ds.start_token).all()
     assert b["input_ids"].shape == (8, 6)
@@ -97,25 +100,16 @@ def test_chainable_kernel_walks_from_a_start_token():
 
 def test_hidden_input_is_inferred_from_the_prior_not_read_off_the_batch():
     # z -> x_{1:t} with z latent: it leaves the stream and Bayes infers it from the prefix
-    ds = _wa_dataset("tokens", n=8, m=5, latent=True)
-    assert ds.hidden and ds.start_token == ds.n_outcomes and ds.num_dims == ds.n_items
+    ds = _cube_dataset("sequence", n=8, m=5, infer_latent=True)
+    assert ds.bipartite and ds.start_token == ds.n_outcomes and ds.num_dims == ds.n_items
     b = ds.__getitem__()
     assert (b["input_ids"][:, 1:] < ds.n_outcomes).all()          # outcomes only, never z
     assert torch.isin(b["labels"][:, 1:], ds.item_tokens.to(ds.device)).all()
 
     obs = torch.multinomial(ds.P[3], 60, replacement=True, generator=ds.rng).unsqueeze(0)
-    ds.latent = False                                             # score the next outcome
+    ds.infer_latent = False                                       # score the next outcome
     pred = ds._posterior_predictive(obs)[0]
     assert torch.allclose(pred[0], (ds.prior @ ds.P.double()).float(), atol=1e-5)
     assert torch.allclose(pred[-1], ds.P[3], atol=2e-2)           # evidence pins the row
 
 
-def test_observed_input_prefixes_as_many_exchangeable_draws_as_the_context():
-    # [z, x_1 .. x_L] matches the declared seq_len, and every draw comes from the same row
-    ds = _wa_dataset("tokens", context_length=6)
-    b = ds.__getitem__()
-    assert b["input_ids"].shape == (8, ds.seq_len) == (8, 7)
-    z, x = b["input_ids"][:, 0], b["input_ids"][:, 1:]
-    assert (z < ds.n_items).all() and (x >= ds.n_items).all()
-    targets = ds.optimal_predictions(b["input_ids"])
-    assert torch.allclose(targets, ds.P[z][:, None].expand(-1, 6, -1))

@@ -17,7 +17,7 @@ pytestmark = pytest.mark.slow
 def _train_and_score(model_type, steps=500, lr=0.01, n=12):
     mc = {"vocab_size": 4, "num_classes": 4, "arity": 1, "embed_dim": 16,
           "hidden_size": 64, "num_layers": 1, "init_scale": 0.3}
-    sample_mode = "tokens" if model_type == "rnn" else "pointwise"   # rnn is a causal LM
+    sample_mode = "sequence" if model_type == "rnn" else "pointwise"   # rnn is a causal LM
     cfg = OmegaConf.create({
         "setting": "graph-cooccurrence", "structure": "ring", "structure_kwargs": {"n": n},
         "gamma": 0.8, "sample_mode": sample_mode, "random_seed": 0,
@@ -48,11 +48,11 @@ def test_architecture_converges_to_predicted_circle(model_type):
     assert metrics["rsa_vs_predicted"] > 0.6, f"{model_type}: {metrics}"
 
 
-def _train_word_attribute(steps=600, lr=0.01):
+def _train_features(steps=600, lr=0.01):
     mc = {"vocab_size": 4, "num_classes": 4, "arity": 1, "embed_dim": 16,
           "hidden_size": 64, "num_layers": 1, "init_scale": 0.3}
     cfg = OmegaConf.create({
-        "setting": "graph-cooccurrence", "structure": "word_attribute", "random_seed": 0,
+        "setting": "graph-cooccurrence", "structure": "features", "random_seed": 0,
         "structure_kwargs": {"N": 32, "m": 4, "p": 0.3},
         "model_kwargs": {"model_type": "linear", "model_config": mc},
         "training_kwargs": {"batch_size": 256, "context_length": 6},
@@ -73,9 +73,9 @@ def _train_word_attribute(steps=600, lr=0.01):
     return Evaluator(config, dataset).evaluate(model)[0]
 
 
-def test_linear_converges_to_word_attribute_geometry():
+def test_linear_converges_to_features_geometry():
     # the learned per-item embedding recovers the predicted natural-parameter manifold
-    assert _train_word_attribute()["rsa_vs_predicted"] > 0.6
+    assert _train_features()["rsa_vs_predicted"] > 0.6
 
 
 def _cka(X, Y):

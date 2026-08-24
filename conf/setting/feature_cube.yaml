@@ -1,9 +1,9 @@
 # @package _global_
-# Bipartite word -> attribute co-occurrence: N words with i.i.d. Bernoulli(p) features in
-# {0, 1}, outcomes the m attribute tokens, log p(i|x) = log_softmax(alpha_i Z_xi) with
+# Bipartite word -> feature co-occurrence: N words with i.i.d. Bernoulli(p) features in
+# {0, 1}, outcomes the m feature tokens, log p(i|x) = log_softmax(alpha_i Z_xi) with
 # alpha_i = scale * decay^i. p = sparsity, decay = importance ladder, scale = sharpness.
 setting: graph-cooccurrence
-structure: word_attribute
+structure: feature_cube
 structure_kwargs:
   N: 256
   m: 8

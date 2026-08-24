@@ -16,7 +16,7 @@ def _cfg(**kw):
 def test_linear_arity1_is_linear_readout():
     model = LinearModel(_cfg(arity=1))
     assert model.readout.shape == (12, 8)                 # (num_classes, embed_dim)
-    out = model(torch.randint(0, 12, (5, 1)), labels=torch.randint(0, 12, (5,)))
+    out = model(torch.randint(0, 12, (5, 1)), distribution_labels=torch.rand(5, 12).softmax(-1))
     assert out["logits"].shape == (5, 12)
     assert out["loss"].ndim == 0
 
@@ -31,7 +31,7 @@ def test_linear_arity2_is_bilinear_readout():
 
 def test_mlp_is_a_pointwise_readout():
     model = MLPModel(_cfg(arity=1))
-    out = model(torch.randint(0, 12, (5, 1)), labels=torch.randint(0, 12, (5,)))
+    out = model(torch.randint(0, 12, (5, 1)), distribution_labels=torch.rand(5, 12).softmax(-1))
     assert out["logits"].shape == (5, 12)                  # (B, num_classes)
     assert model.get_input_embeddings().weight.shape == (13, 8)
     assert model.item_reps(torch.arange(12)).shape == (12, 16)   # penultimate activation

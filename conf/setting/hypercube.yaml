@@ -1,12 +1,12 @@
 # @package _global_
-# Order-1 hypercube task: items are binary attribute vectors. The heat-kernel co-occurrence keeps the
+# Order-1 hypercube task: items are binary feature vectors. The heat-kernel co-occurrence keeps the
 # bit-factors independent (exp(beta*A) is a Kronecker product of per-bit heat kernels), so the
 # log-conditional is additive over bits and the code is affine in them -> linear analogies
 # (king - man + woman = queen). The diffusion resolvent would couple the bits and break this.
 setting: graph-cooccurrence
 structure: hypercube
 structure_kwargs:        # the full structure spec: shape params + the co-occurrence kernel
-  n: 5                   # number of binary attributes -> 2**n items
+  n: 5                   # number of binary features -> 2**n items
   gamma: 0.8             # heat diffusion time (beta) for exp(beta*A)
   cooccurrence: heat
-sample_mode: tokens      # tokens (for transformer/RNN) | pointwise (for the readout models)
+sample_mode: sequence    # sequence (a stream of observations) | pointwise (one input, one outcome)

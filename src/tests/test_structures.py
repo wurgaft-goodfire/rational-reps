@@ -55,16 +55,16 @@ def test_complete_graph_is_a_simplex():
 
 def test_heat_cooccurrence_kills_interaction_bands_on_hypercube():
     # The heat kernel exp(beta*A) on a Cartesian-product graph factorizes into a Kronecker product of
-    # per-factor heat kernels, so the log-conditional is additive over bits: only the d single-attribute
+    # per-factor heat kernels, so the log-conditional is additive over bits: only the d single-feature
     # directions carry structure and every interaction (pairwise+) band vanishes.
     n = 3
     _, S = _ES({"structure": "hypercube", "n": n}, cooccurrence="heat")
-    assert (S[:n] > 1e-6 * S[0]).all()                             # d single-attribute directions
+    assert (S[:n] > 1e-6 * S[0]).all()                             # d single-feature directions
     assert S[n] < 1e-6 * S[0]                                      # interaction bands are ~zero
 
 
 def test_hypercube_supports_analogies():
-    # Analogies require an independent-attribute (Kronecker-product) generative process: king - man +
+    # Analogies require an independent-feature (Kronecker-product) generative process: king - man +
     # woman = queen holds only when the code is affine in the bits, i.e. no interaction harmonics. The
     # heat kernel gives exactly that; the random-walk resolvent couples the bits and breaks it.
     E = predicted_geometry(build_conditional({"structure": "hypercube", "n": 3}, cooccurrence="heat"))

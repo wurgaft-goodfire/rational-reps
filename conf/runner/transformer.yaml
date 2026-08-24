@@ -8,6 +8,6 @@ defaults:
 
 name: transformer
 output_dir: ${run_dir}/checkpoints
-sample_mode: tokens
+sample_mode: sequence
 training_kwargs:
   learning_rate: 0.003     # sequence LM wants a lower lr than the readouts

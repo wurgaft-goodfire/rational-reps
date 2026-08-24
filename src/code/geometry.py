@@ -187,13 +187,13 @@ def feature_vectors(H, Z, w=None):
     return V[:-1], V[-1]
 
 
-def attribute_stats(G, Z):
-    """Gauge-free per-attribute swing and intercept of logits ``G`` (N, m) on 0/1 features
+def feature_stats(G, Z):
+    """Gauge-free per-feature swing and intercept of logits ``G`` (N, m) on 0/1 features
     ``Z`` (N, m): least squares G[x, i] ~ a_i Z[x, i] + b_i + c_x, intercepts pinned by
     mean(c) = 0. Returns (a_hat (m,), b_hat (m,))."""
     G = np.asarray(G, float); Z = np.asarray(Z, float)
     N, m = Z.shape
-    per_attribute = np.tile(np.eye(m), (N, 1))                    # one indicator column per attribute
+    per_attribute = np.tile(np.eye(m), (N, 1))                    # one indicator column per feature
     X = np.hstack([Z.ravel()[:, None] * per_attribute, per_attribute, np.repeat(np.eye(N), m, 0)])
     theta = np.linalg.lstsq(X, G.ravel(), rcond=None)[0]
     return theta[:m], theta[m:2 * m] + theta[2 * m:].mean()
