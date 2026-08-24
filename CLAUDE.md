@@ -28,7 +28,7 @@ Communicate directly, concisely, and honestly, like a competent collaborator.
 
 - Signposting ("Let's turn to"), restating the question, summary or inspirational wrap-ups. Start and end on substance.
 - Fake-profundity structures: "It's not just X — it's Y", "Not only X, but Y", "No X. No Y. Just Z."
-- Words: load-bearing, rung, arm, insight, comprehensive, leverage, delve, crucial, seamless, nuanced, pivotal, groundbreaking, cutting-edge.
+- Words/phrases: load-bearing, rung, arm, the honest answer/to be honest, insight, comprehensive, leverage, delve, crucial, seamless, nuanced, pivotal, groundbreaking, cutting-edge.
 
 ---
 

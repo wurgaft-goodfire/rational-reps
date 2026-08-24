@@ -28,10 +28,10 @@ def _check(history, dataset, model):
 # a few structure x architecture combos (each architecture and several structures represented)
 @pytest.mark.parametrize("structure,kw,arch", [
     ("ring", {"n": 12}, "transformer"),
-    ("chain", {"n": 12}, "klinear"),
+    ("chain", {"n": 12}, "linear"),
     ("grid", {"n": 4, "m": 4}, "mlp"),
     ("complete", {"n": 8}, "rnn"),
-    ("sphere", {"n": 40, "k": 6}, "klinear"),
+    ("sphere", {"n": 40, "k": 6}, "linear"),
 ])
 def test_graph_training_runs(structure, kw, arch, tmp_path):
     model, dataset, evaluator, history, _ = train_inline(
@@ -40,16 +40,16 @@ def test_graph_training_runs(structure, kw, arch, tmp_path):
     _check(history, dataset, model)
 
 
-def test_distribution_training_runs(tmp_path):
+def test_word_attribute_training_runs(tmp_path):
     model, dataset, evaluator, history, _ = train_inline(
-        ["setting=distribution", "family=gaussian1d", "runner=klinear"] + _QUICK,
-        name="grid_distribution", cache_dir=str(tmp_path))
+        ["setting=word_attribute", "runner=linear"] + _QUICK,
+        name="grid_word_attribute", cache_dir=str(tmp_path))
     _check(history, dataset, model)
 
 
 def test_relational_training_runs(tmp_path):
     # group op: rsa vs the (degenerate) factor_tensor is low, so we only check it runs + scores
     model, dataset, evaluator, history, _ = train_inline(
-        ["setting=relational", "operation=modular_add", "operation_kwargs.p=7", "runner=klinear"] + _QUICK,
+        ["setting=relational", "operation=modular_add", "operation_kwargs.p=7", "runner=linear"] + _QUICK,
         name="grid_relational", cache_dir=str(tmp_path))
     _check(history, dataset, model)

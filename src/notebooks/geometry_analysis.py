@@ -18,7 +18,7 @@
 # The project's claim: the geometry a network learns is **predictable in closed form** from the
 # structure of the task.
 #
-# For sweeps, use the CLI instead, e.g. `python -m src.code.train -m runner=klinear setting=graph structure=ring,chain`.
+# For sweeps, use the CLI instead, e.g. `python -m src.code.train -m runner=linear setting=graph structure=ring,chain`.
 
 # %%
 import os, sys
@@ -61,7 +61,7 @@ fig_pred = plot_utils.plot_predicted_geometry(spec, L, E_pred)   # saved once we
 # `train_inline` returns the live model + an in-memory history, so we can watch the geometry form.
 
 # %%
-ARCHS = ["transformer", "klinear", "mlp", "rnn"]
+ARCHS = ["transformer", "linear", "mlp", "rnn"]
 results = {}
 for arch in ARCHS:
     model, dataset, evaluator, history, config = train_inline(graph_overrides(spec) + [f"runner={arch}"])
@@ -121,7 +121,7 @@ n_out = D_geom.shape[0]                          # drop the S=0 null directions 
 
 def readout(model, arch):
     """Per-outcome readout (decoder) weights, restricted to the item outcomes."""
-    W = (model.readout if arch == "klinear" else
+    W = (model.readout if arch == "linear" else
          model.mlp[-1].weight if arch == "mlp" else
          model.head.weight if arch == "rnn" else
          model.get_output_embeddings().weight)   # transformer unembedding

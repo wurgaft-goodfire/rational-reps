@@ -1,29 +1,28 @@
-"""Unit tests for the readout-head ladder: shapes, arity, embedding table, loss."""
+"""Unit tests for the model ladder: shapes, arity, embedding table, loss."""
 import numpy as np
 import torch
 
 from src.code.models import (
-    ReadoutConfig, KLinearReadout, MLPReadout, RNNReadout, READOUT_CLASSES,
-    train_sparse_autoencoder,
+    ModelConfig, LinearModel, MLPModel, RNNModel, MODEL_CLASSES,
 )
 
 
 def _cfg(**kw):
     base = dict(vocab_size=13, num_classes=12, embed_dim=8, arity=1, hidden_size=16, num_layers=1)
     base.update(kw)
-    return ReadoutConfig(**base)
+    return ModelConfig(**base)
 
 
-def test_klinear_arity1_is_linear_readout():
-    model = KLinearReadout(_cfg(arity=1))
+def test_linear_arity1_is_linear_readout():
+    model = LinearModel(_cfg(arity=1))
     assert model.readout.shape == (12, 8)                 # (num_classes, embed_dim)
     out = model(torch.randint(0, 12, (5, 1)), labels=torch.randint(0, 12, (5,)))
     assert out["logits"].shape == (5, 12)
     assert out["loss"].ndim == 0
 
 
-def test_klinear_arity2_is_bilinear_readout():
-    model = KLinearReadout(_cfg(arity=2))
+def test_linear_arity2_is_bilinear_readout():
+    model = LinearModel(_cfg(arity=2))
     assert model.readout.shape == (12, 8, 8)              # (num_classes, d, d)
     out = model(torch.randint(0, 12, (5, 2)))
     assert out["logits"].shape == (5, 12)
@@ -31,7 +30,7 @@ def test_klinear_arity2_is_bilinear_readout():
 
 
 def test_mlp_is_a_pointwise_readout():
-    model = MLPReadout(_cfg(arity=1))
+    model = MLPModel(_cfg(arity=1))
     out = model(torch.randint(0, 12, (5, 1)), labels=torch.randint(0, 12, (5,)))
     assert out["logits"].shape == (5, 12)                  # (B, num_classes)
     assert model.get_input_embeddings().weight.shape == (13, 8)
@@ -39,7 +38,7 @@ def test_mlp_is_a_pointwise_readout():
 
 
 def test_rnn_is_a_causal_lm():
-    model = RNNReadout(_cfg(arity=1))
+    model = RNNModel(_cfg(arity=1))
     seq = torch.randint(0, 12, (5, 7))                     # (B, T) walk
     out = model(seq, labels=seq)
     assert out["logits"].shape == (5, 7, 13)              # (B, T, vocab_size) next-token
@@ -51,27 +50,19 @@ def test_rnn_exposes_per_position_hidden_states():
     # hidden_states = (recurrent state,) — read at every position exactly like a transformer's
     # residual stream. Embeddings are excluded: they are input, not state, and their width differs
     # from the hidden (the eval path stacks layers into one equal-width tensor).
-    model = RNNReadout(_cfg(arity=1))
+    model = RNNModel(_cfg(arity=1))
     out = model(torch.randint(0, 12, (5, 7)), output_hidden_states=True)
     assert [tuple(h.shape) for h in out["hidden_states"]] == [(5, 7, 16)]
     assert "hidden_states" not in model(torch.randint(0, 12, (5, 7)))
 
 
 def test_registry_covers_the_ladder():
-    assert set(READOUT_CLASSES) == {"klinear", "mlp", "rnn", "sae"}
-
-
-def test_sparse_autoencoder_superposes_five_features_as_a_pentagon():
-    # over capacity (5 features, 2 dims) -> the code superposes them into a regular polygon
-    W = train_sparse_autoencoder(5, d=2, sparsity=0.05, steps=2500, seed=0)
-    ang = np.sort(np.arctan2(W[1], W[0]))
-    gaps = np.degrees(np.diff(np.r_[ang, ang[0] + 2 * np.pi]))
-    assert gaps.min() > 50.0                               # evenly spread (ideal pentagon = 72 deg)
+    assert set(MODEL_CLASSES) == {"linear", "mlp", "rnn", "sae"}
 
 
 def test_readout_heads_are_bias_free():
     # the readout (decoder) is a pure matrix everywhere; hidden-layer biases are code-side
-    from src.code.models import SAEReadout
-    assert MLPReadout(_cfg()).mlp[-1].bias is None
-    assert RNNReadout(_cfg()).head.bias is None
-    assert SAEReadout(_cfg(hidden_size=3, init_scale=0.1)).decoder.bias is None
+    from src.code.models import SAEModel
+    assert MLPModel(_cfg()).mlp[-1].bias is None
+    assert RNNModel(_cfg()).head.bias is None
+    assert SAEModel(_cfg(hidden_size=3, init_scale=0.1)).decoder.bias is None

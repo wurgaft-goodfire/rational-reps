@@ -80,26 +80,3 @@ def test_heldout_decode_r2_ignores_units_flat_on_the_train_split():
     clean = heldout_decode_r2(H, F, groups, train_mask=train_mask)
     assert clean > 0.95
     assert heldout_decode_r2(np.c_[H, flat], F, groups, train_mask=train_mask) > clean - 0.01
-
-
-# ── untrained-model control (shape only; the CCA gap is a notebook/slow check) ──
-def test_untrained_twin_matches_architecture():
-    import torch
-    from omegaconf import OmegaConf
-    from src.code.config import Config
-    from src.code.data import PCFGDataset
-    from src.code.analysis_utils import untrained_twin
-    cfg = Config(OmegaConf.create({
-        "setting": "pcfg", "grammar": "dyck", "grammar_kwargs": {"k": 2, "depth": 3},
-        "max_len": 6, "sample_mode": "sequence", "random_seed": 0,
-        "model_kwargs": {"model_type": "transformer", "model_config": {
-            "hidden_size": 32, "num_hidden_layers": 2, "num_attention_heads": 2,
-            "intermediate_size": 64}},
-        "training_kwargs": {"batch_size": 8, "context_length": 40},
-        "eval_kwargs": {"num_eval_batches": 1, "output_hidden_states": True},
-    }))
-    ds = PCFGDataset(cfg)
-    model = untrained_twin(cfg, ds)
-    ids = torch.zeros(2, ds.seq_len, dtype=torch.long, device=ds.device)
-    out = model(ids, output_hidden_states=True)
-    assert out["hidden_states"][-1].shape == (2, ds.seq_len, 32)

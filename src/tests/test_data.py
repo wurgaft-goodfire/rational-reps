@@ -4,7 +4,7 @@ import torch
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import GraphCooccurrenceDataset, DistributionFamilyDataset, RelationalDataset
+from src.code.data import CooccurrenceDataset, RelationalDataset
 
 
 def _config(sample_mode, n=24, batch_size=8, context_length=6):
@@ -21,7 +21,7 @@ def _config(sample_mode, n=24, batch_size=8, context_length=6):
 
 
 def test_conditional_is_square_and_arity_one():
-    ds = GraphCooccurrenceDataset(_config("pointwise", n=24))
+    ds = CooccurrenceDataset(_config("pointwise", n=24))
     assert ds.conditional.shape == (24, 24)
     assert ds.arity == 1
     assert ds.num_dims == 24
@@ -29,7 +29,7 @@ def test_conditional_is_square_and_arity_one():
 
 
 def test_pointwise_batch_is_full_batch_soft_targets():
-    ds = GraphCooccurrenceDataset(_config("pointwise", n=24, batch_size=8))
+    ds = CooccurrenceDataset(_config("pointwise", n=24, batch_size=8))
     batch = ds.__getitem__()
     assert batch["input_ids"].shape == (24, 1)             # full batch: every item
     assert batch["labels"].shape == (24, 24)               # soft targets = true conditional
@@ -38,7 +38,7 @@ def test_pointwise_batch_is_full_batch_soft_targets():
 
 
 def test_sequence_batch_shapes_and_start_token():
-    ds = GraphCooccurrenceDataset(_config("sequence", n=24, batch_size=8, context_length=6))
+    ds = CooccurrenceDataset(_config("sequence", n=24, batch_size=8, context_length=6))
     batch = ds.__getitem__()
     assert batch["input_ids"].shape == (8, 7)              # start + context_length
     assert (batch["input_ids"][:, 0] == 24).all()          # start token first
@@ -47,24 +47,11 @@ def test_sequence_batch_shapes_and_start_token():
 
 
 def test_ring_conditional_is_circulant():
-    ds = GraphCooccurrenceDataset(_config("pointwise", n=12))
+    ds = CooccurrenceDataset(_config("pointwise", n=12))
     L = ds.conditional
     # circulant: every row is a shift of the first (translation symmetry)
     for i in range(1, 12):
         assert np.allclose(L[i], np.roll(L[0], i), atol=1e-9)
-
-
-def test_distribution_family_dataset_shapes():
-    cfg = OmegaConf.create({
-        "setting": "distribution-family", "family": "gaussian1d", "random_seed": 0,
-        "training_kwargs": {"batch_size": 8, "context_length": 6},
-    })
-    ds = DistributionFamilyDataset(Config(cfg))
-    assert ds.conditional.shape == (ds.n_items, ds.n_outcomes)
-    assert ds.arity == 1 and ds.num_dims == ds.n_outcomes and ds.vocab_size == ds.n_items
-    batch = ds.__getitem__()
-    assert batch["input_ids"].shape == (ds.n_items, 1)          # full batch: every distribution
-    assert batch["labels"].shape == (ds.n_items, ds.n_outcomes)  # soft targets
 
 
 def test_relational_dataset_infers_arity_and_shapes():

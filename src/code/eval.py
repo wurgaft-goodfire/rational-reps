@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .config import Config
-from .models import load_model, READOUT_CLASSES
+from .models import load_model, MODEL_CLASSES
 from .data import init_dataset
 from .geometry import predicted_geometry
 
@@ -135,8 +135,8 @@ class EvalComponents:
 
 class Evaluator:
     """Owns all evaluation logic. Build once; call evaluate(model) per checkpoint/step. Works for
-    any model exposing a dict output with `.output_key` logits — trained transformers, readout
-    heads, and pretrained LLMs alike."""
+    any model exposing a dict output with `.output_key` logits — trained transformers, the
+    from-scratch model ladder, and pretrained LLMs alike."""
 
     def __init__(self, config, dataset):
         self.config = config
@@ -200,18 +200,12 @@ class Evaluator:
                 "rsa_vs_predicted": rsa(reps, self.predicted_E)}
 
     def item_representations(self, model):
-        """Per-item pre-decode *activation* (not weights): klinear -> embedding activation;
-        mlp -> penultimate; rnn -> GRU hidden after [start, item]; transformer -> last hidden
-        state at the item position (before the LM head)."""
+        """Per-item pre-decode *activation* (not weights): linear -> embedding activation;
+        mlp -> penultimate; rnn/transformer -> hidden state after reading [start, item]."""
         item_tokens = self.dataset.item_tokens
         start_token = getattr(self.dataset, "start_token", None)
-        if hasattr(model, "item_reps"):                                    # readout heads
+        if hasattr(model, "item_reps"):
             return model.item_reps(item_tokens.to(self.c.device), start_token).detach().cpu().numpy()
-        if self.config.model_kwargs.model_type == "transformer":          # causal LM: hidden state
-            start = torch.full((len(item_tokens), 1), int(start_token), dtype=torch.long, device=self.c.device)
-            ids = torch.cat([start, item_tokens.view(-1, 1).to(self.c.device)], dim=1)
-            hs = model(ids, output_hidden_states=True)["hidden_states"]
-            return hs[-1][:, -1, :].detach().cpu().numpy()
         embed = model.get_input_embeddings() if hasattr(model, "get_input_embeddings") else None
         if embed is not None:                                             # fallback (e.g. test stubs)
             return embed.weight.detach().cpu().numpy()[item_tokens.cpu().numpy()]
@@ -233,9 +227,9 @@ class Evaluator:
     def _eval_batch(self, model, batch, output_hidden_states):
         all_outputs = model(batch["input_ids"].to(self.c.device), output_hidden_states=output_hidden_states)
         outputs = all_outputs[model.output_key].cpu()
-        # Map a full-vocab LLM distribution down to the task's item tokens.
-        if outputs.shape[-1] > 1 and outputs.shape[-1] != self.dataset.num_dims:
-            outputs = outputs[..., self.dataset.item_tokens]
+        # A vocab-wide head (causal LM) is mapped down to the dataset's outcome tokens.
+        if outputs.shape[-1] == self.dataset.vocab_size:
+            outputs = outputs[..., self.dataset.label_tokens]
         eval_labels = batch.get("eval_labels", batch["labels"]).cpu()
         hidden_states = (
             torch.stack([h.cpu() for h in all_outputs["hidden_states"]], dim=1)
@@ -277,8 +271,8 @@ def run_evaluation(cfg: DictConfig) -> None:
             return Evaluator.from_cache(config, dataset, cache_dir)
         return Evaluator(config, dataset)
 
-    if model_type == "transformer" or model_type in READOUT_CLASSES:
-        # Trained from scratch (transformer or readout head): evaluate every saved checkpoint.
+    if model_type == "transformer" or model_type in MODEL_CLASSES:
+        # Trained from scratch: evaluate every saved checkpoint.
         dataset = init_dataset(config, overwrite_data=cfg.overwrite)
         evaluator = build_evaluator(dataset)
         checkpoints = sorted(int(item) for item in os.listdir(config.output_dir))

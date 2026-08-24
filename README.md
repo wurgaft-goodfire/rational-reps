@@ -33,18 +33,18 @@ with `runner=...`; override any config key on the CLI.
 
 ```bash
 # Train
-uv run python -m src.code.train runner=dirichlet_transformer
+uv run python -m src.code.train runner=linear setting=word_attribute
 uv run python -m src.code.train runner=hmm_transformer structure=grid
-uv run python -m src.code.train runner=pcfg_dyck_rnn
+uv run python -m src.code.train runner=hmm_transformer
 
 # Sweep (Hydra runs in multirun mode by default)
 uv run python -m src.code.train runner=transformer model_kwargs.model_config.hidden_size=16,64,256
 
 # Evaluate every checkpoint of a trained run (same runner + overrides as training)
-uv run python -m src.code.eval runner=dirichlet_transformer
+uv run python -m src.code.eval runner=hmm_transformer
 
 # Re-evaluate, overwriting existing metrics
-uv run python -m src.code.eval runner=dirichlet_transformer overwrite=true
+uv run python -m src.code.eval runner=hmm_transformer overwrite=true
 ```
 
 Evaluation is **deterministic**: a fixed set of eval batches is sampled once (seeded), so every
@@ -61,15 +61,10 @@ and the predicted geometry.
 | `graph` | graph → diffusion co-occurrence → next token | structure harmonics (ring → circle) |
 | `hypercube` | binary attribute vectors, heat-kernel co-occurrence | additive per-bit code → linear analogies |
 | `relational` | order-2 operation `c = a*b` | bilinear tensor factors |
-| `distribution` | items are parametric distributions, predict `p(x\|θ)` | natural parameters / sufficient statistics |
-| `word_attribute` | words = feature-cube corners → attribute tokens | reweighted truncation of the cube code |
-| `feature_cube` | product kernel with importance ladder + sparse measure | packed (superposed) feature directions |
-| `dirichlet` | in-context inference of a per-sequence categorical | posterior predictive (belief simplex) |
-| `exchangeable` | in-context inference over any distribution family | posterior over atoms, exact filtering |
+| `word_attribute` | N words with Bernoulli(p) attribute bundles → m attribute tokens | packed (superposed) attribute directions |
 | `hmm` | latent walk on a graph, emitted tokens | belief state of the forward algorithm |
-| `pcfg` | terminal strings of a probabilistic grammar | predictive states over hidden parses |
 
-Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `klinear`, `sae`, `llm` (pretrained).
+Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `linear`, `sae`, `llm` (pretrained).
 
 ## Output structure
 
@@ -87,7 +82,7 @@ $CACHE_DIR/{setting}/{override_dirname}/{name}/
 
 Analysis notebooks in `src/notebooks/` are percent-format `.py` files
 ([jupytext](https://jupytext.readthedocs.io/) / VS Code `# %%` cells) — no `.ipynb` in the repo.
-One notebook per setting (`dirichlet_analysis.py`, `hmm_analysis.py`, …) plus cross-setting
+One notebook per setting (`word_attribute_analysis.py`, `hmm_analysis.py`, …) plus cross-setting
 geometry studies. Run them interactively, or headless:
 
 ```bash
@@ -123,7 +118,7 @@ all models trained on one structure share a figures dir.
 ```python
 from src.code.analysis_utils import load_eval_results
 
-df = load_eval_results(setting="dirichlet-categorical", experiment_name="dirichlet_transformer")
+df = load_eval_results(setting="graph-cooccurrence", experiment_name="word_attribute")
 ```
 
 wandb is optional throughout: `wandb.enabled=false` (the default) skips `wandb.init` and all
@@ -135,8 +130,8 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 
 - `conf/config.yaml` — base defaults (setting + model + train + runner), wandb toggle, run-dir layout.
 - `src/code/config.py` — `Config` wraps the resolved `DictConfig`; seeds all RNGs; turns `save_steps_method` into a concrete checkpoint schedule.
-- `src/code/data.py` — `init_dataset` + one dataset class per setting, plus the structure gallery (graphs, kernels, grammars). Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
-- `src/code/geometry.py` — the rational-code oracles: spectral factorizations (`factor_logcond`), HMM/PCFG belief and predictive states, the nuclear-norm feature oracle (`nuclear_features`), and representation-comparison utilities (principal angles, superposition measures).
+- `src/code/data.py` — `init_dataset` + three dataset classes (co-occurrence, relational, HMM), plus the structure gallery (graphs and co-occurrence kernels). Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
+- `src/code/geometry.py` — the rational-code oracles: spectral factorizations (`factor_logcond`, `truncation_features`), the nuclear-norm feature oracle (`nuclear_features`), and representation-comparison utilities (principal angles, superposition measures).
 - `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
 - `src/code/train.py` — Hydra entry point + `train_inline` for notebooks. Sizes the model from the dataset, runs the HF `Trainer` with custom callbacks.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.

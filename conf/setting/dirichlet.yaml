@@ -1,8 +1,0 @@
-# @package _global_
-# Exchangeable categorical task: each sequence draws theta ~ Dir(alpha) and emits iid tokens.
-# The belief state IS the next-token predictive (plus the evidence total) — in-context dynamics
-# over observables, no latent graph. Geometry oracle: dirichlet_predictive_states.
-setting: dirichlet-categorical
-n_categories: 3          # K outcome categories (K=3 -> the belief simplex is a plottable triangle)
-alpha: 1.0               # symmetric Dirichlet concentration (1.0 = flat prior)
-sample_mode: sequence    # sequence-only

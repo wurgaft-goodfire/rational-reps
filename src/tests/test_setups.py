@@ -86,8 +86,8 @@ def test_uncertainty_plot_renders():
 
 def test_stacking_plot_renders():
     from src.code import plot_utils
-    fig = plot_utils.plot_stacking(n=10, q=8, n_features=5, sae_steps=200)
-    assert len(fig.axes) == 4                                        # union / product / share / superpose
+    fig = plot_utils.plot_stacking(n=10, q=8)
+    assert len(fig.axes) == 3                                        # union / product / share
 
 
 # ── per-structure draw layouts ────────────────────────────────────────────────

@@ -1,6 +1,5 @@
-"""Closed-form predicted geometries: factor a task's conditional into a code ``E`` (the
-geometry a network should learn) and a decoder ``D`` (the readout). Derivations live in
-``src/notebooks/demo_graphs.ipynb``."""
+"""Predicted geometries: factor a task's conditional into a code ``E`` (the
+geometry a network should learn) and a decoder ``D`` (the readout)."""
 import numpy as np
 
 
@@ -26,6 +25,13 @@ def factor_logcond(L, drop_base_measure=False, w=None):
     return Lc, E, D, S, nu
 
 
+def truncation_features(L, d, w=None):
+    """Rank-d prefix of the correspondence-analysis factorization of ``L``: the truncation
+    oracle at budget d. Returns (A (d, N), D (d, n_x)) for the identity lift."""
+    _, E, D, _, _ = factor_logcond(L, w=w)
+    return E[:, :d].T, D[:d]
+
+
 def factor_tensor(T):
     """Factor an order-2+ conditional tensor: items on the first axis, remaining axes
     reshaped into columns, mean-centered, SVD. Returns ``(E, S)`` with ``E`` the
@@ -43,105 +49,6 @@ def predicted_geometry(conditional):
     if conditional.ndim == 2:
         return factor_logcond(conditional)[1]
     return factor_tensor(conditional)[0]
-
-
-def spectral_hmm(pi, T, Em):
-    """Hsu-Kakade-Zhang spectral HMM from exact moments ``pi`` (n,), ``T`` (n,n), ``Em`` (n,M).
-    Returns ``(U, B, b1, b_inf)``: observable subspace (M,n), operators (M,n,n) with linear
-    belief update ``b <- normalize(B[x] @ b)``, and initial state / normalizer. Equals the
-    forward-algorithm belief up to a fixed invertible map."""
-    pi = np.asarray(pi, np.float64); T = np.asarray(T, np.float64); Em = np.asarray(Em, np.float64)
-    n, _ = Em.shape
-    P1 = pi @ Em                                                      # p(x1)
-    P21 = np.einsum("s,sj,st,ti->ij", pi, Em, T, Em)                 # p(x2=i, x1=j)
-    P3 = np.einsum("s,sj,st,tx,tu,ui->xij", pi, Em, T, Em, T, Em)    # p(x3=i, x2=x, x1=j)
-    U = np.linalg.svd(P21)[0][:, :n]                                 # observable subspace
-    UP21_pinv = np.linalg.pinv(U.T @ P21)
-    B = np.stack([(U.T @ P3[x]) @ UP21_pinv for x in range(len(P3))])
-    return U, B, U.T @ P1, UP21_pinv.T @ P1
-
-
-def spectral_beliefs(B, b1, b_inf, obs):
-    """Per-position spectral belief states for ``obs`` (batch, L); each equals the forward-algorithm
-    belief up to the fixed linear map from ``spectral_hmm``. Normalized every step to stay bounded."""
-    obs = np.asarray(obs); out = np.zeros((*obs.shape, len(b1)))
-    for r in range(obs.shape[0]):
-        st = b1.copy()
-        for t in range(obs.shape[1]):
-            st = B[obs[r, t]] @ st; st = st / (b_inf @ st)
-            out[r, t] = st
-    return out
-
-
-def hankel_forward_states(g, prefixes, suffixes, rank=None, tol=1e-9, w=None, nu=None):
-    """Spectral predictive-state basis for a PCFG's string distribution: SVD of the Hankel
-    matrix ``H[u,v] = p(string = u·v)``, weighted correspondence-analysis style by the prefix
-    measure ``w`` and suffix measure ``nu`` (uniform by default). Returns ``(forward_state,
-    info)``: ``forward_state(prefix)`` -> rank-``r`` canonical state; ``info`` holds ``H``,
-    ``S``, ``rank``."""
-    from .data import pcfg_inside_chart
-    _cache = {}
-
-    def sprob(pref):
-        pref = tuple(pref)
-        if len(pref) == 0:
-            return 0.0                                               # our grammars emit non-empty strings
-        if pref not in _cache:
-            In = pcfg_inside_chart(np.asarray(pref, dtype=int), g)
-            _cache[pref] = float(g.pi @ In[(0, len(pref) - 1)])
-        return _cache[pref]
-
-    suf = [list(v) for v in suffixes]
-    H = np.array([[sprob(list(u) + v) for v in suf] for u in prefixes])
-    nP, nS = H.shape
-    w = np.full(nP, 1.0 / nP) if w is None else np.asarray(w, float) / np.sum(w)      # prefix measure
-    nu = np.full(nS, 1.0 / nS) if nu is None else np.asarray(nu, float) / np.sum(nu)  # suffix measure
-    M = np.sqrt(w)[:, None] * H * np.sqrt(nu)[None, :]              # correspondence-analysis weighting
-    U, S, Vt = np.linalg.svd(M, full_matrices=False)
-    r = rank or int((S > tol * S[0]).sum())
-    proj = (np.sqrt(nu)[:, None] * Vt[:r].T) @ np.diag(1.0 / np.sqrt(S[:r]))   # future -> canonical state
-
-    def forward_state(pref):
-        rw = np.array([sprob(list(pref) + v) for v in suf])
-        return rw @ proj
-
-    return forward_state, {"H": H, "S": S, "rank": r}
-
-
-def pcfg_predictive_states(g, seqs, test_len=4, max_tests=60):
-    """Exact predictive state at every distinct prefix of a corpus:
-    ``F[u, v] = p(continuation begins with test v | prefix u)`` plus an end-of-sentence column,
-    tests being the ``max_tests`` most frequent continuations of length ``1..test_len``.
-    Returns ``(prefixes, F, info)`` with ``info["rank"]`` the numeric rank of ``F`` and
-    ``info["loc"]`` each prefix's first ``(sequence, position)`` occurrence."""
-    from collections import Counter
-    from .data import pcfg_inside_chart, pcfg_prefix_chart
-    _cache = {}
-
-    def charts(x):
-        x = tuple(x)
-        if x not in _cache:
-            In = pcfg_inside_chart(np.asarray(x, dtype=int), g)
-            PIn = pcfg_prefix_chart(np.asarray(x, dtype=int), g, In)
-            _cache[x] = (float(g.pi @ PIn[(0, len(x) - 1)]), float(g.pi @ In[(0, len(x) - 1)]))
-        return _cache[x]                                             # (p(prefix x), p(sentence == x))
-
-    first = {}
-    for b, s in enumerate(seqs):
-        for t in range(len(s) + 1):
-            first.setdefault(tuple(s[:t]), (b, t))
-    prefixes = sorted(first)
-    counts = Counter(tuple(s[t:t + k]) for s in seqs for t in range(len(s))
-                     for k in range(1, test_len + 1) if t + k <= len(s))
-    tests = [v for v, _ in counts.most_common(max_tests)]
-    F = np.empty((len(prefixes), len(tests) + 1))
-    for i, u in enumerate(prefixes):
-        Zu = 1.0 if not u else charts(u)[0]
-        F[i, :-1] = [charts(u + v)[0] / Zu for v in tests]
-        F[i, -1] = (charts(u)[1] / Zu) if u else 0.0                 # sentences are non-empty
-    return prefixes, F, {"tests": tests, "rank": int(np.linalg.matrix_rank(F)),
-                         "loc": np.array([first[u] for u in prefixes])}
-
 
 ##### Budgeted CE-optimal codes: truncation vs superposition #####
 
@@ -281,12 +188,15 @@ def feature_vectors(H, Z, w=None):
 
 
 def attribute_stats(G, Z):
-    """Per-attribute swing and intercept of null-pinned logits ``G`` (N, m+1) on ±1 features
-    ``Z`` (N, m): a_hat_i = mean(z_i (G_i - G_null)), b_hat_i = mean(G_i - G_null).
-    Returns (a_hat (m,), b_hat (m,))."""
+    """Gauge-free per-attribute swing and intercept of logits ``G`` (N, m) on 0/1 features
+    ``Z`` (N, m): least squares G[x, i] ~ a_i Z[x, i] + b_i + c_x, intercepts pinned by
+    mean(c) = 0. Returns (a_hat (m,), b_hat (m,))."""
     G = np.asarray(G, float); Z = np.asarray(Z, float)
-    Gp = G[:, :-1] - G[:, -1:]
-    return (Gp * Z).mean(0), Gp.mean(0)
+    N, m = Z.shape
+    per_attribute = np.tile(np.eye(m), (N, 1))                    # one indicator column per attribute
+    X = np.hstack([Z.ravel()[:, None] * per_attribute, per_attribute, np.repeat(np.eye(N), m, 0)])
+    theta = np.linalg.lstsq(X, G.ravel(), rcond=None)[0]
+    return theta[:m], theta[m:2 * m] + theta[2 * m:].mean()
 
 
 def superposition_measure(A):

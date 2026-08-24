@@ -7,7 +7,7 @@ import torch
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import GraphCooccurrenceDataset
+from src.code.data import CooccurrenceDataset
 from src.code.models import init_model
 from src.code.eval import Evaluator
 
@@ -26,7 +26,7 @@ def _train_and_score(model_type, steps=500, lr=0.01, n=12):
         "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     config = Config(cfg)
-    dataset = GraphCooccurrenceDataset(config)
+    dataset = CooccurrenceDataset(config)
     config.cfg.model_kwargs.model_config.vocab_size = dataset.vocab_size
     config.cfg.model_kwargs.model_config.num_classes = dataset.num_dims
     config.cfg.model_kwargs.model_config.arity = dataset.arity
@@ -41,25 +41,25 @@ def _train_and_score(model_type, steps=500, lr=0.01, n=12):
     return metrics
 
 
-@pytest.mark.parametrize("model_type", ["klinear", "mlp", "rnn"])
+@pytest.mark.parametrize("model_type", ["linear", "mlp", "rnn"])
 def test_architecture_converges_to_predicted_circle(model_type):
     metrics = _train_and_score(model_type)
     # every architecture recovers the circle geometry (random init ~ 0)
     assert metrics["rsa_vs_predicted"] > 0.6, f"{model_type}: {metrics}"
 
 
-def _train_distribution(steps=600, lr=0.01):
-    from src.code.data import DistributionFamilyDataset
+def _train_word_attribute(steps=600, lr=0.01):
     mc = {"vocab_size": 4, "num_classes": 4, "arity": 1, "embed_dim": 16,
           "hidden_size": 64, "num_layers": 1, "init_scale": 0.3}
     cfg = OmegaConf.create({
-        "setting": "distribution-family", "family": "gaussian1d", "random_seed": 0,
-        "model_kwargs": {"model_type": "klinear", "model_config": mc},
+        "setting": "graph-cooccurrence", "structure": "word_attribute", "random_seed": 0,
+        "structure_kwargs": {"N": 32, "m": 4, "p": 0.3},
+        "model_kwargs": {"model_type": "linear", "model_config": mc},
         "training_kwargs": {"batch_size": 256, "context_length": 6},
         "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     config = Config(cfg)
-    dataset = DistributionFamilyDataset(config)
+    dataset = CooccurrenceDataset(config)
     config.cfg.model_kwargs.model_config.vocab_size = dataset.vocab_size
     config.cfg.model_kwargs.model_config.num_classes = dataset.num_dims
     config.cfg.model_kwargs.model_config.arity = dataset.arity
@@ -73,9 +73,9 @@ def _train_distribution(steps=600, lr=0.01):
     return Evaluator(config, dataset).evaluate(model)[0]
 
 
-def test_klinear_converges_to_gaussian_natural_param_geometry():
+def test_linear_converges_to_word_attribute_geometry():
     # the learned per-item embedding recovers the predicted natural-parameter manifold
-    assert _train_distribution()["rsa_vs_predicted"] > 0.6
+    assert _train_word_attribute()["rsa_vs_predicted"] > 0.6
 
 
 def _cka(X, Y):
@@ -91,7 +91,7 @@ def test_bilinear_modular_addition_learns_a_circle():
     mc = {"vocab_size": 4, "num_classes": 4, "arity": 2, "embed_dim": 10, "init_scale": 0.3}
     cfg = OmegaConf.create({
         "setting": "relational", "operation": "modular_add", "operation_kwargs": {"p": p},
-        "random_seed": 1, "model_kwargs": {"model_type": "klinear", "model_config": mc},
+        "random_seed": 1, "model_kwargs": {"model_type": "linear", "model_config": mc},
         "training_kwargs": {"batch_size": 256, "context_length": 6},
         "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })

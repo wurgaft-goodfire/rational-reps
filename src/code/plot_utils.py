@@ -492,64 +492,42 @@ def _circle2d(X):
     return P / (np.linalg.norm(P, axis=1).mean() + 1e-9)
 
 
-def plot_stacking(n=12, q=10, n_features=5, sae_steps=3000):
+def plot_stacking(n=12, q=10):
     """Combining structures shapes the code (demo_graphs §2): disjoint supports **union** into
     separate circles; shared independent factors form a **product** (torus = two factor circles);
-    aligned relations **share** one circle; over-capacity features **superpose** into a polygon."""
+    aligned relations **share** one circle."""
     from .data import stacked_conditional
     from .geometry import factor_logcond
-    from .models import train_sparse_autoencoder
     ring = lambda k: {"structure": "ring", "n": k}
-    fig, ax = plt.subplots(2, 2, figsize=(8.5, 8))
+    fig, ax = plt.subplots(1, 3, figsize=(12.5, 4.2))
 
     # disjoint supports -> union (two separate circles)
     Eu = factor_logcond(stacked_conditional([ring(n), ring(n)], "union"))[1]
     for sl, off in [(slice(0, n), -1.6), (slice(n, 2 * n), 1.6)]:
         P = _circle2d(Eu[sl])
-        ax[0, 0].scatter(P[:, 0] + off, P[:, 1], c=np.arange(n), cmap=FIG.cyclic_cmap, s=35)
-    ax[0, 0].set_title("disjoint supports: union (two circles)")
-    ax[0, 0].set_aspect("equal"); FIG.clean(ax[0, 0])
+        ax[0].scatter(P[:, 0] + off, P[:, 1], c=np.arange(n), cmap=FIG.cyclic_cmap, s=35)
+    ax[0].set_title("disjoint supports: union (two circles)")
+    ax[0].set_aspect("equal"); FIG.clean(ax[0])
 
     # shared support, independent factors -> product (a torus, shown as its two factor circles)
     Ep = factor_logcond(stacked_conditional([ring(n), ring(q)], "product"))[1]
     idx = np.arange(n * q)
     ci = _circle2d(np.stack([Ep[idx // q == i].mean(0) for i in range(n)]))
     cj = _circle2d(np.stack([Ep[idx % q == j].mean(0) for j in range(q)]))
-    ax[0, 1].scatter(ci[:, 0] - 1.6, ci[:, 1], c=np.arange(n), cmap=FIG.cyclic_cmap, s=35)
-    ax[0, 1].scatter(cj[:, 0] + 1.6, cj[:, 1], c=np.arange(q), cmap=FIG.cyclic_cmap, s=35)
-    ax[0, 1].set_title("shared, independent: product (torus)")
-    ax[0, 1].set_aspect("equal"); FIG.clean(ax[0, 1])
+    ax[1].scatter(ci[:, 0] - 1.6, ci[:, 1], c=np.arange(n), cmap=FIG.cyclic_cmap, s=35)
+    ax[1].scatter(cj[:, 0] + 1.6, cj[:, 1], c=np.arange(q), cmap=FIG.cyclic_cmap, s=35)
+    ax[1].set_title("shared, independent: product (torus)")
+    ax[1].set_aspect("equal"); FIG.clean(ax[1])
 
     # shared support, aligned relations -> share (one circle)
     Es = factor_logcond(stacked_conditional([ring(n), ring(n)], "share"))[1]
     P = _circle2d(Es)
-    ax[1, 0].scatter(P[:, 0], P[:, 1], c=np.arange(n), cmap=FIG.cyclic_cmap, s=35)
-    ax[1, 0].set_title("shared, aligned: share (one circle)")
-    ax[1, 0].set_aspect("equal"); FIG.clean(ax[1, 0])
-
-    # over capacity -> superpose (feature directions spread into a regular polygon)
-    W = train_sparse_autoencoder(n_features, d=2, steps=sae_steps)
-    for i in range(n_features):
-        ax[1, 1].annotate("", xy=(W[0, i], W[1, i]), xytext=(0, 0),
-                          arrowprops=dict(arrowstyle="-|>", color=plt.cm.twilight(i / n_features), lw=1.8))
-    lim = np.abs(W).max() * 1.3
-    ax[1, 1].set(xlim=(-lim, lim), ylim=(-lim, lim), title=f"over capacity: superpose ({n_features}-gon)")
-    ax[1, 1].set_aspect("equal"); FIG.clean(ax[1, 1])
+    ax[2].scatter(P[:, 0], P[:, 1], c=np.arange(n), cmap=FIG.cyclic_cmap, s=35)
+    ax[2].set_title("shared, aligned: share (one circle)")
+    ax[2].set_aspect("equal"); FIG.clean(ax[2])
 
     fig.tight_layout()
     return fig
-
-
-def feature_arrows(ax, V, scale=1.25, lw=1.8, fontsize=10):
-    """Labeled feature vectors (rows of V, (m, 2)) as arrows from the origin, tab10-colored."""
-    for i, v in enumerate(np.asarray(V, float)):
-        c = plt.cm.tab10(i)
-        ax.annotate("", xy=v, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=lw, color=c))
-        ax.annotate(str(i + 1), v * 1.15, fontsize=fontsize, ha="center", va="center", color=c)
-    ax.scatter([0], [0], s=12, color="0.3", zorder=3)
-    r = np.abs(V).max() * scale + 1e-9
-    ax.set_xlim(-r, r); ax.set_ylim(-r, r); ax.set_aspect("equal")
-    FIG.clean(ax)
 
 
 def rdm_heatmap(ax, reps, title="RDM"):
@@ -759,63 +737,6 @@ def plot_convergence_bars(scores, ylabel="similarity to predicted geometry",
 
 
 # ── unified belief-representation figures (shared by the HMM and PCFG notebooks) ──
-
-def class_mean_axes(X, labels):
-    """Top-2 plane of the class means of ``X`` — a stable 2-D view for a labeled point cloud
-    (per-point clouds are noisy; the mean structure defines the plane)."""
-    X = np.asarray(X, float); labels = np.asarray(labels)
-    means = np.stack([X[labels == k].mean(0) for k in np.unique(labels)])
-    return np.linalg.svd(means - means.mean(0), full_matrices=False)[2][:2]
-
-
-def plot_alignment_grid(reference, candidates, methods=("linear", "rotation"), rank=None,
-                        colors=None, cmap=None, ref_label="reference", view="pca",
-                        colorbar_label=None, suptitle=None, panel=3.8):
-    """Grid of scatter panels comparing representations to a ``reference``: rows = alignment
-    methods ('linear' | 'rotation'), columns = [reference] + ``candidates`` (dict name -> (N, d)),
-    each aligned into the reference's 2-D view plane with its R² annotated. ``rank`` PCA-truncates
-    the reference (and each candidate before rotation); ``view``: ``"pca"`` | ``"class_means"``."""
-    from .analysis_utils import align_representations
-    reference = np.asarray(reference, float)
-    refc = reference - reference.mean(0)
-    if rank:
-        reference = refc @ np.linalg.svd(refc, full_matrices=False)[2][:rank].T
-        refc = reference - reference.mean(0)
-    if view == "class_means":
-        view_axes = class_mean_axes(refc, np.asarray(colors))
-    else:
-        view_axes = np.linalg.svd(refc, full_matrices=False)[2][:2]
-
-    cols = [(ref_label, None)] + list(candidates.items())
-    fig, ax = plt.subplots(len(methods), len(cols), figsize=(panel * len(cols), (panel + 0.6) * len(methods)),
-                           squeeze=False)
-    for r, method in enumerate(methods):
-        for c, (name, Y) in enumerate(cols):
-            if Y is None:
-                coords, r2 = refc @ view_axes.T, 1.0
-            else:
-                aligned, r2 = align_representations(Y, reference, method=method, rank=rank)
-                coords = (aligned - reference.mean(0)) @ view_axes.T
-            a = ax[r, c]
-            sc = a.scatter(coords[:, 0], coords[:, 1], c=colors, cmap=cmap or FIG.cyclic_cmap,
-                           s=10, alpha=0.6, edgecolors="none")
-            c0 = np.median(coords, 0)
-            rad = np.percentile(np.abs(coords - c0), 98).max() * 1.15 + 1e-9      # crop outliers
-            a.set_xlim(c0[0] - rad, c0[0] + rad); a.set_ylim(c0[1] - rad, c0[1] + rad)
-            a.set_aspect("equal"); FIG.clean(a)
-            if r == 0:
-                a.set_title(name, fontsize=13, pad=8)
-            if c == 0:
-                a.set_ylabel(f"aligned by {method}", fontsize=12)
-            a.text(0.5, -0.04, f"R2 = {r2:.2f}", transform=a.transAxes, ha="center", va="top", fontsize=11)
-    if colorbar_label is not None:
-        cb = fig.colorbar(sc, ax=ax, fraction=0.02, pad=0.02); cb.set_label(colorbar_label)
-    if suptitle:
-        fig.suptitle(suptitle, y=1.02)
-    if colorbar_label is None:
-        fig.tight_layout()
-    return fig
-
 
 def plot_prediction_pair(reference, prediction, name, colors, method="linear", cmap=None,
                          panel=3.8, ref_label="transformer"):

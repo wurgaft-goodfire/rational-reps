@@ -1,11 +1,13 @@
 # @package _global_
-# Word -> attribute family: words are the 2^m corners of the feature cube, outcomes the m
-# attribute tokens plus a null reference. alpha_i = w0(gamma) * alpha_decay^i (reliability),
-# beta_i = -i * beta_step (attribute frequency; beta_step is the dropout sweep variable).
-setting: distribution-family
-family: word_attribute
-family_kwargs:
+# Bipartite word -> attribute co-occurrence: N words with i.i.d. Bernoulli(p) features in
+# {0, 1}, outcomes the m attribute tokens, log p(i|x) = log_softmax(alpha_i Z_xi) with
+# alpha_i = scale * decay^i. p = sparsity, decay = importance ladder, scale = sharpness.
+setting: graph-cooccurrence
+structure: word_attribute
+structure_kwargs:
+  N: 256
   m: 8
-  gamma: 0.03
-  alpha_decay: 0.9
-  beta_step: 0.0
+  p: 0.3
+  decay: 0.9
+  scale: 8.0
+  seed: 0

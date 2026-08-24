@@ -10,7 +10,7 @@ from hydra.core.global_hydra import GlobalHydra
 from dotenv import load_dotenv
 from pyprojroot import here
 from omegaconf import DictConfig, OmegaConf, open_dict
-from .models import init_model, load_model, READOUT_CLASSES
+from .models import init_model, load_model, MODEL_CLASSES
 from .config import Config, clean_dirname
 from .data import init_dataset
 from .eval import Evaluator
@@ -62,8 +62,8 @@ def train(config):
     mc = config.cfg.model_kwargs.model_config
     with open_dict(mc):
         mc.vocab_size = dataset.vocab_size
-        if config.cfg.model_kwargs.model_type in READOUT_CLASSES:
-            mc.num_classes = dataset.num_dims          # readout heads: outcome classes + arity
+        if config.cfg.model_kwargs.model_type in MODEL_CLASSES:
+            mc.num_classes = dataset.num_dims          # model ladder: outcome classes + arity
             mc.arity = dataset.arity
             print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
                   f"num_classes={dataset.num_dims}, arity={dataset.arity}")

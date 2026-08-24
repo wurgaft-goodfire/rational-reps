@@ -1,4 +1,6 @@
 import logging
+import types
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,42 +23,55 @@ def init_model(config):
         torch.backends.cudnn.benchmark = False
 
     model_type = config.model_kwargs.model_type
-    if model_type in READOUT_CLASSES:
+    if model_type in MODEL_CLASSES:
         mc = OmegaConf.to_container(config.model_kwargs.model_config, resolve=True)
-        model = READOUT_CLASSES[model_type](ReadoutConfig(**mc))
+        model = MODEL_CLASSES[model_type](ModelConfig(**mc))
     else:
         model_config = transformers.GPTNeoXConfig(**config.model_kwargs["model_config"])
         model = transformers.AutoModelForCausalLM.from_config(model_config)
-        model.output_key = "logits"
+        _wrap_causal_lm(model)
     logger.info(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
     return model.to("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _wrap_causal_lm(model):
+    """Give an HF causal LM the interface the Evaluator reads: logits key + item_reps."""
+    model.output_key = "logits"
+    model.item_reps = types.MethodType(_causal_lm_item_reps, model)
+    return model
+
+
+def _start_prefixed(item_ids, start_token):
+    """The minimal context [start, item] for each item. (n_items, 2)."""
+    start = torch.full((len(item_ids), 1), int(start_token), dtype=torch.long, device=item_ids.device)
+    return torch.cat([start, item_ids.view(-1, 1)], dim=1)
+
+
+def _causal_lm_item_reps(self, item_ids, start_token):
+    """Last hidden state at the item position of [start, item], before the LM head."""
+    ids = _start_prefixed(item_ids, start_token)
+    return self(ids, output_hidden_states=True)["hidden_states"][-1][:, -1, :]
+
+
 def load_model(config, model_path, device="cuda"):
     model_type = config.model_kwargs.model_type
-    if model_type in READOUT_CLASSES:
-        model = READOUT_CLASSES[model_type].from_pretrained(model_path)
+    if model_type in MODEL_CLASSES:
+        model = MODEL_CLASSES[model_type].from_pretrained(model_path)
         model.output_key = "logits"
         return model.to(device), None
     if model_type in ("transformer", "llm"):
-        model = transformers.AutoModelForCausalLM.from_pretrained(model_path)
-        model.output_key = "logits"
+        model = _wrap_causal_lm(transformers.AutoModelForCausalLM.from_pretrained(model_path))
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_path) if model_type == "llm" else None
         return model.to(device), tokenizer
     raise ValueError(f"Unsupported model_type for loading: {model_type}")
 
 
-################# Readout-head ladder (representational convergence) ########################
-# A ladder of architectures that all learn a shared item embedding table (read out by the
-# Evaluator via get_input_embeddings) so we can test that different architectures trained on
-# the same generative process converge to the same predicted geometry. Implemented as
-# PreTrainedModel subclasses so they slot into the HF Trainer, CustomSaveCallback, and
-# load_model unchanged. All consume the pointwise batch: input_ids (B, arity) -> logits (B, C).
+################# Model ladder (representational convergence) ########################
 
-class ReadoutConfig(transformers.PretrainedConfig):
-    """Config for the readout heads. Sizing fields (vocab_size/num_classes/arity) are patched
+class ModelConfig(transformers.PretrainedConfig):
+    """Config for the from-scratch models. Sizing fields (vocab_size/num_classes/arity) are patched
     from the dataset in train.py, mirroring how the transformer's vocab_size is patched."""
-    model_type = "readout"
+    model_type = "ladder"
 
     def __init__(self, vocab_size=2, num_classes=2, embed_dim=16, arity=1,
                  hidden_size=64, num_layers=2, init_scale=0.02, l1=0.0, **kwargs):
@@ -71,8 +86,8 @@ class ReadoutConfig(transformers.PretrainedConfig):
         self.l1 = l1                                     # SAE sparsity penalty
 
 
-class _ReadoutBase(transformers.PreTrainedModel):
-    config_class = ReadoutConfig
+class _ModelBase(transformers.PreTrainedModel):
+    config_class = ModelConfig
     main_input_name = "input_ids"
     _tied_weights_keys = None
     all_tied_weights_keys = {}          # these heads tie no weights (transformers>=5 reads this)
@@ -96,7 +111,7 @@ class _ReadoutBase(transformers.PreTrainedModel):
         return out
 
 
-class KLinearReadout(_ReadoutBase):
+class LinearModel(_ModelBase):
     """Unified k-linear head: shared embedding E + rank-(k+1) readout tensor W[c, i1..ik]
     contracted with e(x1)...e(xk). k=1 -> linear W.e(x); k=2 -> bilinear e(a)^T M_c e(b).
     arity is read from the config (patched from dataset.arity)."""
@@ -118,7 +133,7 @@ class KLinearReadout(_ReadoutBase):
         return self.embedding(item_ids)                     # pre-decode code == the embedding
 
 
-class MLPReadout(_ReadoutBase):
+class MLPModel(_ModelBase):
     """MLP over the concatenated input-item embeddings."""
 
     def __init__(self, config):
@@ -138,7 +153,7 @@ class MLPReadout(_ReadoutBase):
         return self.mlp[:-1](self.embedding(item_ids))      # penultimate activation (pre-decode)
 
 
-class RNNReadout(_ReadoutBase):
+class RNNModel(_ModelBase):
     """GRU causal language model over walk sequences (a genuine recurrent sequence model): predicts
     the next token at each position. The pre-decode representation is the GRU hidden state."""
 
@@ -161,13 +176,11 @@ class RNNReadout(_ReadoutBase):
 
     def item_reps(self, item_ids, start_token):
         """Hidden-state activation after reading each item in the minimal context [start, item]."""
-        start = torch.full((len(item_ids), 1), int(start_token), dtype=torch.long, device=item_ids.device)
-        seq = torch.cat([start, item_ids.view(-1, 1)], dim=1)
-        h, _ = self.rnn(self.embedding(seq))
+        h, _ = self.rnn(self.embedding(_start_prefixed(item_ids, start_token)))
         return h[:, -1]
 
 
-class SAEReadout(_ReadoutBase):
+class SAEModel(_ModelBase):
     """Softmax autoencoder with a ReLU bottleneck on feature activations x (B, m): code
     h = relu(We x + be), logits Wd h (bias-free readout), CE against the target distribution
     (+ l1 * mean|h|). Bottleneck = hidden_size; feature dim = num_classes."""
@@ -190,25 +203,5 @@ class SAEReadout(_ReadoutBase):
         return out
 
 
-READOUT_CLASSES = {"klinear": KLinearReadout, "mlp": MLPReadout, "rnn": RNNReadout,
-                   "sae": SAEReadout}
-
-
-################# Superposition (over-capacity) ########################
-
-def train_sparse_autoencoder(n_features, d=2, sparsity=0.05, steps=3000,
-                             batch_size=1024, lr=1e-2, seed=0):
-    """Nonlinear sparse autoencoder on sparse feature activations; packing n_features > d superposes
-    the learned encoder columns into a regular polygon. Returns W of shape (d, n_features).
-    Standalone (unsupervised reconstruction), not part of the Trainer/Evaluator path."""
-    g = torch.Generator().manual_seed(seed)
-    W = nn.Parameter(0.1 * torch.randn(d, n_features, generator=g))
-    b = nn.Parameter(torch.zeros(n_features))
-    opt = torch.optim.Adam([W, b], lr=lr)
-    for _ in range(steps):
-        mask = (torch.rand(batch_size, n_features, generator=g) < sparsity).float()
-        x = mask * torch.rand(batch_size, n_features, generator=g)
-        xr = torch.relu((x @ W.T) @ W + b)
-        loss = ((x - xr) ** 2).mean()
-        opt.zero_grad(); loss.backward(); opt.step()
-    return W.detach().cpu().numpy()
+MODEL_CLASSES = {"linear": LinearModel, "mlp": MLPModel, "rnn": RNNModel,
+                   "sae": SAEModel}

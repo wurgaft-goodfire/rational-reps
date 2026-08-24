@@ -1,6 +1,0 @@
-# @package _global_
-# Order-1 asymmetric task: items are parametric distributions; the conditional is log p(x|theta).
-# The predicted code is the family's natural parameters; the decoder is its sufficient statistic.
-setting: distribution-family
-family: gaussian1d       # gaussian1d | gaussian2d | von_mises | categorical | mixture
-family_kwargs: {}        # family-specific params (see the family builders in src/code/data.py)

@@ -9,7 +9,7 @@ import torch.nn as nn
 from omegaconf import OmegaConf
 
 from src.code.config import Config
-from src.code.data import GraphCooccurrenceDataset
+from src.code.data import CooccurrenceDataset
 from src.code.eval import Evaluator, cka, rsa
 
 
@@ -17,7 +17,7 @@ def _config(n=16):
     cfg = OmegaConf.create({
         "setting": "graph-cooccurrence", "structure": "ring", "structure_kwargs": {"n": n},
         "gamma": 0.8, "sample_mode": "pointwise", "random_seed": 0,
-        "model_kwargs": {"model_type": "klinear"},
+        "model_kwargs": {"model_type": "linear"},
         "training_kwargs": {"batch_size": 8, "context_length": 6},
         "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
@@ -48,7 +48,7 @@ def test_metrics_helpers_are_invariant_and_bounded():
 
 def test_evaluator_scores_matching_embedding_near_one_and_shuffled_lower():
     config = _config(n=16)
-    dataset = GraphCooccurrenceDataset(config)
+    dataset = CooccurrenceDataset(config)
     evaluator = Evaluator(config, dataset)
     E = evaluator.predicted_E                                # (16, k)
 
@@ -67,7 +67,7 @@ def test_evaluator_scores_matching_embedding_near_one_and_shuffled_lower():
 
 def test_no_rep_metrics_when_model_lacks_embedding():
     config = _config(n=16)
-    dataset = GraphCooccurrenceDataset(config)
+    dataset = CooccurrenceDataset(config)
     evaluator = Evaluator(config, dataset)
 
     class _NoEmb:
