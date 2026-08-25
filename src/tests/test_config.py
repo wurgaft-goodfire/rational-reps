@@ -59,6 +59,13 @@ def test_every_eval_schedule():
     assert cfg.training_kwargs.save_steps == list(range(100, 1001, 100))
 
 
+def test_every_eval_without_a_cadence_saves_the_final_step():
+    """The default cadence scores only the final step, so "every eval" is one save, at the end."""
+    cfg = _cfg(save_steps_method="every_eval", eval_steps=None)
+    cfg.process_save_steps()
+    assert cfg.training_kwargs.save_steps == [1000]
+
+
 def test_end_only_schedule():
     cfg = _cfg(save_steps_method="end_only")
     cfg.process_save_steps()

@@ -81,7 +81,9 @@ class Config:
         training_kwargs = self.cfg.training_kwargs
         save_steps_method = training_kwargs.get("save_steps_method", None)
         if save_steps_method in [None, "every_eval"]:
-            training_kwargs.save_steps = np.arange(training_kwargs.eval_steps, training_kwargs.train_steps + 1, training_kwargs.eval_steps, dtype=int).tolist()
+            # eval_steps=None scores the final step only, so that is the one step worth saving.
+            every = training_kwargs.eval_steps or training_kwargs.train_steps
+            training_kwargs.save_steps = np.arange(every, training_kwargs.train_steps + 1, every, dtype=int).tolist()
 
         elif save_steps_method == "linear_schedule":
             num_checkpoints = training_kwargs.num_save_checkpoints
