@@ -71,7 +71,7 @@ def test_share_of_aligned_rings_is_a_single_circle():
 def test_product_stack_is_rank_four_torus():
     from src.code.geometry import factor_logcond
     L = stacked_conditional([{"structure": "ring", "n": 12}, {"structure": "ring", "n": 8}], "product")
-    _, _, _, S, _ = factor_logcond(L)
+    _, _, _, S = factor_logcond(L)
     assert S[3] > 2 * S[4]                                           # two Fourier pairs
 
 

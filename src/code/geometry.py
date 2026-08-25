@@ -3,32 +3,21 @@ geometry a network should learn) and a decoder ``D`` (the readout)."""
 import numpy as np
 
 
-def factor_logcond(L, drop_base_measure=False, w=None):
-    """Correspondence-analysis SVD of a log-conditional ``L[theta, x]``: column-center
-    (drop the per-row log-partition a softmax ignores); ``drop_base_measure=True`` also drops
-    the per-outcome mean. ``w`` is the row (item) measure, uniform by default. Returns
-    ``(Lc, E, D, S, nu)`` with the scale split as ``sqrt(S)`` on each factor (the balanced
-    split gradient descent learns), so ``E @ D = Lc``."""
+def factor_logcond(L):
+    """SVD of the row-centered log-conditional ``L[theta, x]`` (dropping the per-row
+    log-partition a softmax ignores). Returns ``(Lc, E, D, S)``, the scale split as
+    ``sqrt(S)`` on each factor (the balanced split gradient descent learns), so ``E @ D = Lc``."""
     L = np.asarray(L, dtype=np.float64)
-    N, _ = L.shape
-    w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
-    pp = np.exp(L - L.max(1, keepdims=True)); pp /= pp.sum(1, keepdims=True)
-    nu = w @ pp; nu /= nu.sum()                               # natural column (outcome) measure
-    Lc = L
-    if drop_base_measure:
-        Lc = Lc - (w @ Lc)[None, :]                           # drop x-only base measure
-    Lc = Lc - (Lc @ nu)[:, None]                              # drop per-row log-partition
-    U, S, Vt = np.linalg.svd(np.sqrt(w)[:, None] * Lc * np.sqrt(nu)[None, :], full_matrices=False)
-    rootS = np.sqrt(S)                                        # split the scale symmetrically (balanced)
-    E = (U / np.sqrt(w)[:, None]) * rootS
-    D = (rootS[:, None] * Vt) / np.sqrt(nu)[None, :]
-    return Lc, E, D, S, nu
+    Lc = L - L.mean(1, keepdims=True)
+    U, S, Vt = np.linalg.svd(Lc, full_matrices=False)
+    rootS = np.sqrt(S)                                        # split the scale symmetrically
+    return Lc, U * rootS, rootS[:, None] * Vt, S
 
 
-def truncation_features(L, d, w=None):
-    """Rank-d prefix of the correspondence-analysis factorization of ``L``: the truncation
-    oracle at budget d. Returns (A (d, N), D (d, n_x)) for the identity lift."""
-    _, E, D, _, _ = factor_logcond(L, w=w)
+def truncation_features(L, d):
+    """Rank-d prefix of the factorization of ``L``: the truncation oracle at budget d.
+    Returns (A (d, N), D (d, n_x)) for the identity lift."""
+    _, E, D, _ = factor_logcond(L)
     return E[:, :d].T, D[:d]
 
 
@@ -70,6 +59,34 @@ def expected_ce(Z, Lf, A, D, b, w=None):
     ce = -(w[:, None] * P * logq).sum()
     bayes = -(w[:, None] * xlogy(P, P)).sum()
     return ce, bayes
+
+
+def capacity_allocation(A, D, d):
+    """Per-outcome share of the d code dimensions: ``s`` (n_x,) summing to d. Centres the
+    softmax row-shift out of ``G = A.T @ D``, rebalances to the gauge gradient descent picks,
+    and splits the budget by squared decoder-column norm."""
+    G = np.asarray(A, float).T @ np.asarray(D, float)
+    G = G - G.mean(1, keepdims=True)                          # kill the softmax shift gauge
+    _, S, Vt = np.linalg.svd(G, full_matrices=False)
+    n2 = np.linalg.norm(np.sqrt(S[:d])[:, None] * Vt[:d], axis=0) ** 2
+    return d * n2 / n2.sum()
+
+
+def predicted_allocation(alpha, p, d):
+    """Weak-coupling closed form for the capacity share ``s`` (m,), summing to d, of a
+    feature cube with importances ``alpha`` and Bernoulli(p) features. Small logits make CE
+    a Frobenius loss, so the rank-d code is the top-d PCA of the row-centred log-conditional,
+    whose second moment is ``p^2 H aa' H + p(1-p) H diag(a^2) H`` with H the centring
+    projector. The balanced decoder carries sqrt(S), hence the sqrt(lambda) weighting."""
+    alpha = np.asarray(alpha, float)[:, None]
+    m = len(alpha)
+    H = np.eye(m) - 1.0 / m
+    Ha = H @ alpha
+    Mmat = p * p * (Ha @ Ha.T) + p * (1 - p) * (H @ np.diag(alpha[:, 0] ** 2) @ H)
+    lam, V = np.linalg.eigh(Mmat)
+    lam, V = np.maximum(lam[::-1][:d], 0.0), V[:, ::-1][:, :d]
+    n2 = (V ** 2 * np.sqrt(lam)[None, :]).sum(1)
+    return d * n2 / n2.sum()
 
 
 def _prox_nuclear(R, t):

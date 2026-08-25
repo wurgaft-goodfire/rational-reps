@@ -7,7 +7,7 @@ from src.code.geometry import factor_logcond, predicted_geometry
 
 
 def _ES(spec, gamma=0.8, cooccurrence="diffusion"):
-    _, E, _, S, _ = factor_logcond(build_conditional(spec, gamma, cooccurrence))
+    _, E, _, S = factor_logcond(build_conditional(spec, gamma, cooccurrence))
     return E, S
 
 

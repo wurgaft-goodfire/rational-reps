@@ -169,7 +169,7 @@ def _(mo):
 def _(ARCHS, L, cka, config, plot_utils, results, rsa, spec):
     from src.code.geometry import factor_logcond
 
-    _, _, D_pred, S, _ = factor_logcond(L)          # balanced decoder D = sqrt(S)·V, (k, num_outcomes)
+    _, _, D_pred, S = factor_logcond(L)          # balanced decoder D = sqrt(S)·V, (k, num_outcomes)
     r = int((S > 1e-6).sum())                        # the conditional's true rank (~ the models' capacity)
     D_geom = D_pred[:r].T                            # decoder on the meaningful subspace (num_outcomes, r)
     n_out = D_geom.shape[0]                          # drop the S=0 null directions that carry no structure

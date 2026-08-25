@@ -339,7 +339,7 @@ def plot_factorization(L, k=3, item_label=r"items  $\theta$", outcome_label=r"ou
     decoder row/column. Returns ``(fig, {"L", "E", "D"})`` for overlays."""
     from matplotlib.patches import Rectangle
     from .geometry import factor_logcond
-    Lc, E, D, S, _ = factor_logcond(L)
+    Lc, E, D, S = factor_logcond(L)
     Ek, Dk = E[:, :k], D[:k]
     n_i, n_o = Lc.shape
 

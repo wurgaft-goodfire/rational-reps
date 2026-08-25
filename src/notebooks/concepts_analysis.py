@@ -49,7 +49,7 @@ def _(mo):
     SPEC = {"structure": "ring", "n": N, "gamma": GAMMA, "cooccurrence": "heat"}
     CONFIG = resolve_config(graph_overrides(SPEC))   # figures key on the task, as for a trained run
     L = graph_conditional(SPEC)
-    Lc, E, D, _S, nu = factor_logcond(L)
+    Lc, E, D, _S = factor_logcond(L)
     theta = 2 * np.pi * np.arange(N) / N
     hue = plt.cm.twilight(theta / (2 * np.pi))                          # house cyclic colormap
     P = np.exp(L); P /= P.sum(1, keepdims=True)
@@ -209,7 +209,7 @@ def _(
     plt,
 ):
     Lch = graph_conditional({"structure": "chain", "n": N, "gamma": GAMMA, "cooccurrence": "heat"})
-    Lch_c, Ech, Dch, Sch, _ = factor_logcond(Lch)
+    Lch_c, Ech, Dch, Sch = factor_logcond(Lch)
     _mid, end = N // 2, 0
     c_e, c_d = "0.2", plot_utils.FIG.colors["orange"]
 
@@ -288,7 +288,7 @@ def _(CONFIG, factor_logcond, mpatches, np, plot_utils):
     Xa = np.array([an_F[i] for i in an_items], float)
     La = 0.5 * np.concatenate([np.stack([sal[j] * Xa[:, j], -sal[j] * Xa[:, j]], 1)
                                for j in range(3)], 1)
-    Lac, Ea, Da, Sa, _ = factor_logcond(La)
+    Lac, Ea, Da, Sa = factor_logcond(La)
     orange = plot_utils.FIG.colors["orange"]
     Qi = an_items.index("queen")
 

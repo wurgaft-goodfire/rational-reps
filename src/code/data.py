@@ -539,14 +539,26 @@ def _tree_graph(n=2, k=2, parents=None, **_):
     return tree_adjacency(tree_parents(n, k, parents))
 
 
-def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0):
+def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
+                 spectrum="geometric", beta=1.5, rho=0.0, blocks=1):
     """Bipartite word -> feature structure: N words with i.i.d. Bernoulli(p) features
     Z in {0, 1}, outcomes the m feature tokens, log p(i|x) = log_softmax_i(alpha_i Z_xi)
-    with alpha_i = scale * decay^i (p = sparsity, decay = importance, scale = sharpness).
-    Returns (L (N, m), {"Z" (N, m), "alpha" (m,)})."""
+    (p = sparsity, scale = sharpness). ``spectrum`` sets the importance ladder: "geometric"
+    gives alpha_i = scale*decay^i, "power" gives alpha_i = scale*(i+1)^-beta. ``rho`` > 0
+    correlates the features through a Gaussian copula, preserving the Bernoulli(p)
+    marginals; ``blocks`` splits them into groups that each share their own factor
+    (blocks=1 is equicorrelation). Returns (L (N, m), {"Z" (N, m), "alpha" (m,)})."""
     from scipy.special import logsumexp
-    alpha = scale * decay ** np.arange(m)
-    Z = (np.random.default_rng(seed).random((N, m)) < p).astype(float)
+    alpha = scale * {"geometric": decay ** np.arange(m),
+                     "power": (1.0 + np.arange(m)) ** -beta}[spectrum]
+    rng = np.random.default_rng(seed)
+    if rho == 0.0:
+        Z = (rng.random((N, m)) < p).astype(float)
+    else:                                          # one-factor Gaussian copula
+        from scipy.stats import norm
+        f = rng.normal(size=(N, blocks))[:, np.arange(m) * blocks // m]
+        g = np.sqrt(rho) * f + np.sqrt(1 - rho) * rng.normal(size=(N, m))
+        Z = (g > norm.ppf(1 - p)).astype(float)
     G = Z * alpha
     return G - logsumexp(G, axis=1, keepdims=True), {"Z": Z, "alpha": alpha}
 

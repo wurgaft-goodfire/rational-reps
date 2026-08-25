@@ -99,3 +99,41 @@ def test_sae_trains_from_the_shared_pipeline_on_feature_codes(tmp_path):
     assert np.allclose(codes, ds.features)
     assert not model.embedding.weight.requires_grad
     assert evaluator.item_representations(model).shape == (64, 2)   # the bottleneck code
+
+
+def test_power_spectrum_gives_a_power_law_importance_ladder():
+    # alpha_i = scale * (i+1)^-beta, versus the default geometric scale * decay^i
+    from src.code.data import feature_cube
+    _, info = feature_cube(N=64, m=6, p=0.3, scale=2.0, seed=0, spectrum="power", beta=1.5)
+    expected = 2.0 * (1.0 + np.arange(6)) ** -1.5
+    assert np.allclose(info["alpha"], expected)
+    _, geo = feature_cube(N=64, m=6, p=0.3, decay=0.9, scale=2.0, seed=0)
+    assert np.allclose(geo["alpha"], 2.0 * 0.9 ** np.arange(6))          # default unchanged
+
+
+def test_rho_correlates_features_and_preserves_marginals():
+    # one-factor Gaussian copula: rho=0 must reproduce the independent path exactly,
+    # rho>0 raises pairwise correlation while leaving P(z_i=1) = p.
+    from src.code.data import feature_cube
+    _, base = feature_cube(N=4000, m=16, p=0.3, seed=0)
+    _, same = feature_cube(N=4000, m=16, p=0.3, seed=0, rho=0.0)
+    assert np.array_equal(base["Z"], same["Z"])
+
+    _, corr = feature_cube(N=4000, m=16, p=0.3, seed=0, rho=0.6)
+    assert abs(corr["Z"].mean() - 0.3) < 0.02                    # marginals preserved
+    off = lambda Z: np.corrcoef(Z.T)[np.triu_indices(16, 1)].mean()
+    assert off(corr["Z"]) > 0.3                                  # clearly correlated
+    assert abs(off(base["Z"])) < 0.05                            # baseline is not
+
+
+def test_blocks_give_within_block_correlation_only():
+    # with blocks>1 each block shares its own factor, so within-block pairs correlate
+    # and cross-block pairs do not.
+    from src.code.data import feature_cube
+    _, info = feature_cube(N=6000, m=16, p=0.3, seed=0, rho=0.6, blocks=4)
+    C = np.corrcoef(info["Z"].T)
+    blk = np.arange(16) // 4
+    same = np.array([[blk[i] == blk[j] for j in range(16)] for i in range(16)])
+    iu = np.triu_indices(16, 1)
+    assert C[iu][same[iu]].mean() > 0.3
+    assert abs(C[iu][~same[iu]].mean()) < 0.06
