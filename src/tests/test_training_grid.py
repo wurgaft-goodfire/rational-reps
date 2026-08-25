@@ -8,7 +8,9 @@ from src.code.train import train_inline
 
 pytestmark = pytest.mark.slow
 
-_QUICK = ["training_kwargs.train_steps=300", "training_kwargs.eval_steps=150"]
+# No eval cadence: the smoke checks only read the final row, and an online eval costs ~10x
+# the training step it interrupts on models this small.
+_QUICK = ["training_kwargs.train_steps=300"]
 
 
 def _graph_overrides(structure, kw):
