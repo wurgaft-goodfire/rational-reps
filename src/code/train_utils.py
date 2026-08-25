@@ -29,7 +29,8 @@ class PreBatchedDataCollator:
 #########################
 
 class StepMetricsCallback(TrainerCallback):
-    """Runs evaluation every `step_interval` training steps and logs to wandb."""
+    """Scores the final step, plus every `step_interval` steps when that is set (it is off by
+    default: on these small models an evaluation costs ~10x the training step it interrupts)."""
 
     def __init__(self, step_interval, trainer, config):
         self.trainer = trainer
@@ -48,7 +49,8 @@ class StepMetricsCallback(TrainerCallback):
             self.evaluator.c.save(os.path.join(config.run_dir, "eval_batches.pt"))
 
     def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step % self.step_interval != 0:
+        final = state.global_step >= state.max_steps
+        if not final and (self.step_interval is None or state.global_step % self.step_interval):
             return
         metrics, extras = self.evaluator.evaluate(self.trainer.model)
         self.history.append({"step": state.global_step, **metrics})

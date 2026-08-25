@@ -53,3 +53,13 @@ def test_relational_training_runs(tmp_path):
         ["setting=relational", "operation=modular_add", "operation_kwargs.p=7", "runner=linear"] + _QUICK,
         name="grid_relational", cache_dir=str(tmp_path))
     _check(history, dataset, model)
+
+
+def test_eval_steps_null_scores_only_the_final_step(tmp_path):
+    """Default cadence: one evaluation, at the end. Online eval costs ~10x the training of
+    these small models, so it is opt-in via ``training_kwargs.eval_steps``."""
+    *_, history, config = train_inline(
+        ["setting=feature_cube", "runner=linear", "training_kwargs.train_steps=25",
+         "training_kwargs.eval_steps=null"],
+        name="grid_end_only", cache_dir=str(tmp_path))
+    assert list(history["step"]) == [25]

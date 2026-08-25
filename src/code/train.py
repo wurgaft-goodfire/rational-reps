@@ -147,6 +147,9 @@ def _run_key(cfg):
     c = OmegaConf.to_container(cfg, resolve=True)
     for k in ("cache_dir", "run_dir", "output_dir", "data_path", "eval_cache_dir", "overwrite", "wandb"):
         c.pop(k, None)
+    # Online eval scores fixed pre-sampled batches and draws no RNG, so its cadence changes the
+    # density of the history curve but never the trained weights.
+    c.get("training_kwargs", {}).pop("eval_steps", None)
     return c
 
 

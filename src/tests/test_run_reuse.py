@@ -36,3 +36,21 @@ def test_machine_local_keys_do_not_invalidate_a_run(tmp_path):
     _run_exists(cfg)
     os.makedirs(os.path.join(cfg.cfg.output_dir, "100"))
     assert _run_exists(_cfg(tmp_path, sigma=2.5, cache_dir="/somewhere/else"))
+
+
+def _cfg_eval(tmp_path, eval_steps):
+    return Config(OmegaConf.create({
+        "random_seed": 0, "overwrite": False, "emission_sigma": 2.5,
+        "training_kwargs": {"eval_steps": eval_steps},
+        "cache_dir": str(tmp_path), "run_dir": str(tmp_path),
+        "output_dir": str(tmp_path / "checkpoints"),
+    }), make_run_dirs=True)
+
+
+def test_eval_cadence_does_not_invalidate_a_run(tmp_path):
+    """Online eval reads fixed pre-sampled batches and draws no RNG, so how often it runs
+    cannot change the trained weights — only the density of the history curve."""
+    cfg = _cfg_eval(tmp_path, eval_steps=150)
+    _run_exists(cfg)
+    os.makedirs(os.path.join(cfg.cfg.output_dir, "100"))
+    assert _run_exists(_cfg_eval(tmp_path, eval_steps=None))

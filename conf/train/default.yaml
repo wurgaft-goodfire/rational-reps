@@ -14,7 +14,7 @@ training_kwargs:
   optimizer: adamw_torch
   save_online_eval: false # if true, save online-eval metrics to disk each eval step
   logging_steps: 100
-  eval_steps: 150
+  eval_steps: null         # null = score the final step only; set an int for a training curve
   pre_batch_data_collator: true # if batching data in the dataset's __getitem__ - usually much faster
   save_steps_method: end_only # end_only | every_eval | linear_schedule | sqrt_schedule | specific_steps
   num_save_checkpoints: 10 # used by linear_schedule / sqrt_schedule
