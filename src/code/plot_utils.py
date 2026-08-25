@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.collections import LineCollection
+from matplotlib.colors import ListedColormap
 
 
 class FigureGenerator:
@@ -20,6 +21,9 @@ class FigureGenerator:
         self.categorical = ['#4C72B0', '#DD8452', '#55A868', '#8172B3']   # per-series (curves/bars)
         self.cyclic_cmap = 'twilight'      # item index -> color (a ring reads as a ring)
         self.diverging_cmap = 'vlag'       # centered conditional heatmaps
+        # twilight minus its pale grey ends: blue -> dark -> red, acyclic; the item colormap
+        self.item_cmap = ListedColormap(
+            plt.get_cmap('twilight')(np.linspace(0.1, 0.9, 256)), name='twilight_nogrey')
         # large fonts (Avenir), kept big for publication
         self.font_sizes = {'title': 18, 'axis_label': 15, 'tick': 13, 'legend': 13}
         self._setup_matplotlib_defaults()
@@ -290,11 +294,14 @@ def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None, labe
         if (~it).any():
             ax.scatter(pos[~it, 0], pos[~it, 1], pos[~it, 2], c="0.8", s=16)
         ax.scatter(pos[it, 0], pos[it, 1], pos[it, 2], c=cidx[it], cmap=cmap,
-                   vmin=0, vmax=vmax, s=25)
+                   vmin=0, vmax=vmax, s=25, depthshade=False, alpha=0.7)
         if labels is not None:
             for (x, y, z), lab in zip(pos, labels):
                 ax.text(x, y, z, lab, fontsize=6, ha="center", va="bottom")
         ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+        for axis in (ax.xaxis, ax.yaxis, ax.zaxis):    # white background, points never clipped
+            axis.pane.set_facecolor((1, 1, 1, 0))
+        ax.margins(0.1)
     ax.set_title(title)
 
 
@@ -302,7 +309,10 @@ def scatter_geometry(ax, XY, title, cmap=None):
     """Embedding scatter colored by item index (borderless manifold panel); 2-D or 3-D by XY's width."""
     XY = np.asarray(XY); c = np.arange(len(XY)); cmap = cmap or FIG.cyclic_cmap
     if XY.shape[1] >= 3:
-        ax.scatter(XY[:, 0], XY[:, 1], XY[:, 2], c=c, cmap=cmap, s=28)
+        # depthshade off: it modulates alpha by depth, so identical geometries in different
+        # orientations would render with different colors across panels. The fixed soft alpha
+        # keeps the light look depthshade used to give the predicted panel.
+        ax.scatter(XY[:, 0], XY[:, 1], XY[:, 2], c=c, cmap=cmap, s=28, depthshade=False, alpha=0.7)
         ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([]); ax.set_title(title)
         for pane in (ax.xaxis, ax.yaxis, ax.zaxis): pane.pane.set_facecolor((1, 1, 1, 0))
     else:
@@ -321,25 +331,26 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None):
     ndim = 3 if view == "3d" else 2
     ax = fig.add_subplot(cell, projection="3d" if ndim == 3 else None)
     name = spec.get("structure") if spec is not None else None
-    if name in ("hypercube", "complete"):
-        # draw the graph edges over the learned positions so the cube / simplex is legible as a
-        # connected polytope, not just a point cloud (as demo_graphs did for the cube)
+    if name in ("hypercube", "complete", "grid"):
+        # draw the graph edges over the learned positions so the cube / simplex / lattice is
+        # legible as a connected polytope, not just a point cloud (as demo_graphs did for the cube)
         from .data import structure_adjacency
         draw_structure(ax, structure_adjacency(spec), _pca(r, ndim), title, cmap=cmap)
         return
     scatter_geometry(ax, _pca(r, ndim), title, cmap)
 
 
-def plot_factorization(L, k=3, item_label=r"items  $\theta$", outcome_label=r"outcomes  $x$",
-                       caption="embedding = each item's coefficients      "
-                               "·      decoder = the basis functions they multiply",
-                       highlight_row=None, highlight_col=None):
-    """Decomposition schematic: centered log-conditional ≈ embedding × decoder, three aligned
-    heatmaps with per-panel symmetric color scales. ``highlight_row``/``highlight_col`` box one
-    decoder row/column. Returns ``(fig, {"L", "E", "D"})`` for overlays."""
+def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"outputs  $x$",
+                       caption=None, highlight_row=None, highlight_col=None):
+    """Decomposition schematic: centered log-conditional = embedding × decoder, three aligned
+    heatmaps with per-panel symmetric color scales. ``k=None`` shows the full-rank factorization
+    (exact, drawn with ``=``); an int truncates (drawn with ``≈``). ``highlight_row``/
+    ``highlight_col`` box one decoder row/column. Returns ``(fig, {"L", "E", "D"})``."""
     from matplotlib.patches import Rectangle
     from .geometry import factor_logcond
     Lc, E, D, S = factor_logcond(L)
+    exact = k is None or k >= min(Lc.shape)
+    k = min(Lc.shape) if k is None else k
     Ek, Dk = E[:, :k], D[:k]
     n_i, n_o = Lc.shape
 
@@ -348,25 +359,27 @@ def plot_factorization(L, k=3, item_label=r"items  $\theta$", outcome_label=r"ou
     gap = 0.14 * n_o
     gs = fig.add_gridspec(1, 5, width_ratios=[n_o, gap, 0.05 * n_o * k, gap, n_o], wspace=0.05)
 
-    def _panel(ax, M, aspect="auto"):
-        lim = np.percentile(np.abs(M), 98)
+    def _panel(ax, M, aspect="auto", pct=100):
+        # the factors clip at their max (exact SVD, no outliers): percentile clipping would
+        # amplify their near-zero tail dims into noise
+        lim = np.percentile(np.abs(M), pct)
         ax.imshow(M, cmap=FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect=aspect)
         FIG.clean(ax)
 
     axL = fig.add_subplot(gs[0, 0])
-    _panel(axL, Lc, aspect="equal")
-    axL.set_title("log-conditional\n" + r"$L[\theta, x] = \log p(x \mid \theta)$", fontsize=15)
+    _panel(axL, Lc, aspect="equal", pct=98)
+    axL.set_title("log-conditional\n" + r"$L[z, x] = \log \tilde{p}(x \mid z)$", fontsize=15)
     axL.set_xlabel(outcome_label, fontsize=13); axL.set_ylabel(item_label, fontsize=13)
 
     axE = fig.add_subplot(gs[0, 2])
     _panel(axE, Ek)
-    axE.set_title("embedding\n(coefficients)", fontsize=15)
+    axE.set_title("embedding", fontsize=15)
     axE.set_xlabel("k dims", fontsize=13)
 
     # decoder: k rows drawn at the same cell height as the other panels, vertically centered
     axD = fig.add_subplot(gs[0, 4])
     _panel(axD, Dk)
-    axD.set_title("decoder  (basis functions over x)", fontsize=15)
+    axD.set_title("decoder", fontsize=15)
     axD.set_xlabel(outcome_label, fontsize=13)
     pos = axD.get_position()
     shrink = min(1.0, 0.09 * k)                                   # chunky rows, like the manuscript
@@ -384,7 +397,8 @@ def plot_factorization(L, k=3, item_label=r"items  $\theta$", outcome_label=r"ou
     fig.canvas.draw()
     pL, pE, pD = axL.get_position(), axE.get_position(), axD.get_position()
     yc = (pL.y0 + pL.y1) / 2
-    fig.text((pL.x1 + pE.x0) / 2, yc, r"$\approx$", fontsize=26, ha="center", va="center", color="0.15")
+    fig.text((pL.x1 + pE.x0) / 2, yc, r"$=$" if exact else r"$\approx$",
+             fontsize=26, ha="center", va="center", color="0.15")
     fig.text((pE.x1 + pD.x0) / 2, yc, r"$\times$", fontsize=26, ha="center", va="center", color="0.15")
     if highlight_row is not None:
         axD.add_patch(Rectangle((-0.5, highlight_row - 0.5), n_o, 1, fill=False,
@@ -397,14 +411,15 @@ def plot_factorization(L, k=3, item_label=r"items  $\theta$", outcome_label=r"ou
     return fig, {"L": axL, "E": axE, "D": axD}
 
 
-def conditional_heatmap(ax, L, title="log-conditional", xlabel=r"outcome  $x$", ylabel=r"item  $\theta$",
-                        aspect="equal"):
-    """Diverging heatmap of the (centered) conditional the geometry is read off (borderless, with
-    axis labels). Pass ``aspect="auto"`` for far-from-square conditionals (e.g. many items, few
-    outcomes), which an equal aspect would collapse to a sliver."""
+def conditional_heatmap(ax, L, title=r"$\log \tilde{p}(x \mid z)$", xlabel=r"output  $x$",
+                        ylabel=r"input  $z$", aspect="equal", cmap=None):
+    """Diverging heatmap of the globally mean-centered log-conditional, clipped at the ±98th
+    percentile so a few extreme entries don't wash out the range. Pass ``aspect="auto"`` for
+    far-from-square conditionals (e.g. many items, few outcomes), which an equal aspect would
+    collapse to a sliver."""
     Ld = np.asarray(L) - np.asarray(L).mean()
     lim = np.percentile(np.abs(Ld), 98)
-    ax.imshow(Ld, cmap=FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect=aspect)
+    ax.imshow(Ld, cmap=cmap or FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect=aspect)
     FIG.clean(ax); ax.set_anchor("N")                     # drop ticks + spines, pin to top
     ax.set(title=title, xlabel=xlabel, ylabel=ylabel)     # keep just the axis labels
 
@@ -532,18 +547,32 @@ def plot_stacking(n=12, q=10):
     return fig
 
 
-def rdm_heatmap(ax, reps, title="RDM"):
-    """Representational dissimilarity matrix (pairwise Euclidean distances between item reps)."""
+def rdm_heatmap(ax, reps, title="RDM", cmap=None):
+    """Representational dissimilarity matrix (pairwise Euclidean distances between item reps),
+    normalized by its max so panels share one [0, 1] scale regardless of representation norm.
+    Default is the reversed house diverging map: similar pairs read red, like the conditional."""
     r = np.asarray(reps)
     D = np.sqrt(((r[:, None] - r[None]) ** 2).sum(-1))
-    ax.imshow(D, cmap="magma", aspect="equal")
+    ax.imshow(D / D.max(), cmap=cmap or f"{FIG.diverging_cmap}_r", vmin=0, vmax=1, aspect="equal")
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
 
 
-def plot_embedding_panels(E_pred, embeddings, L, spec=None, cmap=None):
+def gram_heatmap(ax, reps, title="Gram", cmap=None):
+    """Gram matrix of the item-centered code (items x items), with symmetric color limits at the
+    max |entry| so the sign structure reads on the diverging map. The same quantity for predicted
+    (``E E^T`` with ``E = U sqrt(S)``) and learned codes, so the panels compare directly."""
+    r = np.asarray(reps, float)
+    r = r - r.mean(0)
+    G = r @ r.T
+    lim = np.abs(G).max()
+    ax.imshow(G, cmap=cmap or FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect="equal")
+    FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
+
+
+def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None):
     """Two rows: predicted code beside each model's pre-decode representation (top, laid out per the
-    structure's ``view``; see `_view`), and the predicted log-conditional beside each model's RDM
-    (bottom). ``embeddings``: {name: reps}."""
+    structure's ``view``; see `_view`), and each code's Gram matrix (bottom) — ``E E^T`` for the
+    predicted column, so all matrix panels show the same quantity. ``embeddings``: {name: reps}."""
     names = ["predicted"] + list(embeddings)
     reps = [E_pred] + list(embeddings.values())
     is_tree = spec is not None and spec["structure"] == "tree"
@@ -564,7 +593,7 @@ def plot_embedding_panels(E_pred, embeddings, L, spec=None, cmap=None):
         else:
             draw_embedding(fig, gs[0, j], r, spec, name, cmap)
         axb = fig.add_subplot(gs[1, j])
-        conditional_heatmap(axb, L, title="log-conditional") if j == 0 else rdm_heatmap(axb, r)
+        gram_heatmap(axb, r, title=r"$E^{*}E^{*\top}$" if j == 0 else r"$EE^{\top}$")
     if headers:                                          # column names for the simplex sub-grids
         fig.canvas.draw()
         for j, name in headers:
@@ -576,7 +605,7 @@ def plot_embedding_panels(E_pred, embeddings, L, spec=None, cmap=None):
 
 def plot_decoder_panels(D_pred, readouts, spec=None, cmap=None):
     """The decoder mirror of `plot_embedding_panels`: predicted decoder ``D`` beside each model's
-    readout weights on the structure's ``view`` (top), each decoder's RDM (bottom).
+    readout weights on the structure's ``view`` (top), each decoder's Gram (bottom).
     ``readouts``: {name: readout_weights (outcomes x features)}."""
     names = ["predicted"] + list(readouts)
     mats = [D_pred] + list(readouts.values())
@@ -584,7 +613,7 @@ def plot_decoder_panels(D_pred, readouts, spec=None, cmap=None):
     gs = fig.add_gridspec(2, len(names), hspace=0.25, wspace=0.3)
     for j, (name, r) in enumerate(zip(names, mats)):
         draw_embedding(fig, gs[0, j], r, spec, name, cmap)
-        rdm_heatmap(fig.add_subplot(gs[1, j]), r)
+        gram_heatmap(fig.add_subplot(gs[1, j]), r, title=r"$D^{*}D^{*\top}$" if j == 0 else r"$DD^{\top}$")
     return fig
 
 
@@ -641,25 +670,44 @@ def _node_reps(parents, items, E):
 
 def _draw_ultrametric(ax, leaf_E, colors, cmax, cmap=None):
     """Ultrametric recovered from the leaf codes by average-linkage clustering, drawn in the tree
-    style (straight light edges, index-colored leaf circles, gray merge nodes). ``colors`` is each
-    leaf's item index, ``cmax`` the color range. Default tree view."""
+    style (straight light edges, index-colored leaf circles, gray merge nodes). scipy's linkage is
+    strictly binary, so a k-way split comes back as stacked binary merges at nearly equal heights;
+    merges within 10% of the height range of their parent are collapsed into one multiway node.
+    ``colors`` is each leaf's item index, ``cmax`` the color range. Default tree view."""
     from scipy.cluster.hierarchy import linkage
     from scipy.spatial.distance import pdist
     cmap = cmap or FIG.cyclic_cmap
     n = len(leaf_E)
     Z = linkage(pdist(np.asarray(leaf_E, float)), method="average")   # scipy clusters
-    # custom layout off Z (straight edges, leaves pinned to item order for cross-panel alignment)
-    pos = np.zeros((n + len(Z), 2)); pos[:n] = np.c_[np.arange(n, dtype=float), np.zeros(n)]
-    edges = []
-    for i, (a, b, h, _) in enumerate(Z):
-        a, b, c = int(a), int(b), n + i
-        pos[c] = [0.5 * (pos[a, 0] + pos[b, 0]), h]
-        edges += [(c, a), (c, b)]
-    pos = _elongate(pos)
-    ax.add_collection(LineCollection([[pos[a], pos[b]] for a, b in edges],
+    heights = np.concatenate([np.zeros(n), Z[:, 2]])
+    children = {n + i: [int(a), int(b)] for i, (a, b, *_) in enumerate(Z)}
+    tol = 0.2 * heights.max()
+
+    def _kept_children(u):                       # absorb near-equal-height binary sub-merges
+        out = []
+        for c in children[u]:
+            out += _kept_children(c) if c >= n and heights[u] - heights[c] < tol else [c]
+        return out
+
+    # layout (straight edges, leaves pinned to item order for cross-panel alignment)
+    pos, edges = {}, []
+    def _place(u):
+        if u < n:
+            pos[u] = np.array([float(u), 0.0])
+            return
+        kept = _kept_children(u)
+        for c in kept:
+            _place(c)
+        edges.extend((u, c) for c in kept)
+        pos[u] = np.array([np.mean([pos[c][0] for c in kept]), heights[u]])
+    _place(2 * n - 2)
+    nodes = sorted(pos)
+    P = dict(zip(nodes, _elongate(np.array([pos[u] for u in nodes]))))
+    ax.add_collection(LineCollection([[P[a], P[b]] for a, b in edges],
                                      colors="0.85", linewidths=0.5, zorder=0))
-    ax.scatter(pos[n:, 0], pos[n:, 1], c="0.8", s=24, zorder=1)                  # merge nodes
-    ax.scatter(pos[:n, 0], pos[:n, 1], c=colors, cmap=cmap,
+    merge = [u for u in nodes if u >= n]
+    ax.scatter([P[u][0] for u in merge], [P[u][1] for u in merge], c="0.8", s=24, zorder=1)
+    ax.scatter([P[u][0] for u in range(n)], [P[u][1] for u in range(n)], c=colors, cmap=cmap,
                vmin=0, vmax=cmax, s=70, zorder=2, clip_on=False)                 # leaves
     ax.set_title("ultrametric"); ax.set_aspect("equal"); ax.margins(0.12)
     FIG.clean(ax); ax.set_anchor("N")

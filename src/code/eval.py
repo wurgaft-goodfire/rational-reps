@@ -271,7 +271,7 @@ def run_evaluation(cfg: DictConfig) -> None:
             return Evaluator.from_cache(config, dataset, cache_dir)
         return Evaluator(config, dataset)
 
-    if model_type == "transformer" or model_type in MODEL_CLASSES:
+    if model_type in MODEL_CLASSES:
         # Trained from scratch: evaluate every saved checkpoint.
         dataset = init_dataset(config, overwrite_data=cfg.overwrite)
         evaluator = build_evaluator(dataset)

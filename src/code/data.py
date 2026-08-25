@@ -45,9 +45,10 @@ class KernelDataset(Dataset):
     ``sample_mode`` picks between the two things you can do with a kernel.
 
     **pointwise** — one input, one outcome, the input observed. Every input tuple is written
-    as ``[z_1 ... z_arity, x]`` with a sampled outcome, and the batch also carries the exact
-    row as ``distribution_labels``: a causal LM predicts the outcome token, a readout model
-    trains on the exact distribution, and both see the same kernel. Bayes is the kernel row.
+    as ``[z_1 ... z_arity, x]`` with a sampled outcome, tiled to ``batch_size`` with fresh
+    draws per copy, and the batch also carries the exact row as ``distribution_labels``: a
+    causal LM predicts the outcome token (a large batch averages the sampling noise), a readout
+    model trains on the exact distribution, and both see the same kernel. Bayes is the kernel row.
 
     **sequence** — a stream of observations, which a kernel produces in exactly one of two
     ways, decided by the kernel rather than by config:
@@ -180,24 +181,6 @@ class KernelDataset(Dataset):
         return {"input_ids": seq, "labels": labels}
 
     def _pointwise_batch(self):
-        """Every input tuple as ``[z..., x]`` with a sampled outcome, plus the exact row. The
-        readout models train on ``distribution_labels``, a causal LM on the outcome token."""
-        inputs = self._input_tuples()
-        rows = self.P[self._row_index(inputs)]
-        x = torch.multinomial(rows, 1, generator=self.rng)
-        outcome = x + (self.n_items if self.n_items != self.n_outcomes else 0)
-        seq = torch.cat([inputs, outcome], dim=1)
-        return {"input_ids": seq, "labels": seq.clone(), "distribution_labels": rows}
-
-    def _input_tuples(self):
-        """Every input tuple, one per row: (n_items ** arity, arity)."""
-        return self.item_tokens.to(self.device).unsqueeze(1)
-
-    def _row_index(self, inputs):
-        """Row of ``P`` addressed by each input tuple."""
-        return inputs[:, 0]
-
-    def _pointwise_batch(self):
         """Every input tuple as ``[z..., x]`` with a sampled outcome, plus the exact row: a
         causal LM predicts the outcome token, a readout model trains on the distribution."""
         inputs = self._input_tuples()
@@ -206,9 +189,14 @@ class KernelDataset(Dataset):
         seq = torch.cat([inputs, x], dim=1)
         return {"input_ids": seq, "labels": seq.clone(), "distribution_labels": rows}
 
+    def _tile(self, tuples):
+        """Repeat the enumeration to reach ``batch_size`` (at least one full copy): downstream
+        outcome draws are fresh per copy, so a large batch averages the sampling noise."""
+        return tuples.repeat(max(1, -(-self._batch_size() // len(tuples))), 1)
+
     def _input_tuples(self):
-        """Every input tuple, one per row: ``(n_items ** arity, arity)``."""
-        return self.item_tokens.to(self.device).unsqueeze(1)
+        """Every input tuple, tiled to ``batch_size``: ``(k * n_items, arity)``."""
+        return self._tile(self.item_tokens.to(self.device).unsqueeze(1))
 
     def _row_index(self, inputs):
         """Row of ``P`` addressed by each input tuple."""
@@ -286,7 +274,7 @@ class RelationalDataset(KernelDataset):
     def _input_tuples(self):
         items = self.item_tokens.to(self.device)
         tuples = torch.cartesian_prod(*([items] * self.arity))    # (n ** arity, arity)
-        return tuples.unsqueeze(1) if self.arity == 1 else tuples
+        return self._tile(tuples.unsqueeze(1) if self.arity == 1 else tuples)
 
     def _row_index(self, inputs):
         flat = torch.zeros(len(inputs), dtype=torch.long, device=self.device)

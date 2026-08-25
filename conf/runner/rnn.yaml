@@ -8,6 +8,7 @@ defaults:
 
 name: rnn
 output_dir: ${run_dir}/checkpoints
-sample_mode: sequence
+sample_mode: pointwise
 training_kwargs:
   learning_rate: 0.005     # sequence LM wants a lower lr than the readouts
+  batch_size: 4096         # tiled enumeration: a large sampled batch stands in for the exact row

@@ -18,16 +18,14 @@ def _(mo):
 
     The project's claim: the geometry a network learns is **predictable in closed form** from the
     structure of the task.
-
-    For sweeps, use the CLI instead, e.g. `python -m src.code.train -m runner=linear setting=graph structure=ring,chain`.
     """)
     return
 
 
-@app.cell
-def _(mo):
+app._unparsable_cell(
+    r"""
     import os, sys
-    import numpy as np
+    imporst numpy as np
 
     # Project root, independent of the working directory (a headless run can start outside
     # the repo). chdir so Hydra resolves conf/, and add it to sys.path.
@@ -40,15 +38,11 @@ def _(mo):
     from src.code.train import train_inline, graph_overrides
     from src.code import plot_utils           # importing this applies the house plotting style
 
-    return (
-        cka,
-        graph_conditional,
-        graph_overrides,
-        plot_utils,
-        predicted_geometry,
-        rsa,
-        train_inline,
-    )
+    FIGURES = ROOT / "outputs" / "figures"     # one flat dir: {structure}_{figure}.png
+    FIGURES.mkdir(parents=True, exist_ok=True)
+    """,
+    name="_"
+)
 
 
 @app.cell(hide_code=True)
@@ -56,149 +50,131 @@ def _(mo):
     mo.md(r"""
     ## 1. The predicted geometry (closed form)
 
-    Factor the ring's log-conditional — no training. The translation symmetry gives a degenerate
+    Factor the ring's log-conditional. The translation symmetry gives a
     top Fourier pair, and the top-2 code lands on a circle.
     """)
     return
 
 
 @app.cell
-def _(graph_conditional, plot_utils, predicted_geometry):
+def _(FIGURES, graph_conditional, plot_utils, predicted_geometry):
     # pick a structure here — everything below follows from it. `cooccurrence` is part of the spec
     # (diffusion | geodesic | adjacency | heat) and flows to both the predicted geometry and the trained
     # models; a product diffuses, but e.g. a hypercube wants "heat" so its bits stay independent (analogies).
-    spec = {"structure": "chain", "cooccurrence": "diffusion",
-            "n": 15}
+    spec = {"structure": "ring", "cooccurrence": "diffusion", "n": 30}
     L = graph_conditional(spec)
     E_pred = predicted_geometry(L)
-    fig_fact, _ = plot_utils.plot_factorization(L)                   # the decomposition schematic
-    fig_pred = plot_utils.plot_predicted_geometry(spec, L, E_pred)   # saved once we have a run config (below)
-    return E_pred, L, fig_fact, fig_pred, spec
+    fig_fact, _ = plot_utils.plot_factorization(L)
+    plot_utils.save_figure(fig_fact, FIGURES / f"{spec['structure']}_factorization.png")
+    return E_pred, L, spec
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 2. Train the model ladder inline
+    ## 2. The predicted geometry
 
-    Train four architectures on the *same* ring task — a transformer (on Markov walks) and k-linear /
-    MLP / RNN readouts (on item→neighbor pairs) — each from a prespecified runner, no terminal.
-    `train_inline` returns the live model + an in-memory history, so we can watch the geometry form.
+    The structure, the log-conditional it induces, and the closed-form embedding: the ring's
+    top-2 code lands on a circle.
+    """)
+    return
+
+
+@app.cell
+def _(E_pred, FIGURES, L, plot_utils, spec):
+    fig_pred = plot_utils.plot_predicted_geometry(spec, L, E_pred)
+    plot_utils.save_figure(fig_pred, FIGURES / f"{spec['structure']}_predicted_geometry.png")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 3. Train everything: the prediction across settings
+
+    Loop over structures: train all four architectures per structure (hparams per arch from a
+    ring sweep: the sequence models want longer training and a lower lr), then save that
+    structure's embedding-panel figure into its own run directory. One shared point colormap
+    (half of twilight, acyclic); matrix row = the code Gram, $E^{*}E^{*\top}$ predicted beside
+    each learned $EE^{\top}$.
     """)
     return
 
 
 @app.cell
 def _(
+    FIGURES,
     cka,
-    fig_fact,
-    fig_pred,
+    graph_conditional,
     graph_overrides,
     plot_utils,
     predicted_geometry,
-    rsa,
-    spec,
     train_inline,
 ):
     ARCHS = ["transformer", "linear", "mlp", "rnn"]
-    results = {}
-    for arch in ARCHS:
-        model, dataset, evaluator, history, config = train_inline(graph_overrides(spec) + [f"runner={arch}"])
-        E_true = predicted_geometry(dataset.conditional)                       # matches the trained items
-        reps = evaluator.item_representations(model)                            # pre-decode activations
-        results[arch] = {"reps": reps, "model": model, "history": history,
-                         "cka": cka(reps, E_true), "rsa": rsa(reps, E_true)}
-        print(f"{arch:12s} CKA={results[arch]['cka']:.3f}  RSA={results[arch]['rsa']:.3f}")
 
-    # every arch for this structure shares one experiment figure dir; `config` keys it (model level dropped)
-    plot_utils.save_figure(fig_fact, plot_utils.figure_path(config, "factorization"))
-    plot_utils.save_figure(fig_pred, plot_utils.figure_path(config, "predicted_geometry"))
-    fig_rsa = plot_utils.plot_rsa_curves({a: results[a]["history"] for a in ARCHS})
-    plot_utils.save_figure(fig_rsa, plot_utils.figure_path(config, "rsa_curves"))
-    return ARCHS, config, results
+    SPECS = [
+        {"structure": "ring", "cooccurrence": "diffusion", "n": 30},
+        {"structure": "grid", "cooccurrence": "heat", "n": 5, "m": 5},   # heat: additive over the chain factors, so the lattice sides stay straight
+        {"structure": "product", "cooccurrence": "heat", "view": "3d",   # helix: line x circle
+         "factors": [{"structure": "chain", "n": 8}, {"structure": "ring", "n": 8}]},
+        {"structure": "hypercube", "cooccurrence": "heat", "n": 3},
+        {"structure": "complete", "cooccurrence": "diffusion", "n": 4},
+        {"structure": "tree", "n": 2, "k": 3},
+    ]
+    SETTING_CMAP = plot_utils.FIG.item_cmap        # twilight minus its grey ends (house item map)
+    figs_settings = {}
+    for _sp in SPECS:
+        _L = graph_conditional(_sp)
+        _reps, _cfg = {}, None
+        for _arch in ARCHS:
+            # runner defaults: readouts pointwise on the exact rows, LMs on [start, item, outcome]
+            _model, _ds, _ev, _hist, _cfg = train_inline(graph_overrides(_sp) + [f"runner={_arch}"])
+            _reps[_arch] = _ev.item_representations(_model)
+            print(f"{_sp['structure']:10s} {_arch:12s} "
+                  f"CKA={cka(_reps[_arch], predicted_geometry(_ds.conditional)):.3f}")
+        _fig = plot_utils.plot_embedding_panels(predicted_geometry(_L), _reps, spec=_sp,
+                                                cmap=SETTING_CMAP)
+        _key = "helix" if _sp["structure"] == "product" else _sp["structure"]
+        plot_utils.save_figure(_fig, FIGURES / f"{_key}_embedding_panels.png")
+        figs_settings[_key] = _fig
+    return (figs_settings,)
 
 
-@app.cell(hide_code=True)
+@app.cell
+def _(figs_settings, mo):
+    mo.ui.tabs(figs_settings)
+    return
+
+
+@app.cell
 def _(mo):
     mo.md(r"""
-    ## 3. Learned embeddings & representational convergence
+    ## 4. Main figure: the six settings merged
 
-    Every architecture's token embedding (PCA to 2-D) beside the closed-form prediction — they land on
-    the same circle, up to a rotation/reflection CKA/RSA are invariant to. The bars quantify the match;
-    linear-readout heads (k-linear) print the geometry most sharply, since a nonlinear head can offload
-    structure into its weights instead of the embedding.
+    The per-setting embedding panels tiled (3, 2): ring, grid, helix down the first column;
+    hypercube, simplex, hierarchy down the second.
     """)
     return
 
 
 @app.cell
-def _(ARCHS, E_pred, L, config, plot_utils, results, spec):
-    fig_emb = plot_utils.plot_embedding_panels(E_pred, {a: results[a]["reps"] for a in ARCHS}, L, spec=spec)
-    plot_utils.save_figure(fig_emb, plot_utils.figure_path(config, "embedding_panels"))
-    fig_conv = plot_utils.plot_convergence_bars({a: {"cka": results[a]["cka"], "rsa": results[a]["rsa"]} for a in ARCHS})
-    plot_utils.save_figure(fig_conv, plot_utils.figure_path(config, "convergence_bars"))
-    return
+def _(FIGURES, plot_utils):
+    import matplotlib.image as mpimg
 
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 4. The decoder is predicted too
-
-    `factor_logcond` returns both the code `E` (compared above) **and** the decoder `D` — the readout
-    that maps code → output logits. Every architecture here has a *linear* readout (k-linear's tensor,
-    the MLP/RNN final layer, the transformer's unembedding), so its `(embedding, readout)` pair is a
-    learned factorization of the conditional: `code · readoutᵀ ≈ Lc`, exactly the SVD factorization
-    `E · D = Lc` the oracle predicts.
-
-    That factorization has a **scale gauge**: `(code, readout) → (code·M, readout·M⁻ᵀ)` leaves the
-    product fixed. Trained from small init, gradient descent picks the *balanced* representative — the
-    two factors grow together, so each carries `√S` of the scale (the `codeᵀcode − readoutᵀreadout`
-    invariant stays ≈ 0). The oracle (`factor_logcond`) matches this: it splits the scale symmetrically,
-    `E = U·√S` and `D = √S·V`, so the predicted decoder already carries structure — no rescaling needed.
-    (The raw SVD instead dumps all of `S` into the code and leaves `D = V` a flat, structureless blob.)
-
-    We score the match with **CKA** — the same metric as the code (§3), matched at the task's rank `r`.
-    The panels lay the predicted decoder beside each architecture's readout (outcomes on the same
-    manifold as the items); the bars show every readout recovers it.
-    """)
-    return
-
-
-@app.cell
-def _(ARCHS, L, cka, config, plot_utils, results, rsa, spec):
-    from src.code.geometry import factor_logcond
-
-    _, _, D_pred, S = factor_logcond(L)          # balanced decoder D = sqrt(S)·V, (k, num_outcomes)
-    r = int((S > 1e-6).sum())                        # the conditional's true rank (~ the models' capacity)
-    D_geom = D_pred[:r].T                            # decoder on the meaningful subspace (num_outcomes, r)
-    n_out = D_geom.shape[0]                          # drop the S=0 null directions that carry no structure
-
-    def readout(model, arch):
-        """Per-outcome readout (decoder) weights, restricted to the item outcomes."""
-        W = (model.readout if arch == "linear" else
-             model.mlp[-1].weight if arch == "mlp" else
-             model.head.weight if arch == "rnn" else
-             model.get_output_embeddings().weight)   # transformer unembedding
-        return W.detach().cpu().numpy()[:n_out]
-
-    # CKA — the code's metric (§3) — matched at rank r; the oracle's balanced decoder carries scale.
-    dec_scores = {a: {"cka": cka(readout(results[a]["model"], a), D_geom),
-                      "rsa": rsa(readout(results[a]["model"], a), D_geom)} for a in ARCHS}
-    for a in ARCHS:
-        print(f"  readout vs predicted decoder D (rank {r}):  {a:12s} "
-              f"CKA={dec_scores[a]['cka']:.3f}  RSA={dec_scores[a]['rsa']:.3f}")
-
-    # The predicted decoder geometry beside each architecture's readout (outcomes on the same manifold as
-    # items), decoder RDMs below — the decoder mirror of the code panels in §3.
-    fig_dec = plot_utils.plot_decoder_panels(D_geom, {a: readout(results[a]["model"], a) for a in ARCHS}, spec=spec)
-    plot_utils.save_figure(fig_dec, plot_utils.figure_path(config, "decoder_panels"))
-
-    # Every readout recovers the predicted decoder up to a rotation (CKA), the same bar as the code in §3.
-    fig_dec_bars = plot_utils.plot_convergence_bars(
-        dec_scores, ylabel="similarity to predicted decoder D",
-        title="the decoder is predicted across architectures")
-    plot_utils.save_figure(fig_dec_bars, plot_utils.figure_path(config, "decoder_convergence_bars"))
+    # letters follow the columns: (a-c) ring, grid, helix; (d-f) hypercube, simplex, hierarchy
+    _grid = [["ring", "hypercube"], ["grid", "complete"], ["helix", "tree"]]
+    _imgs = {_n: mpimg.imread(FIGURES / f"{_n}_embedding_panels.png") for _n in sum(_grid, [])}
+    _ratios = [max(_imgs[_n].shape[0] / _imgs[_n].shape[1] for _n in _row) for _row in _grid]
+    fig_main = plot_utils.plt.figure(figsize=(21, 10.5 * sum(_ratios) + 2.5))
+    _gs = fig_main.add_gridspec(3, 2, height_ratios=_ratios, hspace=0.22, wspace=0.08,
+                                left=0.02, right=0.98, top=0.96, bottom=0.03)
+    for _i, _row in enumerate(_grid):
+        for _j, _n in enumerate(_row):
+            _ax = fig_main.add_subplot(_gs[_i, _j])
+            _ax.imshow(_imgs[_n]); _ax.axis("off")
+            _ax.set_title(f"({'abcdef'[_i + 3 * _j]})", loc="left", fontsize=30, pad=14)
+    plot_utils.save_figure(fig_main, FIGURES / "geometry_predictions_main.png", dpi=200)
     return
 
 

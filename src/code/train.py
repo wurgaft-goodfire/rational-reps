@@ -62,26 +62,21 @@ def train(config):
     mc = config.cfg.model_kwargs.model_config
     with open_dict(mc):
         mc.vocab_size = dataset.vocab_size
-        if config.cfg.model_kwargs.model_type in MODEL_CLASSES:
-            mc.num_classes = dataset.num_dims          # our models: outcome classes + arity
-            mc.arity = dataset.arity
-            if config.cfg.model_kwargs.model_type == "sae":
-                mc.embed_dim = dataset.features.shape[1]   # the SAE reads feature codes, not ids
-            print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
-                  f"num_classes={dataset.num_dims}, arity={dataset.arity}")
-        else:
-            mc.max_position_embeddings = dataset.seq_len
-            print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
-                  f"max_position_embeddings={dataset.seq_len}")
+        mc.num_classes = dataset.num_dims               # outcome classes (unused by the LM configs)
+        mc.arity = dataset.arity
+        mc.max_position_embeddings = dataset.seq_len    # unused by the readout configs
+        if config.cfg.model_kwargs.model_type == "sae":
+            mc.embed_dim = dataset.features.shape[1]    # the SAE reads feature codes, not ids
+    print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
+          f"num_classes={dataset.num_dims}, arity={dataset.arity}, seq_len={dataset.seq_len}")
 
     model = init_model(config)
     if hasattr(model, "load_features"):
         model.load_features(dataset.features)
 
-    # Pre-batched data collator: the dataset returns a full batch per __getitem__. Our own
-    # models ignore batch keys they do not use; a HuggingFace one rejects them outright.
-    custom_model = config.cfg.model_kwargs.model_type in MODEL_CLASSES
-    data_collator = PreBatchedDataCollator(drop=() if custom_model else ("distribution_labels",))
+    # Pre-batched data collator: the dataset returns a full batch per __getitem__. The readouts
+    # train on distribution_labels; the Trainer filters batch keys per model signature.
+    data_collator = PreBatchedDataCollator(drop=())
     train_batch_size = 1  # batch is built in the dataset, so the loader batch size is 1
 
     config.process_save_steps()

@@ -113,3 +113,16 @@ def test_hidden_input_is_inferred_from_the_prior_not_read_off_the_batch():
     assert torch.allclose(pred[-1], ds.P[3], atol=2e-2)           # evidence pins the row
 
 
+def test_pointwise_tiles_to_batch_size():
+    """Pointwise tiles the full enumeration to ``batch_size``, each copy with freshly sampled
+    outcomes: an LM averages outcome noise, a readout sees duplicated exact rows."""
+    ds = KernelDataset(_config("pointwise", n=6, batch_size=20))
+    batch = ds[0]
+    assert batch["input_ids"].shape == (24, 2)                   # ceil(20/6) = 4 copies of 6 items
+    z = batch["input_ids"][:, 0]
+    assert torch.equal(z.cpu(), torch.arange(6).repeat(4))       # every copy enumerates all items
+    assert torch.allclose(batch["distribution_labels"], ds.P[z])  # exact rows follow the tiling
+    x = batch["input_ids"][:, 1]
+    assert not torch.equal(x[:6], x[6:12]) or not torch.equal(x[:6], x[12:18])  # fresh samples
+    assert ds.start_token is None and ds.vocab_size == 6         # no start token outside sequence mode
+

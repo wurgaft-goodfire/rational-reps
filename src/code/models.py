@@ -21,40 +21,23 @@ def init_model(config):
     if torch.cuda.is_available():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-
-    model_type = config.model_kwargs.model_type
-    if model_type in MODEL_CLASSES:
-        mc = OmegaConf.to_container(config.model_kwargs.model_config, resolve=True)
-        model = MODEL_CLASSES[model_type](ModelConfig(**mc))
-    else:
-        model_config = transformers.GPTNeoXConfig(**config.model_kwargs["model_config"])
-        model = transformers.AutoModelForCausalLM.from_config(model_config)
-        _wrap_causal_lm(model)
+    cls = MODEL_CLASSES[config.model_kwargs.model_type]
+    mc = OmegaConf.to_container(config.model_kwargs.model_config, resolve=True)
+    model = cls(cls.config_class(**mc))
     logger.info(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
     return model.to("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _wrap_causal_lm(model):
-    """Give an HF causal LM the interface the Evaluator reads: logits key + item_reps."""
-    model.output_key = "logits"
-    model.item_reps = types.MethodType(_causal_lm_item_reps, model)
-    return model
+class _CausalLMBase:
+    """What the causal LMs share: item probing by a forward pass on the minimal context."""
 
-
-def _start_prefixed(item_ids, start_token):
-    """The minimal context for each item: [start, item], or the item alone when the task has
-    no start token (a pointwise batch begins with the item itself)."""
-    ids = item_ids.view(-1, 1)
-    if start_token is None:
-        return ids
-    start = torch.full((len(ids), 1), int(start_token), dtype=torch.long, device=ids.device)
-    return torch.cat([start, ids], dim=1)
-
-
-def _causal_lm_item_reps(self, item_ids, start_token):
-    """Last hidden state at the item position of [start, item], before the LM head."""
-    ids = _start_prefixed(item_ids, start_token)
-    return self(ids, output_hidden_states=True)["hidden_states"][-1][:, -1, :]
+    def item_reps(self, item_ids, start_token):
+        """Final hidden state at the item position of ``[start, item]`` (the item alone when the
+        task has no start token), before the LM head."""
+        ids = item_ids.view(-1, 1)
+        if start_token is not None:
+            ids = torch.cat([torch.full_like(ids, int(start_token)), ids], dim=1)
+        return self(ids, output_hidden_states=True)["hidden_states"][-1][:, -1, :]
 
 
 def load_model(config, model_path, device="cuda"):
@@ -63,10 +46,11 @@ def load_model(config, model_path, device="cuda"):
         model = MODEL_CLASSES[model_type].from_pretrained(model_path)
         model.output_key = "logits"
         return model.to(device), None
-    if model_type in ("transformer", "llm"):
-        model = _wrap_causal_lm(transformers.AutoModelForCausalLM.from_pretrained(model_path))
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model_path) if model_type == "llm" else None
-        return model.to(device), tokenizer
+    if model_type == "llm":
+        model = transformers.AutoModelForCausalLM.from_pretrained(model_path)
+        model.output_key = "logits"
+        model.item_reps = types.MethodType(_CausalLMBase.item_reps, model)
+        return model.to(device), transformers.AutoTokenizer.from_pretrained(model_path)
     raise ValueError(f"Unsupported model_type for loading: {model_type}")
 
 
@@ -160,7 +144,7 @@ class MLPModel(_ModelBase):
         return self.mlp[:-1](self.embedding(item_ids))      # penultimate activation (pre-decode)
 
 
-class RNNModel(_ModelBase):
+class RNNModel(_CausalLMBase, _ModelBase):
     """GRU causal language model over walk sequences (a genuine recurrent sequence model): predicts
     the next token at each position. The pre-decode representation is the GRU hidden state."""
 
@@ -180,11 +164,6 @@ class RNNModel(_ModelBase):
             out["loss"] = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
                                           labels[:, 1:].reshape(-1))
         return out
-
-    def item_reps(self, item_ids, start_token):
-        """Hidden-state activation after reading each item in the minimal context [start, item]."""
-        h, _ = self.rnn(self.embedding(_start_prefixed(item_ids, start_token)))
-        return h[:, -1]
 
 
 class SAEModel(_ModelBase):
@@ -224,5 +203,10 @@ class SAEModel(_ModelBase):
         return self._code(item_ids.view(-1, 1))             # the bottleneck code
 
 
+class TransformerModel(_CausalLMBase, transformers.GPTNeoXForCausalLM):
+    """GPT-NeoX causal LM in the ladder interface: shifted next-token CE, plus item probing."""
+    output_key = "logits"
+
+
 MODEL_CLASSES = {"linear": LinearModel, "mlp": MLPModel, "rnn": RNNModel,
-                   "sae": SAEModel}
+                   "sae": SAEModel, "transformer": TransformerModel}

@@ -9,3 +9,5 @@ defaults:
 name: mlp
 output_dir: ${run_dir}/checkpoints
 sample_mode: pointwise
+training_kwargs:
+  learning_rate: 0.00333   # ring sweep: the readout default 0.01 underfits the mlp

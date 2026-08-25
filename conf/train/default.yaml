@@ -1,7 +1,7 @@
 # @package _global_
 
 training_kwargs:
-  train_steps: 1500        # sized for these small tasks; runners override lr / sample_mode only
+  train_steps: 12000       # pointwise full-batch steps are cheap; long training converges every arch
   batch_size: 128          # walk batch for the sequence models (ignored by full-batch readouts)
   learning_rate: 0.01      # readout default; the sequence models (transformer/rnn) lower it
   context_length: 24       # walk length (sequence mode)
