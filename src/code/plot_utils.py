@@ -341,23 +341,33 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None):
 
 
 def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"outputs  $x$",
-                       caption=None, highlight_row=None, highlight_col=None):
+                       caption=None, highlight_row=None, highlight_col=None, factors=None,
+                       figsize=(13, 4.2), embedding_width=0.05, decoder_height=0.09,
+                       conditional_aspect="equal"):
     """Decomposition schematic: centered log-conditional = embedding × decoder, three aligned
     heatmaps with per-panel symmetric color scales. ``k=None`` shows the full-rank factorization
-    (exact, drawn with ``=``); an int truncates (drawn with ``≈``). ``highlight_row``/
-    ``highlight_col`` box one decoder row/column. Returns ``(fig, {"L", "E", "D"})``."""
+    (exact, drawn with ``=``); an int truncates (drawn with ``≈``). ``factors`` supplies an
+    alternative (E, D), e.g. re-expressed in a canonical gauge. Layout: ``embedding_width`` is the
+    width of one code column (as a fraction of the conditional's width), ``decoder_height`` the
+    height of one decoder row (as a fraction of the panel row); ``conditional_aspect="auto"``
+    stretches the conditional to fill its cell like the embedding, instead of square cells. The
+    decoder is centered on the operator row. ``highlight_row``/``highlight_col`` box one decoder
+    row/column. Returns ``(fig, {"L","E","D"})``."""
     from matplotlib.patches import Rectangle
     from .geometry import factor_logcond
     Lc, E, D, S = factor_logcond(L)
-    exact = k is None or k >= min(Lc.shape)
+    if factors is not None:                   # e.g. re-expressed in a canonical gauge
+        E, D = factors
     k = min(Lc.shape) if k is None else k
+    exact = k >= min(Lc.shape) or S[k] < 1e-9 * S[0]      # truncation past the rank is still exact
     Ek, Dk = E[:, :k], D[:k]
     n_i, n_o = Lc.shape
 
-    fig = plt.figure(figsize=(13, 4.2))
+    fig = plt.figure(figsize=figsize)
     fig.subplots_adjust(bottom=0.16)
     gap = 0.14 * n_o
-    gs = fig.add_gridspec(1, 5, width_ratios=[n_o, gap, 0.05 * n_o * k, gap, n_o], wspace=0.05)
+    gs = fig.add_gridspec(1, 5, width_ratios=[n_o, gap, embedding_width * n_o * k, gap, n_o],
+                          wspace=0.05)
 
     def _panel(ax, M, aspect="auto", pct=100):
         # the factors clip at their max (exact SVD, no outliers): percentile clipping would
@@ -367,7 +377,7 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
         FIG.clean(ax)
 
     axL = fig.add_subplot(gs[0, 0])
-    _panel(axL, Lc, aspect="equal", pct=98)
+    _panel(axL, Lc, aspect=conditional_aspect, pct=98)
     axL.set_title("log-conditional\n" + r"$L[z, x] = \log \tilde{p}(x \mid z)$", fontsize=15)
     axL.set_xlabel(outcome_label, fontsize=13); axL.set_ylabel(item_label, fontsize=13)
 
@@ -382,7 +392,7 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
     axD.set_title("decoder", fontsize=15)
     axD.set_xlabel(outcome_label, fontsize=13)
     pos = axD.get_position()
-    shrink = min(1.0, 0.09 * k)                                   # chunky rows, like the manuscript
+    shrink = min(1.0, decoder_height * k)                         # chunky rows, like the manuscript
     axD.set_position([pos.x0, pos.y0 + pos.height * (1 - shrink) / 2,
                       pos.width, pos.height * shrink])
     # E is (n, k) and D is (k, n): mirror their cell geometry — E's column width (inches)
@@ -392,11 +402,11 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
     posE = axE.get_position()
     new_w = k * cell_in / figw
     axE.set_position([posE.x0 + (posE.width - new_w) / 2, posE.y0, new_w, posE.height])
-    # the operator symbols, centered between the *drawn* panel boxes (L letterboxes to a square,
-    # so gridspec-cell centering would drift)
+    # the operator symbols, horizontally between the *drawn* panel boxes (L letterboxes to a
+    # square, so gridspec-cell centering would drift) and vertically on the panel row's center
     fig.canvas.draw()
     pL, pE, pD = axL.get_position(), axE.get_position(), axD.get_position()
-    yc = (pL.y0 + pL.y1) / 2
+    yc = (pE.y0 + pE.y1) / 2                              # the full-height panel: the row's middle
     fig.text((pL.x1 + pE.x0) / 2, yc, r"$=$" if exact else r"$\approx$",
              fontsize=26, ha="center", va="center", color="0.15")
     fig.text((pE.x1 + pD.x0) / 2, yc, r"$\times$", fontsize=26, ha="center", va="center", color="0.15")
