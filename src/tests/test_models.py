@@ -77,3 +77,21 @@ def test_multi_input_mlp_reports_the_embedding_as_its_per_item_code():
     assert model.item_reps(torch.arange(12)).shape == (12, 8)  # embed_dim, not hidden_size
     # arity 1 keeps the penultimate activation: there the readout really does read it
     assert MLPModel(_cfg(arity=1)).item_reps(torch.arange(12)).shape == (12, 16)
+
+
+def test_input_reps_times_the_decoder_reproduces_the_logits():
+    """``input_reps`` is the pre-decode code for a batch of input tuples, so composing it with the
+    decoder rows must give back the model's own logits. That pins the extraction to the thing the
+    readout actually reads, rather than to whatever activation looks plausible."""
+    from src.code.analysis_utils import decoder_weights
+
+    class _DS:                                                 # the outcome block is the vocabulary
+        label_tokens = torch.arange(12)
+
+    ids = torch.randint(0, 12, (7, 2))
+    for model in (MLPModel(_cfg(arity=2)), RNNModel(_cfg(arity=2, vocab_size=12))):
+        code = model.input_reps(ids)
+        W = torch.as_tensor(decoder_weights(model, _DS()), dtype=code.dtype)
+        expected = model(ids)["logits"]
+        expected = expected[:, -1] if expected.ndim == 3 else expected
+        assert torch.allclose(code @ W.T, expected, atol=1e-4), type(model).__name__

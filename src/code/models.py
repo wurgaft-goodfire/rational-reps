@@ -31,13 +31,18 @@ def init_model(config):
 class _CausalLMBase:
     """What the causal LMs share: item probing by a forward pass on the minimal context."""
 
+    def input_reps(self, input_ids):
+        """Pre-decode code for a batch of input tuples ``(B, arity)``: the final hidden state at
+        the last input position, which is where the outcome is predicted."""
+        return self(input_ids, output_hidden_states=True)["hidden_states"][-1][:, -1, :]
+
     def item_reps(self, item_ids, start_token):
         """Final hidden state at the item position of ``[start, item]`` (the item alone when the
         task has no start token), before the LM head."""
         ids = item_ids.view(-1, 1)
         if start_token is not None:
             ids = torch.cat([torch.full_like(ids, int(start_token)), ids], dim=1)
-        return self(ids, output_hidden_states=True)["hidden_states"][-1][:, -1, :]
+        return self.input_reps(ids)
 
 
 def load_model(config, model_path, device="cuda"):
@@ -120,6 +125,13 @@ class LinearModel(_ModelBase):
         logits = torch.einsum(eq, self.readout, *[e[:, j] for j in range(self.arity)])
         return self._finish(logits, distribution_labels)
 
+    def input_reps(self, input_ids):
+        """Pre-decode code per input tuple. With one slot that is the embedding; with several the
+        readout is a tensor contracting them, so no vector code exists for the decoder to read."""
+        if self.config.arity > 1:
+            raise ValueError("a bilinear readout reads the outer product, not a vector code")
+        return self.embedding(input_ids).flatten(1)
+
     def item_reps(self, item_ids, start_token=None):
         return self.embedding(item_ids)                     # pre-decode code == the embedding
 
@@ -140,12 +152,17 @@ class MLPModel(_ModelBase):
         e = self.embedding(input_ids[:, :self.config.arity]).flatten(1)   # (B, arity*d)
         return self._finish(self.mlp(e), distribution_labels)
 
+    def input_reps(self, input_ids):
+        """Penultimate activation for a batch of input tuples: the slots are embedded, concatenated
+        and run through every layer but the readout."""
+        return self.mlp[:-1](self.embedding(input_ids).flatten(1))
+
     def item_reps(self, item_ids, start_token=None):
         # with several input slots the first layer reads them all, so no per-item pre-decode state
         # exists; the embedding is the per-item code, and what the tensor oracle predicts
         if self.config.arity > 1:
             return self.embedding(item_ids)
-        return self.mlp[:-1](self.embedding(item_ids))      # penultimate activation (pre-decode)
+        return self.input_reps(item_ids.view(-1, 1))        # penultimate activation (pre-decode)
 
 
 class RNNModel(_CausalLMBase, _ModelBase):
@@ -202,6 +219,9 @@ class SAEModel(_ModelBase):
         if distribution_labels is not None:
             out["loss"] = out["loss"] + self.config.l1 * h.abs().mean()
         return out
+
+    def input_reps(self, input_ids):
+        return self._code(input_ids)                        # the bottleneck code
 
     def item_reps(self, item_ids, start_token=None):
         return self._code(item_ids.view(-1, 1))             # the bottleneck code
