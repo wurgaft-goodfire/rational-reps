@@ -111,7 +111,9 @@ class KernelDataset(Dataset):
         if self.sequential and self.bipartite:
             self.item_tokens = (self.n_outcomes + 1 + torch.arange(self.n_items)
                                 if self.infer_latent else torch.arange(self.n_outcomes))
-            self.label_tokens = torch.arange(self.n_outcomes)
+            # the scored head slice: the latent block when z is the target, else the outcomes
+            self.label_tokens = (self.item_tokens if self.infer_latent
+                                 else torch.arange(self.n_outcomes))
             self.start_token = self.n_outcomes
             self.vocab_size = self.n_outcomes + 1 + self.n_items * self.infer_latent
             return
@@ -182,12 +184,16 @@ class KernelDataset(Dataset):
 
     def _pointwise_batch(self):
         """Every input tuple as ``[z..., x]`` with a sampled outcome, plus the exact row: a
-        causal LM predicts the outcome token, a readout model trains on the distribution."""
+        causal LM predicts the outcome token, a readout model trains on the distribution.
+        Only the outcome is scored — with several input slots the stream also contains
+        transitions between inputs, which are independent and so unlearnable."""
         inputs = self._input_tuples()
         rows = self.P[self._row_index(inputs)]
         x = torch.multinomial(rows, 1, generator=self.rng) + self.n_items * self.bipartite
         seq = torch.cat([inputs, x], dim=1)
-        return {"input_ids": seq, "labels": seq.clone(), "distribution_labels": rows}
+        labels = torch.full_like(seq, -100)
+        labels[:, -1] = seq[:, -1]
+        return {"input_ids": seq, "labels": labels, "distribution_labels": rows}
 
     def _tile(self, tuples):
         """Repeat the enumeration to reach ``batch_size`` (at least one full copy): downstream
@@ -269,6 +275,11 @@ class RelationalDataset(KernelDataset):
         self.features = None
         # per-input-tuple outcome distribution, flattened over the tuple for fast lookup
         flat = torch.tensor(T.reshape(-1, T.shape[-1]), dtype=torch.float32, device=self.device)
+        if config.get("pair_inputs", False):
+            # each input tuple is one token: the conditional is the (n^arity, n_outcomes) matrix
+            # and the oracle a plain SVD instead of a tensor factorization
+            self.n_items, self.arity = flat.shape[0], 1
+            return T.reshape(self.n_items, -1), flat
         return T, flat
 
     def _input_tuples(self):
@@ -604,7 +615,38 @@ def _graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
         if "gamma" in inspect.signature(struct.conditional).parameters:
             spec.setdefault("gamma", gamma)
         return struct.conditional(**spec)
+    if cooccurrence == "gaussian":
+        # Gaussian tuning in the structure's canonical coordinates (not the adjacency):
+        # log p(x|i) = -gamma/2 ||p_i - q_x||^2 + const_i — rank <= dim(p) + 1 before centering,
+        # exact von Mises (kappa = gamma) on the ring, the quadratic log-kernel on the chain.
+        # ``m`` puts the outcomes on a coarse grid over the same manifold (continuous latent,
+        # few outcomes), making the kernel bipartite.
+        from scipy.special import logsumexp
+        m = spec.pop("m", None)
+        pos = structure_positions(name, spec)
+        out = pos if m is None else structure_positions(name, spec, count=m)
+        lo = -gamma / 2 * ((pos[:, None] - out[None]) ** 2).sum(-1)
+        return lo - logsumexp(lo, axis=1, keepdims=True)      # exact: no exp round-trip underflow
     return adjacency_conditional(_build_adjacency(name, spec), gamma, cooccurrence)
+
+
+def structure_positions(name, params, count=None):
+    """Canonical node coordinates for the Gaussian kernel: chain = the integer line, ring = the
+    unit circle, complete = simplex vertices (identity basis). ``count`` places that many points
+    over the same manifold (the chain's segment, the ring's full circle)."""
+    n = params["n"]
+    if name == "chain":
+        p = np.arange(n, dtype=float) if count is None else np.linspace(0, n - 1, count)
+        return p[:, None]
+    if name == "ring":
+        k = n if count is None else count
+        th = 2 * np.pi * np.arange(k) / k
+        return np.c_[np.cos(th), np.sin(th)]
+    if name == "complete":
+        if count is not None:
+            raise ValueError("complete has no coarser outcome grid")
+        return np.eye(n)
+    raise ValueError(f"No canonical coordinates for structure {name!r}")
 
 
 def adjacency_conditional(A, gamma=0.8, cooccurrence="diffusion"):
@@ -702,6 +744,7 @@ def product(p=14, q=9):
         for b in range(n):
             c = ((els[a][0] + els[b][0]) % p, (els[a][1] + els[b][1]) % q)
             T[a, b, idx[c]] = 1.0
+    return T
 
 
 def maximum(n=8):

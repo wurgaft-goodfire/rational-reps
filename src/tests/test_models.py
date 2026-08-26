@@ -66,3 +66,14 @@ def test_readout_heads_are_bias_free():
     assert MLPModel(_cfg()).mlp[-1].bias is None
     assert RNNModel(_cfg()).head.bias is None
     assert SAEModel(_cfg(hidden_size=3, init_scale=0.1)).decoder.bias is None
+
+
+def test_multi_input_mlp_reports_the_embedding_as_its_per_item_code():
+    """A concat-MLP reads all input slots at once, so it has no per-item pre-decode state: its
+    first layer wants ``arity * embed_dim``. The per-item code is then the embedding, which is
+    also what the tensor oracle predicts for a multi-input task."""
+    model = MLPModel(_cfg(arity=2))
+    assert model.mlp[0].in_features == 16                      # both slots concatenated
+    assert model.item_reps(torch.arange(12)).shape == (12, 8)  # embed_dim, not hidden_size
+    # arity 1 keeps the penultimate activation: there the readout really does read it
+    assert MLPModel(_cfg(arity=1)).item_reps(torch.arange(12)).shape == (12, 16)

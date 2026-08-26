@@ -141,6 +141,10 @@ class MLPModel(_ModelBase):
         return self._finish(self.mlp(e), distribution_labels)
 
     def item_reps(self, item_ids, start_token=None):
+        # with several input slots the first layer reads them all, so no per-item pre-decode state
+        # exists; the embedding is the per-item code, and what the tensor oracle predicts
+        if self.config.arity > 1:
+            return self.embedding(item_ids)
         return self.mlp[:-1](self.embedding(item_ids))      # penultimate activation (pre-decode)
 
 

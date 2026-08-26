@@ -36,7 +36,8 @@ def test_pointwise_batch_pairs_every_item_with_a_draw_and_its_exact_row():
     assert batch["distribution_labels"].shape == (24, 24)  # readouts get the exact conditional
     assert torch.allclose(batch["distribution_labels"], ds.P)
     assert ds.optimal_predictions(batch["input_ids"]).shape == (24, 24)
-    assert (batch["labels"] == batch["input_ids"]).all()   # the LM target is the token stream
+    assert (batch["labels"][:, -1] == batch["input_ids"][:, -1]).all()   # the outcome is the target
+    assert (batch["labels"][:, :-1] == -100).all()                       # the inputs are not scored
 
 
 def test_sequence_batch_shapes_and_start_token():
@@ -102,6 +103,8 @@ def test_hidden_input_is_inferred_from_the_prior_not_read_off_the_batch():
     # z -> x_{1:t} with z latent: it leaves the stream and Bayes infers it from the prefix
     ds = _cube_dataset("sequence", n=8, m=5, infer_latent=True)
     assert ds.bipartite and ds.start_token == ds.n_outcomes and ds.num_dims == ds.n_items
+    # the scored head slice is the latent block: eval compares z-token logits to the z posterior
+    assert torch.equal(ds.label_tokens, ds.item_tokens)
     b = ds.__getitem__()
     assert (b["input_ids"][:, 1:] < ds.n_outcomes).all()          # outcomes only, never z
     assert torch.isin(b["labels"][:, 1:], ds.item_tokens.to(ds.device)).all()
@@ -126,3 +129,68 @@ def test_pointwise_tiles_to_batch_size():
     assert not torch.equal(x[:6], x[6:12]) or not torch.equal(x[:6], x[12:18])  # fresh samples
     assert ds.start_token is None and ds.vocab_size == 6         # no start token outside sequence mode
 
+
+
+def test_gaussian_cooccurrence_is_exactly_rank_two():
+    """Gaussian tuning in canonical coordinates: quadratic log-kernel on the chain, exact von
+    Mises (kappa = gamma) on the ring — rank 2 after row-centering, so a 2-D code is exact.
+    ``m`` puts a coarse outcome grid on the same manifold (continuous latent, few outcomes)."""
+    from src.code.data import graph_conditional
+    for spec in [{"structure": "chain", "n": 9}, {"structure": "ring", "n": 7},
+                 {"structure": "chain", "n": 21, "m": 5}, {"structure": "ring", "n": 28, "m": 7}]:
+        L = graph_conditional({**spec, "cooccurrence": "gaussian", "gamma": 1.5})
+        assert L.shape == (spec["n"], spec.get("m", spec["n"]))
+        Lc = L - L.mean(1, keepdims=True)
+        s = np.linalg.svd(Lc, compute_uv=False)
+        assert s[2] < 1e-9 * s[0]
+    L = graph_conditional({"structure": "ring", "cooccurrence": "gaussian", "n": 7, "gamma": 1.5})
+    expected = 1.5 * np.cos(2 * np.pi * np.arange(7) / 7)
+    assert np.allclose(L[0] - L[0].mean(), expected - expected.mean(), atol=1e-9)
+
+
+def test_relational_lm_is_scored_only_on_the_outcome():
+    """With two input slots the stream ``[a, b, c]`` contains one unlearnable transition (b is
+    independent of a). Scoring it would cost log p nats of irreducible loss and spend half the
+    gradient on noise, so every input position is masked out."""
+    cfg = OmegaConf.create({
+        "setting": "relational", "operation": "modular_add", "operation_kwargs": {"p": 7},
+        "random_seed": 0, "training_kwargs": {"batch_size": 8, "context_length": 6},
+    })
+    ds = RelationalDataset(Config(cfg))
+    labels = ds[0]["labels"]
+    assert (labels[:, :2] == -100).all()                         # a and b are inputs, not targets
+    assert (labels[:, 2] == ds[0]["input_ids"][:, 2]).all()
+    # exactly one scored transition per row, so a perfect model reaches zero loss
+    assert int((labels[:, 1:] != -100).sum()) == len(labels)
+
+
+def test_relational_pair_inputs_flatten_to_a_matrix_kernel():
+    """``pair_inputs`` makes each (a, b) tuple one token: arity 1, a (p^2, p) matrix conditional
+    whose plain SVD (no tensor factorization) carries the degenerate Fourier circles."""
+    cfg = OmegaConf.create({
+        "setting": "relational", "operation": "modular_add", "operation_kwargs": {"p": 7},
+        "pair_inputs": True, "random_seed": 0,
+        "training_kwargs": {"batch_size": 8, "context_length": 6},
+    })
+    ds = RelationalDataset(Config(cfg))
+    assert ds.arity == 1 and ds.n_items == 49 and ds.n_outcomes == 7 and ds.bipartite
+    assert np.asarray(ds.conditional).shape == (49, 7)
+    b = ds[0]
+    assert b["input_ids"].shape == (49, 2)                       # one pair token, then the outcome
+    t = b["input_ids"][:, 0].cpu()
+    assert (b["input_ids"][:, 1].cpu() == (t // 7 + t % 7) % 7 + 49).all()   # c = (a+b) mod p
+
+
+def test_every_relation_builder_returns_its_tensor():
+    """Each builder must hand back a (n,)*arity + (n_outcomes,) tensor whose rows are
+    distributions — a builder that falls off the end returns None and fails silently."""
+    from src.code.data import _RELATION_BUILDERS, relation_tensor
+    small = {"modular_add": {"p": 5}, "modular_mult": {"p": 5}, "standard_add": {"m": 4},
+             "standard_mult": {"m": 4}, "product": {"p": 3, "q": 2}, "maximum": {"n": 4},
+             "averaging": {"grid": 2}, "set_intersection": {"nbit": 2},
+             "entailment": {"depth": 1, "branch": 2}}
+    for name in _RELATION_BUILDERS:
+        T = relation_tensor({"operation": name, **small[name]})
+        assert T is not None, f"{name} returned None"
+        assert T.ndim >= 3 and T.shape[0] == T.shape[1]
+        assert np.allclose(T.reshape(-1, T.shape[-1]).sum(1), 1.0), f"{name} rows are not normalised"
