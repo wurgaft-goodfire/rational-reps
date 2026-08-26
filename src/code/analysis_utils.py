@@ -21,6 +21,31 @@ from .config import Config
 
 
 #########################
+# Reading a trained model's code
+#########################
+
+def decoder_weights(model, dataset):
+    """The readout rows over the outcome tokens, whatever the architecture calls them. (C, d)."""
+    if hasattr(model, "readout"):                              # linear
+        W = model.readout
+    elif hasattr(model, "mlp"):                                # mlp: the final layer
+        W = model.mlp[-1].weight
+    elif hasattr(model, "head"):                               # rnn
+        W = model.head.weight[dataset.label_tokens]
+    else:                                                      # causal LM: the unembedding
+        W = model.get_output_embeddings().weight[dataset.label_tokens]
+    return W.detach().float().cpu().numpy()
+
+
+def readout_basis(model, dataset, tol=1e-4):
+    """Orthonormal rows spanning the centered decoder's row space. A code component orthogonal to
+    it cannot change the output, so it is not part of the geometry the task pins down."""
+    W = decoder_weights(model, dataset)
+    W = W - W.mean(0)
+    return np.linalg.svd(W, full_matrices=False)[2][:np.linalg.matrix_rank(W, tol=tol)]
+
+
+#########################
 # Loading eval results
 #########################
 

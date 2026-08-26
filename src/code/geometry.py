@@ -31,6 +31,93 @@ def factor_tensor(T):
     return U * S, S
 
 
+def fourier_basis(p):
+    """Real DFT modes of ``Z_p`` as rows: cos/sin at each frequency, Nyquist once when p is even.
+    The canonical gauge for group operations (modular add/mult), whose factorization is degenerate
+    across frequencies."""
+    x = 2 * np.pi * np.arange(p) / p
+    rows = [np.ones(p)]
+    for k in range(1, p // 2 + 1):
+        rows.append(np.cos(k * x))
+        if 2 * k != p:                                        # Nyquist has no sine partner
+            rows.append(np.sin(k * x))
+    return np.array(rows[1:])                                 # drop the constant: centering killed it
+
+
+def canonical_gauge(E, D, basis, tol=1e-6):
+    """Re-express a factorization in ``basis`` within each degenerate singular block, leaving
+    ``E @ D`` unchanged. Blocks are runs of rows of ``D`` with (nearly) equal norm — exactly the
+    directions the SVD leaves arbitrary, so any orthonormal set spanning the block is as valid.
+    Each block takes the ``basis`` rows that live in its span (greedily, best-aligned first),
+    orthonormalized. Returns ``(E R, R.T @ D)``."""
+    E, D, basis = (np.asarray(a, float) for a in (E, D, basis))
+    norms = np.linalg.norm(D, axis=1)
+    R = np.eye(len(D))
+    start = 0
+    for stop in list(np.flatnonzero(np.diff(norms) < -tol * max(norms.max(), 1e-12)) + 1) + [len(D)]:
+        blk, start = slice(start, stop), stop
+        k = stop - blk.start
+        if k < 2:
+            continue                                          # a lone direction is already pinned
+        Q = D[blk] / np.linalg.norm(D[blk], axis=1, keepdims=True)   # orthonormal rows of the block
+        coords = basis @ Q.T                                  # each target mode in block coordinates
+        keep = np.linalg.norm(coords, axis=1) > 1 - tol       # the modes that lie inside the span
+        chosen, taken = [], np.zeros((0, k))
+        for c in coords[keep]:                                # greedy Gram-Schmidt over those modes
+            r = c - taken.T @ (taken @ c) if len(taken) else c
+            if np.linalg.norm(r) > tol:
+                r /= np.linalg.norm(r)
+                chosen.append(r); taken = np.vstack([taken, r])
+        if len(chosen) == k:
+            R[blk, blk] = np.array(chosen).T
+    return E @ R, R.T @ D
+
+
+def class_means(X, labels, n=None):
+    """Mean code per label and the label counts: ``((n, d), (n,))``."""
+    n = n if n is not None else int(np.max(labels)) + 1
+    M = (np.asarray(labels)[:, None] == np.arange(n)).astype(float)
+    count = M.sum(0)
+    return M.T @ X / count[:, None], count
+
+
+def group_fraction(X, labels, n=None):
+    """Share of code variance explained by ``labels`` alone: 1 when the code is a function of the
+    label, about 1/n for a code unrelated to it. ``X`` (rows = items) is centered first."""
+    X = np.asarray(X, float)
+    X = X - X.mean(0)
+    m, count = class_means(X, labels, n)
+    return float((count[:, None] * m ** 2).sum() / (X ** 2).sum())
+
+
+def frequency_plane(X, labels, k, n=None):
+    """Codes projected onto the plane that frequency ``k`` of a cyclic ``labels`` spans, with that
+    frequency's share of the class-mean energy and its circularity (sigma_2 / sigma_1 of the plane,
+    1 for a true circle). Returns ``(xy (len(X), 2), energy, circularity)``."""
+    X = np.asarray(X, float)
+    X = X - X.mean(0)
+    m, _ = class_means(X, labels, n)
+    ang = 2 * np.pi * k * np.arange(len(m)) / len(m)
+    B = np.c_[np.cos(ang), np.sin(ang)].T @ m                 # the two mode coordinates, (2, d)
+    sv = np.linalg.svd(B, compute_uv=False)
+    energy = (2 / len(m)) * (B ** 2).sum() / (m ** 2).sum()
+    return X @ np.linalg.qr(B.T)[0], float(energy), float(sv[1] / max(sv[0], 1e-12))
+
+
+def circulant_fraction(X, labels, n=None):
+    """Share of the class-mean Gram explained by its translation-invariant part: 1 when the Gram
+    depends only on the label difference (a ring), lower when it does not. Radii may differ across
+    frequencies without cost, so this tests the symmetry, not the spectrum."""
+    m, _ = class_means(np.asarray(X, float) - np.mean(X, 0), labels, n)
+    m = m / np.linalg.norm(m, axis=1, keepdims=True).mean()
+    G = m @ m.T
+    off = (np.arange(len(m))[:, None] - np.arange(len(m))[None, :]) % len(m)
+    C = np.zeros_like(G)
+    for o in range(len(m)):                                   # average each diagonal offset
+        C[off == o] = G[off == o].mean()
+    return float(1 - ((G - C) ** 2).sum() / (G ** 2).sum())
+
+
 def predicted_geometry(conditional):
     """Predicted item code ``E`` for a dataset's conditional: 2-D log-conditional ->
     ``factor_logcond``; 3-D+ tensor -> ``factor_tensor``."""
