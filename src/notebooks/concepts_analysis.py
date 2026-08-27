@@ -593,7 +593,7 @@ def _(
         # the kernels are exactly rank 2 (centered), so a 2-D code loses nothing
         _model, _ds, _ev, _, _ = train_inline(graph_overrides(_sp) +
                                               ["runner=linear", "model_kwargs.model_config.embed_dim=2"])
-        _E = _ev.item_representations(_model)
+        _E = _ev.input_code(_model)
         _D = _model.readout.detach().cpu().numpy()
         print(f"{_name:8s} CKA={cka(_E, predicted_geometry(graph_conditional(_sp))):.3f}")
         learned[_name] = {"E": _E, "D": _D}

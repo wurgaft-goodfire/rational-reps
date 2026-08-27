@@ -267,6 +267,20 @@ def _hypercube_labels(spec):
     return [format(v, f"0{n}b") for v in range(2 ** n)]
 
 
+def _frame_2d(ax, XY, margin=0.12):
+    """Frame a 2-D panel: equal aspect for a genuinely two-dimensional cloud, but a near-1-D one (a
+    chain, or a rank-one code like log(a+b)) gets padded height instead — equal aspect would shrink
+    the axes box to zero height and render nothing."""
+    XY = np.asarray(XY)
+    d0, d1 = np.ptp(XY[:, 0]), np.ptp(XY[:, 1])
+    if min(d0, d1) < 0.1 * max(d0, d1):
+        pad = 0.25 * max(d0, d1)
+        ax.set_ylim(XY[:, 1].min() - pad, XY[:, 1].max() + pad); ax.margins(x=0.05)
+    else:
+        ax.set_aspect("equal"); ax.margins(margin)        # pad so edge points aren't clipped
+    FIG.clean(ax); ax.set_anchor("N")
+
+
 def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None, labels=None):
     """Draw a latent graph: light edges + nodes at `pos` (2-D or 3-D). Nodes in `item_ids` are
     colored by item index (via `cmap`, default the house cyclic map); others (e.g. inner tree nodes
@@ -289,13 +303,7 @@ def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None, labe
         if labels is not None:
             for (x, y), lab in zip(pos[:, :2], labels):
                 ax.text(x, y, lab, fontsize=6, ha="center", va="bottom", zorder=3)
-        d0, d1 = np.ptp(pos[:, 0]), np.ptp(pos[:, 1])
-        if min(d0, d1) < 0.1 * max(d0, d1):               # ~1-D (chain): fill, don't squash
-            pad = 0.25 * max(d0, d1)
-            ax.set_ylim(pos[:, 1].min() - pad, pos[:, 1].max() + pad); ax.margins(x=0.05)
-        else:
-            ax.set_aspect("equal"); ax.margins(0.12)      # pad so edge nodes aren't clipped
-        FIG.clean(ax); ax.set_anchor("N")
+        _frame_2d(ax, pos)
     else:
         for a, b in zip(ii, jj):
             ax.plot(*zip(pos[a], pos[b]), color="0.85", lw=0.25, zorder=0)
@@ -313,9 +321,11 @@ def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None, labe
     ax.set_title(title)
 
 
-def scatter_geometry(ax, XY, title, cmap=None):
-    """Embedding scatter colored by item index (borderless manifold panel); 2-D or 3-D by XY's width."""
-    XY = np.asarray(XY); c = np.arange(len(XY)); cmap = cmap or FIG.cyclic_cmap
+def scatter_geometry(ax, XY, title, cmap=None, colors=None):
+    """Embedding scatter colored by item index, or by ``colors`` (one scalar per row, e.g. the mean
+    outcome of an input pair); borderless manifold panel, 2-D or 3-D by XY's width."""
+    XY = np.asarray(XY); cmap = cmap or FIG.cyclic_cmap
+    c = np.arange(len(XY)) if colors is None else np.asarray(colors, float)
     if XY.shape[1] >= 3:
         # depthshade off: it modulates alpha by depth, so identical geometries in different
         # orientations would render with different colors across panels. The fixed soft alpha
@@ -325,16 +335,19 @@ def scatter_geometry(ax, XY, title, cmap=None):
         for pane in (ax.xaxis, ax.yaxis, ax.zaxis): pane.pane.set_facecolor((1, 1, 1, 0))
     else:
         ax.scatter(XY[:, 0], XY[:, 1], c=c, cmap=cmap, s=45)
-        ax.set_title(title); ax.set_aspect("equal"); ax.margins(0.15); FIG.clean(ax); ax.set_anchor("N")
+        ax.set_title(title); _frame_2d(ax, XY, margin=0.15)
 
 
-def draw_embedding(fig, cell, r, spec, title, cmap=None):
+def draw_embedding(fig, cell, r, spec, title, cmap=None, colors=None, xy=None):
     """One embedding panel per the structure's view (see `_view`): a 3-D donut for a torus, else a
     2-D or 3-D PCA scatter. Tree ultrametric/simplex views route separately in the callers."""
     view = _view(spec)
     if view == "torus":
         ax = fig.add_subplot(cell, projection="3d")
-        scatter_geometry(ax, _torus_donut(r), title, cmap)
+        scatter_geometry(ax, _torus_donut(r), title, cmap, colors)
+        return
+    if xy is not None:                                    # a chosen plane, e.g. one irrep's
+        scatter_geometry(fig.add_subplot(cell), xy, title, cmap, colors)
         return
     ndim = 3 if view == "3d" else 2
     ax = fig.add_subplot(cell, projection="3d" if ndim == 3 else None)
@@ -345,7 +358,7 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None):
         from .data import structure_adjacency
         draw_structure(ax, structure_adjacency(spec), _pca(r, ndim), title, cmap=cmap)
         return
-    scatter_geometry(ax, _pca(r, ndim), title, cmap)
+    scatter_geometry(ax, _pca(r, ndim), title, cmap, colors)
 
 
 def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"outputs  $x$",
@@ -587,10 +600,14 @@ def gram_heatmap(ax, reps, title="Gram", cmap=None):
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
 
 
-def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None):
+def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None, scores=None,
+                          coords=None):
     """Two rows: predicted code beside each model's pre-decode representation (top, laid out per the
     structure's ``view``; see `_view`), and each code's Gram matrix (bottom) — ``E E^T`` for the
-    predicted column, so all matrix panels show the same quantity. ``embeddings``: {name: reps}."""
+    predicted column, so all matrix panels show the same quantity. ``embeddings``: {name: reps}.
+    ``colors``: one scalar per row for the scatters. ``scores``: {name: float} annotated on the
+    Grams. ``coords``: {name: (n, 2)} to scatter a chosen plane instead of the top-2 PCA — needed
+    when the spectrum is flat (a group), where PCA picks an arbitrary mixture of irreps."""
     names = ["predicted"] + list(embeddings)
     reps = [E_pred] + list(embeddings.values())
     is_tree = spec is not None and spec["structure"] == "tree"
@@ -609,9 +626,13 @@ def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None):
             _draw_simplex_of_simplices(fig, gs[0, j], parents, items, r, cmap, titles=False)
             headers.append((j, name))
         else:
-            draw_embedding(fig, gs[0, j], r, spec, name, cmap)
+            draw_embedding(fig, gs[0, j], r, spec, name, cmap, colors,
+                           xy=None if coords is None else coords.get(name))
         axb = fig.add_subplot(gs[1, j])
-        gram_heatmap(axb, r, title=r"$E^{*}E^{*\top}$" if j == 0 else r"$EE^{\top}$")
+        gtitle = r"$E^{*}E^{*\top}$" if j == 0 else r"$EE^{\top}$"
+        if scores is not None and name in scores:
+            gtitle += f"   CKA {scores[name]:.2f}"
+        gram_heatmap(axb, r, title=gtitle)
     if headers:                                          # column names for the simplex sub-grids
         fig.canvas.draw()
         for j, name in headers:

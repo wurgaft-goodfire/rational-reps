@@ -6,7 +6,7 @@ must factor into a clean circle, and a modular-addition tensor likewise.
 import numpy as np
 import pytest
 
-from src.code.geometry import factor_logcond, factor_tensor, predicted_geometry
+from src.code.geometry import factor_logcond, log_conditional, predicted_geometry
 from src.code.data import ring, cooccur_logcond
 
 
@@ -30,26 +30,16 @@ def test_ring_factorizes_into_a_circle():
 
 def test_max_tensor_factorizes_into_an_ordered_line():
     # max is a non-group (semilattice) operation -> a clean, non-degenerate 1-D order.
-    # (Abelian group indicators like modular addition are degenerate under factor_tensor;
-    #  their circle is the analytic single-frequency member, handled in the relational slice.)
+    # (Abelian group indicators like modular addition are degenerate; their circle is the
+    #  analytic single-frequency member, handled in the relational slice.)
     n = 10
     T = np.zeros((n, n, n))                        # T[a, b, c] = 1[max(a, b) == c]
     for a in range(n):
         for b in range(n):
             T[a, b, max(a, b)] = 1.0
-    E, S = factor_tensor(T)
+    E = predicted_geometry(log_conditional(T).reshape(n, -1))
     order = np.abs(np.corrcoef(E[:, 0], np.arange(n))[0, 1])
     assert order > 0.95, f"max should embed on an ordered line, got |corr|={order:.3f}"
-
-
-def test_predicted_geometry_dispatches_on_rank():
-    L = cooccur_logcond(ring(8))
-    assert predicted_geometry(L).shape[0] == 8            # 2-D conditional -> factor_logcond
-    T = np.zeros((5, 5, 5))
-    for a in range(5):
-        for b in range(5):
-            T[a, b, (a + b) % 5] = 1.0
-    assert predicted_geometry(T).shape[0] == 5            # 3-D conditional -> factor_tensor
 
 
 def test_factor_logcond_is_the_plain_svd_of_the_row_centered_log_conditional():
@@ -175,3 +165,15 @@ def test_circulant_fraction_ignores_radii_but_catches_a_broken_symmetry():
     moved = means.copy()
     moved[3] *= 2.5                                            # one class pushed off the ring
     assert circulant_fraction(moved[s], s) < 0.8
+
+
+def test_log_conditional_clamps_zeros_and_leaves_probabilities_alone():
+    """Softmax reads logits, so every prediction factors log p, never p. Zero-probability outcomes
+    would be -inf, so the log is clamped at a single floor shared by the whole codebase."""
+    from src.code.geometry import LOG_FLOOR, log_conditional
+
+    P = np.array([[0.5, 0.5, 0.0], [1.0, 0.0, 0.0]])
+    L = log_conditional(P)
+    assert np.allclose(L[0, :2], np.log(0.5))
+    assert (L[[0, 1], [2, 1]] == LOG_FLOOR).all()          # exact zeros hit the floor
+    assert L.min() >= LOG_FLOOR                            # and nothing sits below it

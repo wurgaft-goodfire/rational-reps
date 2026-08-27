@@ -188,7 +188,9 @@ def test_every_relation_builder_returns_its_tensor():
     small = {"modular_add": {"p": 5}, "modular_mult": {"p": 5}, "standard_add": {"m": 4},
              "standard_mult": {"m": 4}, "product": {"p": 3, "q": 2}, "maximum": {"n": 4},
              "averaging": {"grid": 2}, "set_intersection": {"nbit": 2},
-             "entailment": {"depth": 1, "branch": 2}}
+             "entailment": {"depth": 1, "branch": 2},
+             "symmetric_difference": {"nbit": 2}, "between": {"n": 4},
+             "common_divisors": {"n": 6}, "approx_add": {"m": 5}}
     for name in _RELATION_BUILDERS:
         T = relation_tensor({"relation": name, **small[name]})
         assert T is not None, f"{name} returned None"
@@ -211,3 +213,33 @@ def test_input_tuples_enumerates_once_and_the_batch_tiles_it():
 
     ring = KernelDataset(_config("pointwise", n=8, batch_size=8))
     assert ring.input_tuples().shape == (8, 1)              # arity 1 keeps the column
+
+
+def test_relational_conditional_is_the_flat_log_conditional():
+    """Every dataset hands the oracle the same object: log p(outcome | input tuple), one row per
+    tuple. The relation's tensor is flattened and logged here, not at each call site."""
+    from src.code.geometry import LOG_FLOOR
+
+    cfg = OmegaConf.create({
+        "setting": "relational", "relation": "modular_add", "relation_kwargs": {"p": 7},
+        "random_seed": 0, "training_kwargs": {"batch_size": 8},
+    })
+    ds = RelationalDataset(Config(cfg))
+
+    L = np.asarray(ds.conditional)
+    assert ds.arity == 2 and L.shape == (49, 7)                  # rows = (a, b) pairs, not a tensor
+    s = (np.arange(49) // 7 + np.arange(49) % 7) % 7
+    assert np.allclose(L[np.arange(49), s], 0.0)                 # log 1 on the true outcome
+    assert L.min() == LOG_FLOOR                                  # every other outcome at the floor
+
+
+def test_model_inputs_prepend_the_start_token_when_the_layout_has_one():
+    """One accessor feeds the model, whatever the sampler is: the input tuple with the start token
+    in front when the layout has one, so code extraction needs no per-architecture fixup."""
+    pointwise = KernelDataset(_config("pointwise", n=24))
+    assert torch.equal(pointwise.model_inputs(), pointwise.input_tuples())   # no start token
+
+    sequential = KernelDataset(_config("sequence", n=24))
+    ids = sequential.model_inputs()
+    assert ids.shape == (24, 2) and (ids[:, 0] == sequential.start_token).all()
+    assert torch.equal(ids[:, 1:], sequential.input_tuples())

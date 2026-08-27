@@ -8,6 +8,16 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from .config import Config
+from .geometry import log_conditional
+
+def apply_lapse(P, lapse):
+    """Mix a conditional with the uniform distribution: ``(1 - lapse) p + lapse / C``. A target with
+    zeros is not identified by the loss — KL weights an outcome by its true probability, so an
+    impossible one constrains nothing and its logit is free. A lapse rate ("with probability
+    ``lapse`` the response is random") makes every outcome possible, hence every logit scored."""
+    P = np.asarray(P, dtype=np.float64)
+    return (1 - lapse) * P + lapse / P.shape[-1] if lapse else P
+
 
 def _spec(config, name_key, kwargs_key):
     """Merge a setting's name and its ``*_kwargs`` block into one spec dict."""
@@ -101,7 +111,8 @@ class KernelDataset(Dataset):
         L, self.info = graph_build(spec)
         self.n_items = len(L)
         self.features = self.info.get("Z")                        # item feature codes, if any
-        return L, torch.tensor(np.exp(L), dtype=torch.float32, device=self.device)
+        P = apply_lapse(np.exp(L), config.get("lapse", 0.0))
+        return np.log(P), torch.tensor(P, dtype=torch.float32, device=self.device)
 
     def _layout(self):
         """Token layout, which follows from the sampler. A bipartite stream hides its input, so
@@ -206,8 +217,18 @@ class KernelDataset(Dataset):
         return self.item_tokens.to(self.device).unsqueeze(1)
 
     def _input_tuples(self):
-        """``input_tuples`` tiled to ``batch_size``."""
+        """``input_tuples`` tiled to ``batch_size``. The sampler appends the outcome column
+        itself, so this is the tuple alone — never ``model_inputs``."""
         return self._tile(self.input_tuples())
+
+    def model_inputs(self):
+        """What the model reads for each input the task defines, one row per input: the tuple,
+        with the start token in front when the layout has one. ``(n_items ** arity, arity [+1])``."""
+        tuples = self.input_tuples()
+        if self.start_token is None:
+            return tuples
+        start = torch.full_like(tuples[:, :1], int(self.start_token))
+        return torch.cat([start, tuples], dim=1)
 
     def _row_index(self, inputs):
         """Row of ``P`` addressed by each input tuple."""
@@ -269,9 +290,9 @@ class KernelDataset(Dataset):
 ##### Relational dataset (order >= 2, combination) #####
 
 class RelationalDataset(KernelDataset):
-    """Operation task ``c = a * b``: ``.conditional`` is the tensor ``T[a, b, ..., c]``, with
-    arity inferred from its shape. Pointwise by construction — extra input slots are the only
-    thing that differs from any other kernel."""
+    """Operation task ``c = a * b``: the relation's tensor ``T[a, b, ..., c]``, with arity
+    inferred from its shape. Pointwise by construction — extra input slots are the only thing
+    that differs from any other kernel. ``pair_inputs`` folds the tuple into a single token."""
 
     def _build(self, config):
         T = relation_tensor(_spec(config, "relation", "relation_kwargs"))
@@ -279,13 +300,11 @@ class RelationalDataset(KernelDataset):
         self.n_items = T.shape[0]
         self.features = None
         # per-input-tuple outcome distribution, flattened over the tuple for fast lookup
-        flat = torch.tensor(T.reshape(-1, T.shape[-1]), dtype=torch.float32, device=self.device)
+        M = apply_lapse(T.reshape(-1, T.shape[-1]), config.get("lapse", 0.0))
+        flat = torch.tensor(M, dtype=torch.float32, device=self.device)
         if config.get("pair_inputs", False):
-            # each input tuple is one token: the conditional is the (n^arity, n_outcomes) matrix
-            # and the oracle a plain SVD instead of a tensor factorization
-            self.n_items, self.arity = flat.shape[0], 1
-            return T.reshape(self.n_items, -1), flat
-        return T, flat
+            self.n_items, self.arity = flat.shape[0], 1           # each input tuple is one token
+        return log_conditional(M), flat
 
     def input_tuples(self):
         items = self.item_tokens.to(self.device)
@@ -772,8 +791,27 @@ def averaging(grid=4, sigma=0.7):
     return T
 
 
-def set_intersection(nbit=3):
-    """c = a & b over feature sets (Boolean lattice) -> the hypercube (one binary coord/feature)."""
+def _graded_set(nbit, op):
+    """Uniform over the members of ``op(a, b)``, an extra final outcome for the empty set. The
+    answer to "give me an element of the result" is uniform when the set is all you know, and the
+    empty set is a real element of the lattice, so it is named rather than faked as a flat row."""
+    n = 2 ** nbit
+    T = np.zeros((n, n, n + 1))
+    for a in range(n):
+        for b in range(n):
+            members = [1 << i for i in range(nbit) if op(a, b) >> i & 1]
+            if members:
+                T[a, b, members] = 1.0 / len(members)
+            else:
+                T[a, b, n] = 1.0                              # the empty set
+    return T
+
+
+def set_intersection(nbit=4, graded=True):
+    """c = a & b over feature sets (Boolean lattice) -> the hypercube. ``graded``: uniform over the
+    members of the intersection (Tversky's *common* features); else one-hot on the subset itself."""
+    if graded:
+        return _graded_set(nbit, lambda a, b: a & b)
     n = 2 ** nbit; T = np.zeros((n, n, n))
     for a in range(n):
         for b in range(n):
@@ -781,8 +819,64 @@ def set_intersection(nbit=3):
     return T
 
 
-def entailment(depth=2, branch=3):
-    """c = LCA(a, b) (the meet on an is-a tree) -> a hierarchy embedding."""
+def symmetric_difference(nbit=4, graded=True):
+    """c = a ^ b: Tversky's *distinctive* features, and addition in Z_2^nbit. As a class label the
+    group makes it flat-spectrum and gauge-only; as a set it is rank nbit with the code on the bits.
+    Only ``a ^ a`` is empty, so the null outcome carries 1/2^nbit of the rows."""
+    if graded:
+        return _graded_set(nbit, lambda a, b: a ^ b)
+    n = 2 ** nbit; T = np.zeros((n, n, n))
+    for a in range(n):
+        for b in range(n):
+            T[a, b, a ^ b] = 1.0
+    return T
+
+
+def between(n=8):
+    """The interval spanned by a and b on a total order: uniform over [min, max]. Unlike ``maximum``
+    it cannot discard the smaller operand — every unordered pair gets its own answer."""
+    T = np.zeros((n, n, n))
+    for a in range(n):
+        for b in range(n):
+            lo, hi = min(a, b), max(a, b)
+            T[a, b, lo:hi + 1] = 1.0 / (hi - lo + 1)
+    return T
+
+
+def common_divisors(n=12):
+    """Common divisors of a and b — the divisors of gcd(a, b), the meet in the divisibility lattice.
+    Items and outcomes are 1..n; 1 divides everything, so the answer is never empty."""
+    from math import gcd
+    T = np.zeros((n, n, n))
+    for a in range(1, n + 1):
+        for b in range(1, n + 1):
+            d = [c for c in range(1, n + 1) if gcd(a, b) % c == 0]
+            T[a - 1, b - 1, [c - 1 for c in d]] = 1.0 / len(d)
+    return T
+
+
+def approx_add(m=12, weber=0.4):
+    """Estimate a + b under scalar variability: noise proportional to magnitude, i.e. Gaussian in
+    log space (Weber-Fechner). Items are the magnitudes 1..m and outcomes the achievable sums
+    2..2m, both laid out as plain integers — so the logarithmic geometry comes from the noise law,
+    not from the outcome positions. With constant-width noise the same construction predicts a
+    linear line instead, which is what makes the log line a claim rather than an assumption.
+
+    ``weber`` must keep the far tails above float noise: the rank-2 structure is exact for the
+    log-conditional, and clipping underflowed probabilities would raise the rank spuriously."""
+    from scipy.special import softmax
+    out = np.arange(2, 2 * m + 1, dtype=float)
+    T = np.zeros((m, m, len(out)))
+    for a in range(1, m + 1):
+        for b in range(1, m + 1):
+            T[a - 1, b - 1] = softmax(-((np.log(out) - np.log(a + b)) ** 2) / (2 * weber ** 2))
+    return T
+
+
+def entailment(depth=2, branch=3, graded=True):
+    """The common ancestors of a and b on an is-a tree -> a hierarchy embedding. Those are exactly
+    the ancestors of LCA(a, b), so ``graded`` spreads over that path (never empty: the root is
+    always common) while ``graded=False`` keeps the one-hot on the LCA alone."""
     parent = [None]; children = [[]]; frontier = [0]
     for _ in range(depth):
         new = []
@@ -801,7 +895,11 @@ def entailment(depth=2, branch=3):
     for a in range(n):
         sa = set(anc[a])
         for b in range(n):
-            T[a, b, next(u for u in anc[b] if u in sa)] = 1.0
+            shared = [u for u in anc[b] if u in sa]          # ancestors of the LCA, root last
+            if graded:
+                T[a, b, shared] = 1.0 / len(shared)
+            else:
+                T[a, b, shared[0]] = 1.0                     # the LCA itself
     return T
 
 
@@ -809,6 +907,8 @@ _RELATION_BUILDERS = {
     "modular_add": modular_add, "standard_add": standard_add, "modular_mult": modular_mult,
     "standard_mult": standard_mult, "product": product, "maximum": maximum,
     "averaging": averaging, "set_intersection": set_intersection, "entailment": entailment,
+    "symmetric_difference": symmetric_difference, "between": between,
+    "common_divisors": common_divisors, "approx_add": approx_add,
 }
 GROUP_RELATIONS = {"modular_add", "modular_mult", "standard_add", "standard_mult", "product"}
 

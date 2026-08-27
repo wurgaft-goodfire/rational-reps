@@ -18,6 +18,7 @@ load_dotenv()
 from .config import Config
 from .models import load_model, MODEL_CLASSES
 from .data import init_dataset
+from .analysis_utils import input_code
 from .geometry import predicted_geometry
 
 
@@ -34,14 +35,20 @@ def cka(X, Y):
     return float((Kx * Ky).sum() / denom) if denom > 0 else 0.0
 
 
-def cca(X, Y, tol=1e-5):
+def cca(X, Y, tol=1e-5, keep=None):
     """Mean canonical correlation between X and Y (rows = samples). Invariant to any invertible
     linear map of each side — the right similarity when representations match up to a linear
-    transform. ``tol`` sets the basis rank cutoff (above float32 numerical noise)."""
+    transform, and blind to the metric within the shared subspace. ``tol`` sets the basis rank
+    cutoff (above float32 numerical noise); ``keep`` additionally truncates at that fraction of
+    the variance, which matters because CCA weights every direction equally while a near-empty one
+    carries almost no loss and so is barely constrained."""
     def basis(A):
         A = np.asarray(A, np.float64); A = A - A.mean(0)
         U, S, _ = np.linalg.svd(A, full_matrices=False)
-        return U[:, S > tol * S[0]]
+        k = int((S > tol * S[0]).sum())
+        if keep is not None:
+            k = min(k, 1 + int(np.searchsorted(np.cumsum(S ** 2) / (S ** 2).sum(), keep)))
+        return U[:, :k]
     Bx, By = basis(X), basis(Y)
     if Bx.shape[1] == 0 or By.shape[1] == 0:
         return 0.0
@@ -193,23 +200,18 @@ class Evaluator:
         Empty unless the dataset has a conditional and a representation can be extracted."""
         if self.predicted_E is None:
             return {}
-        reps = self.item_representations(model)
+        reps = self.input_code(model)
         if reps is None:
             return {}
         return {"cka_vs_predicted": cka(reps, self.predicted_E),
                 "rsa_vs_predicted": rsa(reps, self.predicted_E)}
 
-    def item_representations(self, model):
-        """Per-item pre-decode *activation* (not weights): linear -> embedding activation;
-        mlp -> penultimate; rnn/transformer -> hidden state after reading [start, item]."""
-        item_tokens = self.dataset.item_tokens
-        start_token = getattr(self.dataset, "start_token", None)
-        if hasattr(model, "item_reps"):
-            return model.item_reps(item_tokens.to(self.c.device), start_token).detach().cpu().numpy()
-        embed = model.get_input_embeddings() if hasattr(model, "get_input_embeddings") else None
-        if embed is not None:                                             # fallback (e.g. test stubs)
-            return embed.weight.detach().cpu().numpy()[item_tokens.cpu().numpy()]
-        return None
+    def input_code(self, model, project=False):
+        """The pre-decode code of every input the task defines — the one accessor the metrics and
+        the notebooks share. ``None`` when the architecture exposes no vector code."""
+        if not hasattr(model, "input_reps"):
+            return None
+        return input_code(model, self.dataset, project=project)
 
     # ── private helpers ───────────────────────────────────────────────────
 

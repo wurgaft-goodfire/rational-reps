@@ -2,6 +2,15 @@
 geometry a network should learn) and a decoder ``D`` (the readout)."""
 import numpy as np
 
+# A zero-probability outcome has no finite log. Every conditional is clamped here before it is
+# factored, so the oracle sees one floor everywhere instead of a per-caller magic number.
+LOG_FLOOR = -20.0
+
+
+def log_conditional(P):
+    """``log p(outcome | input)`` with zero probabilities clamped to ``LOG_FLOOR``."""
+    return np.log(np.clip(np.asarray(P, dtype=np.float64), np.exp(LOG_FLOOR), None))
+
 
 def factor_logcond(L):
     """SVD of the row-centered log-conditional ``L[theta, x]`` (dropping the per-row
@@ -19,16 +28,6 @@ def truncation_features(L, d):
     Returns (A (d, N), D (d, n_x)) for the identity lift."""
     _, E, D, _ = factor_logcond(L)
     return E[:, :d].T, D[:d]
-
-
-def factor_tensor(T):
-    """Factor an order-2+ conditional tensor: items on the first axis, remaining axes
-    reshaped into columns, mean-centered, SVD. Returns ``(E, S)`` with ``E`` the
-    singular-value-scaled item code."""
-    T = np.asarray(T, dtype=np.float64)
-    M = T.reshape(T.shape[0], -1)
-    U, S, _ = np.linalg.svd(M - M.mean(0), full_matrices=False)
-    return U * S, S
 
 
 def fourier_basis(p):
@@ -118,13 +117,9 @@ def circulant_fraction(X, labels, n=None):
     return float(1 - ((G - C) ** 2).sum() / (G ** 2).sum())
 
 
-def predicted_geometry(conditional):
-    """Predicted item code ``E`` for a dataset's conditional: 2-D log-conditional ->
-    ``factor_logcond``; 3-D+ tensor -> ``factor_tensor``."""
-    conditional = np.asarray(conditional, dtype=np.float64)
-    if conditional.ndim == 2:
-        return factor_logcond(conditional)[1]
-    return factor_tensor(conditional)[0]
+def predicted_geometry(log_cond):
+    """Predicted code ``E``, one row per input, for a log-conditional ``L[input, outcome]``."""
+    return factor_logcond(log_cond)[1]
 
 ##### Budgeted CE-optimal codes: truncation vs superposition #####
 

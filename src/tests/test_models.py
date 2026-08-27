@@ -34,7 +34,7 @@ def test_mlp_is_a_pointwise_readout():
     out = model(torch.randint(0, 12, (5, 1)), distribution_labels=torch.rand(5, 12).softmax(-1))
     assert out["logits"].shape == (5, 12)                  # (B, num_classes)
     assert model.get_input_embeddings().weight.shape == (13, 8)
-    assert model.item_reps(torch.arange(12)).shape == (12, 16)   # penultimate activation
+    assert model.input_reps(torch.arange(12).unsqueeze(1)).shape == (12, 16)   # penultimate
 
 
 def test_rnn_is_a_causal_lm():
@@ -43,7 +43,8 @@ def test_rnn_is_a_causal_lm():
     out = model(seq, labels=seq)
     assert out["logits"].shape == (5, 7, 13)              # (B, T, vocab_size) next-token
     assert out["loss"].ndim == 0
-    assert model.item_reps(torch.arange(12), start_token=12).shape == (12, 16)   # GRU hidden
+    ids = torch.stack([torch.full((12,), 12), torch.arange(12)], dim=1)   # [start, item]
+    assert model.input_reps(ids).shape == (12, 16)                        # GRU hidden
 
 
 def test_rnn_exposes_per_position_hidden_states():
@@ -68,15 +69,19 @@ def test_readout_heads_are_bias_free():
     assert SAEModel(_cfg(hidden_size=3, init_scale=0.1)).decoder.bias is None
 
 
-def test_multi_input_mlp_reports_the_embedding_as_its_per_item_code():
-    """A concat-MLP reads all input slots at once, so it has no per-item pre-decode state: its
-    first layer wants ``arity * embed_dim``. The per-item code is then the embedding, which is
-    also what the tensor oracle predicts for a multi-input task."""
+def test_a_multi_input_code_is_per_tuple_not_per_item():
+    """A concat-MLP reads all input slots at once, so its pre-decode state belongs to the tuple,
+    not to either item: one row per tuple, at the penultimate width."""
     model = MLPModel(_cfg(arity=2))
-    assert model.mlp[0].in_features == 16                      # both slots concatenated
-    assert model.item_reps(torch.arange(12)).shape == (12, 8)  # embed_dim, not hidden_size
-    # arity 1 keeps the penultimate activation: there the readout really does read it
-    assert MLPModel(_cfg(arity=1)).item_reps(torch.arange(12)).shape == (12, 16)
+    assert model.mlp[0].in_features == 16                                    # slots concatenated
+    assert model.input_reps(torch.randint(0, 12, (7, 2))).shape == (7, 16)
+
+
+def test_a_bilinear_readout_reports_no_vector_code():
+    """The linear model at arity > 1 contracts an outer product, so no vector the decoder reads
+    exists. It says so with ``None`` rather than offering a stand-in."""
+    assert LinearModel(_cfg(arity=2)).input_reps(torch.randint(0, 12, (7, 2))) is None
+    assert LinearModel(_cfg(arity=1)).input_reps(torch.arange(12).unsqueeze(1)).shape == (12, 8)
 
 
 def test_input_reps_times_the_decoder_reproduces_the_logits():
@@ -95,3 +100,24 @@ def test_input_reps_times_the_decoder_reproduces_the_logits():
         expected = model(ids)["logits"]
         expected = expected[:, -1] if expected.ndim == 3 else expected
         assert torch.allclose(code @ W.T, expected, atol=1e-4), type(model).__name__
+
+
+def test_input_code_is_one_row_per_input_and_keeps_what_the_decoder_reads():
+    """One accessor for every architecture: the pre-decode code of each model input. ``project``
+    maps it onto the readout's row space, which by construction cannot change the logits — only
+    the per-row constant a softmax ignores."""
+    from src.code.analysis_utils import decoder_weights, input_code, readout_basis
+
+    class _DS:
+        label_tokens = torch.arange(12)
+        def model_inputs(self):
+            return torch.arange(12).unsqueeze(1)
+
+    model, ds = MLPModel(_cfg(arity=1)), _DS()
+    raw, proj = input_code(model, ds), input_code(model, ds, project=True)
+    B = readout_basis(model, ds)
+    assert raw.shape == (12, 16) and proj.shape == (12, len(B))
+
+    W = decoder_weights(model, ds)
+    lo, lp = raw @ W.T, proj @ (B @ W.T)
+    assert np.allclose(lo - lo.mean(1, keepdims=True), lp - lp.mean(1, keepdims=True), atol=1e-4)

@@ -115,3 +115,53 @@ def test_save_figure_writes_both_formats_into_per_format_subfolders(tmp_path):
     assert png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     assert pdf.read_bytes()[:5] == b"%PDF-"
     assert not asked.exists()                      # nothing left loose in figures/
+
+
+def test_embedding_panels_color_by_a_supplied_scalar_and_annotate_the_gram():
+    # relational panels color pairs by their mean outcome, not by row index, and carry CKA
+    import numpy as np
+    from src.code.plot_utils import plot_embedding_panels
+
+    E = np.random.default_rng(0).normal(size=(12, 4))
+    colors = np.arange(12) % 3
+    fig = plot_embedding_panels(E, {"mlp": E}, colors=colors, scores={"mlp": 0.87})
+
+    scatter = fig.axes[2].collections[0]                       # the mlp scatter panel
+    assert np.allclose(scatter.get_array(), colors)
+    assert "CKA 0.87" in fig.axes[3].get_title()               # its Gram carries the score
+    plt.close(fig)
+
+
+def test_scatter_geometry_does_not_collapse_a_one_dimensional_code():
+    """approx_add's predicted code is a straight line in log(a+b): equal aspect on a zero-height
+    cloud shrinks the axes box to nothing and the panel renders empty. A near-1-D cloud must get
+    padded height instead."""
+    import numpy as np
+    from src.code.plot_utils import scatter_geometry
+
+    XY = np.c_[np.linspace(0, 4, 20), np.zeros(20)]
+    fig, ax = plt.subplots()
+    scatter_geometry(ax, XY, "a line")
+
+    lo, hi = ax.get_ylim()
+    assert hi - lo > 1.0, f"1-D code squashed to a {hi - lo:.2g}-tall panel"
+    plt.close(fig)
+
+
+def test_embedding_panels_accept_precomputed_scatter_coordinates():
+    """A group's spectrum is flat, so top-2 PCA picks an arbitrary mixture of irreps and the circle
+    vanishes. The panel must be able to draw a chosen plane while the Gram below still shows the
+    whole code."""
+    import numpy as np
+    from src.code.plot_utils import plot_embedding_panels
+
+    rng = np.random.default_rng(0)
+    E, X = rng.normal(size=(12, 6)), rng.normal(size=(12, 6))
+    ang = np.linspace(0, 2 * np.pi, 12, endpoint=False)
+    circle = np.c_[np.cos(ang), np.sin(ang)]
+
+    fig = plot_embedding_panels(E, {"mlp": X}, coords={"predicted": circle, "mlp": circle})
+
+    assert np.allclose(fig.axes[2].collections[0].get_offsets(), circle)   # the chosen plane
+    assert fig.axes[3].images[0].get_array().shape == (12, 12)             # Gram is still 12x12
+    plt.close(fig)

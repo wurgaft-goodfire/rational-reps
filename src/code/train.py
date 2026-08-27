@@ -1,5 +1,7 @@
+import hashlib
 import os
 import shutil
+import numpy as np
 import pandas as pd
 from transformers import TrainingArguments, Trainer
 import torch
@@ -50,12 +52,9 @@ def wandb_init(config):
     wandb.watch(models=[], log=None)
 
 
-def train(config):
+def train(config, dataset):
     print_current_gpus()
     wandb_init(config)
-
-    # Initialize the dataset first so we can size the model from it.
-    dataset = init_dataset(config)
 
     # Derive all data-determined model dimensions from the dataset and inject them, so configs
     # never hardcode vocab_size / num_classes / arity / max_position_embeddings.
@@ -148,28 +147,37 @@ def _run_key(cfg):
     return c
 
 
-def _run_exists(config):
-    """Write config_resolved and report whether a completed run of the *same resolved config* is
-    already on disk (a yaml edit changes the task but not the run dir); a stale or ``overwrite=true``
-    run is wiped so training re-runs."""
+def _target_digest(dataset):
+    """Fingerprint of the task tensor a run trains on. The run dir is keyed by the override string,
+    so a code change to a builder moves the target while leaving the config identical; this catches
+    that. Shapes and values both enter the hash."""
+    T = np.ascontiguousarray(np.asarray(dataset.conditional, dtype=np.float64))
+    return hashlib.sha1(repr(T.shape).encode() + T.tobytes()).hexdigest()[:16]
+
+
+def _run_exists(config, dataset):
+    """Write config_resolved and report whether a completed run of the *same resolved config and
+    task tensor* is already on disk; a stale or ``overwrite=true`` run is wiped so training
+    re-runs."""
     resolved_path = os.path.join(config.run_dir, "config_resolved.yaml")
+    with open_dict(config.cfg):
+        config.cfg.target_digest = _target_digest(dataset)
     stale = os.path.exists(resolved_path) and _run_key(OmegaConf.load(resolved_path)) != _run_key(config.cfg)
     config.to_yaml(resolved_path)
     if os.path.exists(config.output_dir) and len(os.listdir(config.output_dir)) > 0:
         if not config.cfg.overwrite and not stale:
             return True
-        reason = "overwrite=true" if config.cfg.overwrite else "resolved config changed"
+        reason = "overwrite=true" if config.cfg.overwrite else "resolved config or task changed"
         print(f"{reason}: cleaning output directory {config.output_dir}")
         shutil.rmtree(config.output_dir)
         os.makedirs(config.output_dir, exist_ok=True)
     return False
 
 
-def _load_run(config, device=None):
+def _load_run(config, dataset, device=None):
     """Load a finished run's final checkpoint + rebuild its evaluator (on the run's cached eval
     batches) and history — the reuse counterpart to `train()`, returning the same artifacts."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = init_dataset(config)
     evaluator = Evaluator.from_cache(config, dataset, config.run_dir)
     last = max(int(d) for d in os.listdir(config.output_dir) if d.isdigit())
     model, _ = load_model(config, os.path.join(config.output_dir, str(last), "model"), device=device)
@@ -201,9 +209,10 @@ def train_inline(overrides, name=None, cache_dir=None):
     save schedule as the CLI. Returns ``(model, dataset, evaluator, history_df, config)``. If that
     exact run already exists on disk (and ``overwrite`` is not set), loads it instead of retraining."""
     config = resolve_config(overrides, name=name, cache_dir=cache_dir, make_run_dirs=True)
-    if _run_exists(config):
-        return (*_load_run(config), config)
-    result = train(config)
+    dataset = init_dataset(config)
+    if _run_exists(config, dataset):
+        return (*_load_run(config, dataset), config)
+    result = train(config, dataset)
     return result["model"], result["dataset"], result["evaluator"], result["history"], config
 
 
@@ -226,10 +235,11 @@ def main(cfg: DictConfig) -> None:
     """Main training entry point: ``python -m src.code.train runner=transformer setting=graph``
     (``-m`` for sweeps)."""
     config = Config(cfg, make_run_dirs=True)
-    if _run_exists(config):
+    dataset = init_dataset(config)
+    if _run_exists(config, dataset):
         print(f"Output directory {config.output_dir} is not empty. Set overwrite=true to overwrite.")
         return
-    train(config)
+    train(config, dataset)
     print("DONE")
 
 

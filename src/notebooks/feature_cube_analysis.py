@@ -88,7 +88,7 @@ def _():
                     f"model_kwargs.model_config.embed_dim={d}",
                     f"training_kwargs.train_steps={STEPS}", f"random_seed={seed}", *extra],
             name=f"fc_d{d}_p{p}_s{seed}")
-        E = np.asarray(ev.item_representations(model), float)
+        E = np.asarray(ev.input_code(model), float)
         return gauge(E, model.readout.detach().cpu().numpy()[:M], d)
 
 

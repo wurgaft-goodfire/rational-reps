@@ -1,5 +1,4 @@
 import logging
-import types
 
 import torch
 import torch.nn as nn
@@ -32,17 +31,9 @@ class _CausalLMBase:
     """What the causal LMs share: item probing by a forward pass on the minimal context."""
 
     def input_reps(self, input_ids):
-        """Pre-decode code for a batch of input tuples ``(B, arity)``: the final hidden state at
-        the last input position, which is where the outcome is predicted."""
+        """Pre-decode code for a batch of model inputs ``(B, T)``: the final hidden state at the
+        last input position, which is where the outcome is predicted."""
         return self(input_ids, output_hidden_states=True)["hidden_states"][-1][:, -1, :]
-
-    def item_reps(self, item_ids, start_token):
-        """Final hidden state at the item position of ``[start, item]`` (the item alone when the
-        task has no start token), before the LM head."""
-        ids = item_ids.view(-1, 1)
-        if start_token is not None:
-            ids = torch.cat([torch.full_like(ids, int(start_token)), ids], dim=1)
-        return self.input_reps(ids)
 
 
 def load_model(config, model_path, device="cuda"):
@@ -54,7 +45,6 @@ def load_model(config, model_path, device="cuda"):
     if model_type == "llm":
         model = transformers.AutoModelForCausalLM.from_pretrained(model_path)
         model.output_key = "logits"
-        model.item_reps = types.MethodType(_CausalLMBase.item_reps, model)
         return model.to(device), transformers.AutoTokenizer.from_pretrained(model_path)
     raise ValueError(f"Unsupported model_type for loading: {model_type}")
 
@@ -126,14 +116,11 @@ class LinearModel(_ModelBase):
         return self._finish(logits, distribution_labels)
 
     def input_reps(self, input_ids):
-        """Pre-decode code per input tuple. With one slot that is the embedding; with several the
+        """Pre-decode code per input tuple: the embedding. ``None`` with several slots — there the
         readout is a tensor contracting them, so no vector code exists for the decoder to read."""
         if self.config.arity > 1:
-            raise ValueError("a bilinear readout reads the outer product, not a vector code")
+            return None
         return self.embedding(input_ids).flatten(1)
-
-    def item_reps(self, item_ids, start_token=None):
-        return self.embedding(item_ids)                     # pre-decode code == the embedding
 
 
 class MLPModel(_ModelBase):
@@ -156,13 +143,6 @@ class MLPModel(_ModelBase):
         """Penultimate activation for a batch of input tuples: the slots are embedded, concatenated
         and run through every layer but the readout."""
         return self.mlp[:-1](self.embedding(input_ids).flatten(1))
-
-    def item_reps(self, item_ids, start_token=None):
-        # with several input slots the first layer reads them all, so no per-item pre-decode state
-        # exists; the embedding is the per-item code, and what the tensor oracle predicts
-        if self.config.arity > 1:
-            return self.embedding(item_ids)
-        return self.input_reps(item_ids.view(-1, 1))        # penultimate activation (pre-decode)
 
 
 class RNNModel(_CausalLMBase, _ModelBase):
@@ -222,9 +202,6 @@ class SAEModel(_ModelBase):
 
     def input_reps(self, input_ids):
         return self._code(input_ids)                        # the bottleneck code
-
-    def item_reps(self, item_ids, start_token=None):
-        return self._code(item_ids.view(-1, 1))             # the bottleneck code
 
 
 class TransformerModel(_CausalLMBase, transformers.GPTNeoXForCausalLM):
