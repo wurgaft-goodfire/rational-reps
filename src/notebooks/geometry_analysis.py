@@ -16,8 +16,7 @@ def _(mo):
     mo.md(r"""
     # Representational geometry: predicted vs. learned
 
-    The project's claim: the geometry a network learns is **predictable in closed form** from the
-    structure of the task.
+    The geometry a network learns is predictable in closed form from the structure of the task.
     """)
     return
 
@@ -26,6 +25,7 @@ def _(mo):
 def _(mo):
     import os, sys
     import numpy as np
+    import torch
 
     # Project root, independent of the working directory (a headless run can start outside
     # the repo). chdir so Hydra resolves conf/, and add it to sys.path.
@@ -42,7 +42,6 @@ def _(mo):
 
     FIGURES = ROOT / "outputs" / "figures"     # one flat dir: {structure}_{figure}.png
     FIGURES.mkdir(parents=True, exist_ok=True)
-
     return (
         FIGURES,
         canonical_gauge,
@@ -58,6 +57,7 @@ def _(mo):
         np,
         plot_utils,
         predicted_geometry,
+        torch,
         train_inline,
     )
 
@@ -65,19 +65,17 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 1. The predicted geometry (closed form)
+    ## 1. Factoring a task's conditional
 
-    Factor the ring's log-conditional. The translation symmetry gives a
-    top Fourier pair, and the top-2 code lands on a circle.
+    The SVD of the row-centred log-conditional splits into a code $E^{*}$ and a decoder $D^{*}$.
     """)
     return
 
 
 @app.cell
 def _(FIGURES, graph_conditional, plot_utils, predicted_geometry):
-    # pick a structure here — everything below follows from it. `cooccurrence` is part of the spec
-    # (diffusion | geodesic | adjacency | heat) and flows to both the predicted geometry and the trained
-    # models; a product diffuses, but e.g. a hypercube wants "heat" so its bits stay independent (analogies).
+    # cooccurrence (diffusion | geodesic | adjacency | heat) flows to both the prediction and the
+    # training; a hypercube wants "heat" so its bits stay independent.nalogies).
     spec = {"structure": "ring", "cooccurrence": "diffusion", "n": 30}
     L = graph_conditional(spec)
     E_pred = predicted_geometry(L)
@@ -91,8 +89,7 @@ def _(mo):
     mo.md(r"""
     ## 2. The predicted geometry
 
-    The structure, the log-conditional it induces, and the closed-form embedding: the ring's
-    top-2 code lands on a circle.
+    The structure, the log-conditional it induces, and the closed-form code: for the ring, a circle.
     """)
     return
 
@@ -107,13 +104,9 @@ def _(E_pred, FIGURES, L, plot_utils, spec):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## 3. Train everything: the prediction across settings
+    ## 3. Trained geometry across settings
 
-    Loop over structures: train all four architectures per structure (hparams per arch from a
-    ring sweep: the sequence models want longer training and a lower lr), then save that
-    structure's embedding-panel figure into its own run directory. One shared point colormap
-    (half of twilight, acyclic); matrix row = the code Gram, $E^{*}E^{*\top}$ predicted beside
-    each learned $EE^{\top}$.
+    Predicted code Gram $E^{*}E^{*\top}$ beside each learned $EE^{\top}$, per architecture.
     """)
     return
 
@@ -167,10 +160,7 @@ def _(figs_settings, mo):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## 4. Main figure: the six settings merged
-
-    The per-setting embedding panels tiled (3, 2): ring, grid, helix down the first column;
-    hypercube, simplex, hierarchy down the second.
+    ### The six settings merged
     """)
     return
 
@@ -195,31 +185,79 @@ def _(FIGURES, plot_utils):
     return
 
 
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 4. Relational settings
+
+    $c = a \ast b$, so the conditional is a tensor $T[a,b,c]$ and the code is read per input pair.
+    These operations have a decaying spectrum, so CKA against $E^{*}$ measures the geometry.
+    """)
+    return
+
+
+@app.cell
+def _(torch, train_inline):
+    from src.code.analysis_utils import readout_basis
+
+    # every knob (width, decay, input format) lives in the runner preset, so a run is named by
+    # the relation and the runner alone — nothing here can drift from what the CLI trained
+    RUNNERS_REL = ["rel_transformer", "rel_rnn", "rel_mlp", "rel_linear_paired", "rel_mlp_paired"]
+    OPS_REL = ["maximum", "set_intersection", "entailment", "standard_add", "standard_mult",
+               "averaging"]
+
+    def relational_code(relation, runner, seed=0):
+        """Readout-projected code of every input tuple for a cached run, with its dataset."""
+        _model, _ds, _, _, _ = train_inline(
+            [f"runner={runner}", f"relation={relation}", f"random_seed={seed}"])
+        with torch.no_grad():
+            _X = _model.input_reps(_ds.input_tuples()).float().cpu().numpy()
+        return _X @ readout_basis(_model, _ds).T, _ds
+
+
+    return OPS_REL, RUNNERS_REL, readout_basis, relational_code
+
+
+@app.cell
+def _(FIGURES, OPS_REL, RUNNERS_REL, cka, np, plot_utils, predicted_geometry,
+      relational_code):
+    # Grams down the rows, one relation each: the predicted code beside every architecture's.
+    # These relations have decaying spectra, so the relative radii are predicted too and CKA
+    # against E* is the measure, as in the static settings.
+    _rng_null = np.random.default_rng(0)
+
+    fig_rel4, _axes = plot_utils.plt.subplots(
+        len(OPS_REL), len(RUNNERS_REL) + 1,
+        figsize=(2.15 * (len(RUNNERS_REL) + 1), 2.35 * len(OPS_REL)))
+    for _i, _op in enumerate(OPS_REL):
+        _codes, _E = {}, None
+        for _v in RUNNERS_REL:
+            _X, _ds = relational_code(_op, _v)
+            _codes[_v] = _X
+            if _E is None:                       # per-pair oracle: SVD of the flattened conditional
+                _T = np.asarray(_ds.conditional, float)
+                _M = _T.reshape(-1, _T.shape[-1])
+                _L = np.where(_M > 0, np.log(np.maximum(_M, 1e-12)), -20.0)
+                _E = np.asarray(predicted_geometry(_L), float)
+                _null = np.mean([cka(_rng_null.normal(size=_X.shape), _E) for _ in range(20)])
+
+        plot_utils.gram_heatmap(_axes[_i, 0], _E, title=r"$E^{*}E^{*\top}$" if _i == 0 else "")
+        _axes[_i, 0].set_ylabel(f"{_op}\nnull {_null:.2f}", fontsize=9)
+        for _j, _v in enumerate(RUNNERS_REL, start=1):
+            plot_utils.gram_heatmap(_axes[_i, _j], _codes[_v],
+                                    title=_v.removeprefix("rel_") if _i == 0 else "")
+            _axes[_i, _j].set_xlabel(f"CKA {cka(_codes[_v], _E):.2f}", fontsize=9)
+    fig_rel4.subplots_adjust(hspace=0.35, wspace=0.15)
+    plot_utils.save_figure(fig_rel4, FIGURES / "relational_relations_merged.png")
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 5. Relational: modular addition, a stack of circles
+    ## Appendix. Modular addition
 
-    $c = (a + b) \bmod p$. Each pair $(a, b)$ is **one input token** for the readouts, so the
-    conditional is the $(p^2, p)$ matrix $M[(a,b), c]$ and the oracle is a plain SVD, not a tensor
-    factorization. Off the diagonal $\log p = -\infty$; we floor it, which after centering is a pure
-    rescaling (a softmax temperature would be too), so the geometry does not depend on the floor.
-    The sequence models read $[a, b]$ as separate tokens, and their pair code is the hidden state
-    after $b$.
-
-    Every Fourier frequency of $\mathbb{Z}_p$ carries the same singular value, so the SVD basis is
-    arbitrary. Re-expressed in the DFT gauge, the predicted decoder is the frequency ladder and the
-    predicted code is **five perfect circles** (frequencies 1–5, each energy 0.18, circularity 1.00)
-    plus the one-dimensional Nyquist mode — not a single circle.
-
-    Below, each model's code averaged per sum $s$, shown in its **dominant** frequency's plane;
-    frequency $k$ winds $k$ times, so it visits $p/\gcd(k,p)$ positions. The models solve the task
-    exactly (100% accuracy) but distribute themselves differently over the circles: the rnn commits
-    to $f_2$ (energy 0.50, circularity 0.98), linear spreads over all of them, and the mlp's
-    dominant component is squashed flat (circularity 0.11) because its pre-decode activation is
-    post-ReLU and cannot centre into a circle. The $s$-fraction — how much of the code is a function
-    of the sum at all — is 1.00 for the readouts but 0.73 / 0.32 for transformer / rnn, whose hidden
-    state still carries $a$ and $b$ separately.
+    A group's spectrum is flat, so the prediction fixes the code only up to a choice of frequency.
     """)
     return
 
@@ -229,18 +267,15 @@ def _(FIGURES, canonical_gauge, factor_logcond, fourier_basis, np, plot_utils):
     from src.code.data import relation_tensor
 
     P_MOD = 11                                        # prime: every frequency has full period p
-    _T_rel = relation_tensor({"operation": "modular_add", "p": P_MOD}).reshape(P_MOD**2, P_MOD)
-    # a deterministic relation has log p = -inf off the diagonal; floor it. Centering makes the floor
-    # (and equally a softmax temperature) a pure rescaling, so the geometry does not depend on it.
+    _T_rel = relation_tensor({"relation": "modular_add", "p": P_MOD}).reshape(P_MOD**2, P_MOD)
+    # log p = -inf off the diagonal; floor it. Centering makes the floor a pure rescaling.
     M_rel = np.where(_T_rel > 0, 0.0, -20.0)
     S_REL = (np.arange(P_MOD**2) // P_MOD + np.arange(P_MOD**2) % P_MOD) % P_MOD
 
-    # the frequencies are degenerate, so the SVD basis is arbitrary: re-express in the DFT gauge,
-    # where the decoder rows are the Fourier modes of Z_p and the code carries the matching pair
+    # degenerate frequencies leave the SVD basis arbitrary: re-express in the DFT gauge
     _Lc, _E, _D, _S = factor_logcond(M_rel)
     E_gauge, D_gauge = canonical_gauge(_E, _D, fourier_basis(P_MOD))
-    # every frequency carries the same singular value, so no pair is privileged: show the
-    # frequency-1 cos/sin pair, the two dimensions that draw the circle (rank 2, hence the ~)
+    # no frequency is privileged: show the f1 cos/sin pair, the two dimensions drawing the circle
     _ROWS = slice(0, 4 * P_MOD)                       # four a-blocks: the pattern, not all 144 rows
     _fig, _ = plot_utils.plot_factorization(M_rel[_ROWS], k=2,
                                             factors=(E_gauge[_ROWS], D_gauge),
@@ -252,54 +287,63 @@ def _(FIGURES, canonical_gauge, factor_logcond, fourier_basis, np, plot_utils):
 
 
 @app.cell
-def _(M_rel, P_MOD, S_REL, circulant_fraction, cka, predicted_geometry):
-    from src.scripts.relational_metrics import pair_codes
-
-    # every arch reads (a, b) as two tokens from one p-row embedding table; the paired variant, which
-    # gets a free p^2-row table instead, is kept only as the control that loses the ring
-    ARCHS_REL = [("transformer", False), ("linear", True), ("mlp", False), ("rnn", False)]
+def _(
+    M_rel,
+    P_MOD,
+    RUNNERS_REL,
+    S_REL,
+    circulant_fraction,
+    group_fraction,
+    predicted_geometry,
+    relational_code,
+):
+    SEEDS_REL = range(5)
+    ARCHS_REL = RUNNERS_REL                          # same presets, on the default relation
     KS_REL = list(range(1, P_MOD // 2 + 1))          # k and p-k span the same real plane
 
     E_rel = predicted_geometry(M_rel)
-    rel_codes = {}
-    for _arch, _paired in ARCHS_REL:
-        _X, _kl, _acc = pair_codes(_arch, wd=0.0, separate=not _paired)
-        rel_codes[_arch] = _X
-        print(f"{_arch:12s} paired={str(_paired):5s} KL={_kl:.4f} acc={_acc:.2f} "
-              f"CKA={cka(_X, E_rel):.3f}  circulant={circulant_fraction(_X, S_REL):.2f}")
+    rel_codes = {}                                   # (runner, seed) -> readout-projected pair code
+    for _r in ARCHS_REL:
+        for _s in SEEDS_REL:
+            rel_codes[_r, _s] = relational_code("modular_add", _r, seed=_s)[0]
+            print(f"{_r:20s} seed {_s}  "
+                  f"circulant={circulant_fraction(rel_codes[_r, _s], S_REL):.2f}  "
+                  f"s-frac={group_fraction(rel_codes[_r, _s], S_REL):.2f}", flush=True)
 
-    return E_rel, KS_REL, pair_codes, rel_codes
+    return ARCHS_REL, E_rel, KS_REL, SEEDS_REL, rel_codes
 
 
 @app.cell
 def _(
+    ARCHS_REL,
     E_rel,
     FIGURES,
     KS_REL,
     P_MOD,
+    SEEDS_REL,
     S_REL,
     circulant_fraction,
     class_means,
     frequency_plane,
     group_fraction,
     np,
-    pair_codes,
     plot_utils,
+    rel_codes,
 ):
-    # Appendix figure: the degenerate case. Columns are the predicted code and one representative
-    # run per arch (median seed by circulance). "paired" gives the mlp a free p^2-row embedding table
-    # instead of two tokens from a shared p-row one. A flat spectrum has no argmax, so ties take f1.
-    REL_PANELS = [("transformer", True, 0), ("linear", False, 1), ("rnn", True, 3),
-                  ("mlp separate", True, 1), ("mlp paired", False, 3)]
-
+    # One representative run per arch: the median seed by circulance, not the best or the worst.
+    # A flat spectrum has no argmax, so ties take f1.
     def dominant_frequency(X, tol=0.02):
-        """Frequency carrying most energy, or 1 when the spectrum is flat (every irrep equal)."""
-        en = {k: frequency_plane(X, S_REL, k)[1] for k in KS_REL}
-        return (1 if max(en.values()) - min(en.values()) < tol else max(en, key=en.get)), en
+        """Frequency carrying most of the energy, or 1 when every irrep carries the same."""
+        _en = {k: frequency_plane(X, S_REL, k)[1] for k in KS_REL}
+        return (1 if max(_en.values()) - min(_en.values()) < tol else max(_en, key=_en.get)), _en
 
-    _panels = [("predicted", np.asarray(E_rel, float))] + [
-        (nm, pair_codes("mlp" if nm.startswith("mlp") else nm, wd=0.0, separate=sep, seed=sd)[0])
-        for nm, sep, sd in REL_PANELS]
+    def median_seed(label):
+        """The seed whose circulance is the median over the sweep."""
+        _o = sorted(SEEDS_REL, key=lambda s: circulant_fraction(rel_codes[label, s], S_REL))
+        return _o[len(_o) // 2]
+
+    _panels = ([("predicted", np.asarray(E_rel, float))]
+               + [(_l.removeprefix('rel_'), rel_codes[_l, median_seed(_l)]) for _l in ARCHS_REL])
 
     fig_rel = plot_utils.plt.figure(figsize=(2.75 * len(_panels), 4.9))
     _gs = fig_rel.add_gridspec(2, len(_panels), hspace=0.05, wspace=0.3, height_ratios=[1.15, 1])
@@ -309,8 +353,7 @@ def _(
         _m, _ = class_means(_xy, S_REL)
 
         _ax = fig_rel.add_subplot(_gs[0, _j])
-        # join the means by angle, not by s: at frequency k the s-order traces a {p/k} star,
-        # which reads as noise. Whether the winding matches s is what circularity already reports.
+        # join the means by angle, not by s: at frequency k the s-order traces a {p/k} star
         _o = np.argsort(np.arctan2(_m[:, 1], _m[:, 0]))
         _ax.plot(*np.r_[_m[_o], _m[_o][:1]].T, color="0.85", lw=1.0, zorder=1)
         _ax.scatter(_xy[:, 0], _xy[:, 1], c=S_REL, cmap=plot_utils.FIG.cyclic_cmap,
@@ -333,22 +376,13 @@ def _(
         plot_utils.FIG.style_axes(_axb)
     plot_utils.save_figure(fig_rel, FIGURES / "relational_merged.png")
 
-    return (REL_PANELS,)
+    return dominant_frequency, median_seed
 
 
 @app.cell
 def _(mo):
     mo.md(r"""
     ### Paired vs separate inputs
-
-    The task is a delta over outcomes, so the loss constrains only which sum each pair predicts, never
-    how the sums sit relative to one another: for any invertible $A$, the code $hA$ with decoder
-    $WA^{-\top}$ computes the same function. Geometry is therefore fixed by the architecture and the
-    implicit bias, not by the task.
-
-    Giving the readout one token per $(a,b)$ pair hands it a free $p^2$-row table, so nothing ties the
-    code of $(a,b)$ to that of $(a{+}1,b)$ and the ring is lost. Sharing one $p$-row table across both
-    slots forces $p$ embeddings to cover $p^2$ combinations, and the ring returns.
     """)
     return
 
@@ -356,32 +390,35 @@ def _(mo):
 @app.cell
 def _(
     FIGURES,
-    KS_REL,
     P_MOD,
     S_REL,
     circulant_fraction,
     class_means,
+    dominant_frequency,
     frequency_plane,
+    median_seed,
     np,
-    pair_codes,
     plot_utils,
+    rel_codes,
 ):
-    # each run at its own dominant frequency. Joining the means in order s = 0..p-1 traces a {p/k}
-    # star at frequency k, since that character winds k times: the point positions carry the claim.
-    _RUNS = [("mlp", True, 0), ("mlp", False, 0), ("mlp", False, 2), ("rnn", False, 0)]
+    # paired vs separate inputs, each at its dominant frequency. The paired readout gets a free
+    # p^2-row table; the rest compose a and b from one shared p-row table.
+    _RUNS = [("rel_mlp_paired", 0), ("rel_mlp", 0),
+             ("rel_mlp", median_seed("rel_mlp")), ("rel_rnn", 0)]
 
     fig_sep, _axes = plot_utils.plt.subplots(1, len(_RUNS), figsize=(3.2 * len(_RUNS), 4.0))
-    for _ax, (_arch, _paired, _seed) in zip(_axes, _RUNS):
-        _X = pair_codes(_arch, wd=0.0, separate=not _paired, seed=_seed)[0]
-        _k = max(KS_REL, key=lambda k: frequency_plane(_X, S_REL, k)[1])
+    for _ax, (_lbl, _seed) in zip(_axes, _RUNS):
+        _X = rel_codes[_lbl, _seed]
+        _k, _ = dominant_frequency(_X)
         _xy, _e, _c = frequency_plane(_X, S_REL, _k)
         _m, _ = class_means(_xy, S_REL)
-        _ax.plot(*np.r_[_m, _m[:1]].T, color="0.85", lw=1.0, zorder=1)
+        _o = np.argsort(np.arctan2(_m[:, 1], _m[:, 0]))
+        _ax.plot(*np.r_[_m[_o], _m[_o][:1]].T, color="0.85", lw=1.0, zorder=1)
         _ax.scatter(_xy[:, 0], _xy[:, 1], c=S_REL, cmap=plot_utils.FIG.cyclic_cmap,
-                    s=12, alpha=0.35, zorder=2)
+                    s=10, alpha=0.25, zorder=2)
         _ax.scatter(_m[:, 0], _m[:, 1], c=np.arange(P_MOD), cmap=plot_utils.FIG.cyclic_cmap,
                     s=70, zorder=4, edgecolor="white", lw=0.8)
-        _ax.set_title(f"{_arch} {'paired' if _paired else 'separate'}, seed {_seed}\n"
+        _ax.set_title(f"{_lbl.removeprefix('rel_')}, seed {_seed}\n"
                       rf"$f_{_k}$ (energy {_e:.2f}), circularity {_c:.2f}" + "\n"
                       f"circulant {circulant_fraction(_X, S_REL):.2f}", fontsize=10)
         _ax.set_aspect("equal"); _ax.margins(0.18)
@@ -395,18 +432,14 @@ def _(
 @app.cell
 def _(mo):
     mo.md(r"""
-    ### Is the paired mlp's circle just hidden by the projection?
-
-    No. Below are its raw penultimate activations — no readout projection, no frequency fitting — next
-    to the radii of every arch's class means. A code on a ring has all $p$ means at one radius, so the
-    coefficient of variation of the radii tests the ring without assuming any cyclic alignment (and so
-    carries over to the non-group operations).
+    ### Is the ring hidden by the projection?
     """)
     return
 
 
 @app.cell
 def _(
+    ARCHS_REL,
     FIGURES,
     P_MOD,
     S_REL,
@@ -414,17 +447,14 @@ def _(
     np,
     plot_utils,
     rel_codes,
+    torch,
     train_inline,
 ):
-    import torch
-
-    # raw penultimate activations of the paired mlp: plain PCA, nothing fitted
-    _mp, _dsp, _, _, _ = train_inline(["setting=relational", f"operation_kwargs.p={P_MOD}",
-        "runner=mlp", "++pair_inputs=true", "model_kwargs.model_config.hidden_size=128",
-        "training_kwargs.weight_decay=0.0"])
-    _idp = torch.arange(P_MOD**2, device=next(_mp.parameters()).device)[:, None]
+    # the paired mlp's raw penultimate activations: no readout projection, no frequency fitting
+    _mp, _dsp, _, _, _ = train_inline(
+        ["runner=rel_mlp_paired", "relation=modular_add", "random_seed=0"])
     with torch.no_grad():
-        RAW_PAIRED = _mp.mlp[:-1](_mp.embedding(_idp).flatten(1)).float().cpu().numpy()
+        RAW_PAIRED = _mp.input_reps(_dsp.input_tuples()).float().cpu().numpy()
     _Xc = RAW_PAIRED - RAW_PAIRED.mean(0)
     _Vt = np.linalg.svd(_Xc, full_matrices=False)[2]
     _share = np.linalg.svd(_Xc, compute_uv=False) ** 2
@@ -441,13 +471,12 @@ def _(
         _ax.set_title(f"PC{_i+1} vs PC{_j+1}  ({_share[_i]:.0%}, {_share[_j]:.0%})", fontsize=11)
         _ax.set_aspect("equal"); plot_utils.FIG.clean(_ax)
 
-    # every arch's class-mean radii, normalised: a ring is a flat line at 1
+    # class-mean radii: a code on a ring is a flat line at 1
     _ax = _axs[3]
-    for _nm, _X in [("transformer", rel_codes["transformer"]), ("rnn", rel_codes["rnn"]),
-                    ("mlp separate", rel_codes["mlp"]), ("mlp paired", RAW_PAIRED)]:
-        _r = np.linalg.norm(class_means(_X - _X.mean(0), S_REL)[0], axis=1)
+    for _l in ARCHS_REL:
+        _r = np.linalg.norm(class_means(rel_codes[_l, 0] - rel_codes[_l, 0].mean(0), S_REL)[0], axis=1)
         _ax.plot(np.sort(_r / _r.mean()), "o-", ms=4, lw=1.2,
-                 label=f"{_nm} (CV {_r.std()/_r.mean():.2f})")
+                 label=f"{_l.removeprefix('rel_')} (CV {_r.std()/_r.mean():.2f})")
     _ax.axhline(1.0, ls="--", lw=1.0, color="0.6")
     _ax.set_xlabel("class, sorted by radius", fontsize=11)
     _ax.set_ylabel("radius / mean", fontsize=11)
@@ -463,68 +492,57 @@ def _(
 @app.cell
 def _(mo):
     mo.md(r"""
-    ### What the task pins, and what it does not
-
-    Both measures need a null, because neither starts at zero. For $p^2$ random codes of the same rank
-    the s-fraction sits at $1/p$, but circulance already averages $0.53$ — 11 arbitrary points in 10
-    dimensions are half-circulant by accident.
-
-    Read against those bands, the task forces the **grouping** (every arch reaches $s$-fraction well
-    above chance) but not the **arrangement**: the paired mlp sits *below* the circulance null while
-    every shared-embedding arch sits at the ceiling. The right-hand panel asks whether the choice of
-    irrep is uniform, as the flat spectrum implies it should be.
+    ### Against the null
     """)
     return
 
 
 @app.cell
 def _(
+    ARCHS_REL,
     FIGURES,
     KS_REL,
     P_MOD,
-    REL_PANELS,
+    SEEDS_REL,
     S_REL,
     circulant_fraction,
-    frequency_plane,
+    dominant_frequency,
     group_fraction,
     np,
-    pair_codes,
     plot_utils,
+    rel_codes,
 ):
-    _SEEDS = (0, 1, 2, 3)
-    _NULL_N = 300
-    _rng_null = np.random.default_rng(0)
-    _null = [(group_fraction(_Z, S_REL), circulant_fraction(_Z, S_REL))
-             for _Z in (_rng_null.normal(size=(P_MOD**2, P_MOD - 1)) for _ in range(_NULL_N))]
-    _null = np.array(_null)
+    # Neither measure starts at zero, so every panel carries its random-code null.
+    _NULL = np.array([(group_fraction(_Z, S_REL), circulant_fraction(_Z, S_REL))
+                      for _Z in (np.random.default_rng(_i).normal(size=(P_MOD**2, P_MOD - 1))
+                                 for _i in range(300))])
+    _LABELS = [l.removeprefix('rel_') for l in ARCHS_REL]   # display only; key by runner
 
     fig_null, _axm = plot_utils.plt.subplots(1, 3, figsize=(14.5, 3.9))
     for _ax, _mi, _lbl in zip(_axm[:2], (0, 1), ("$s$-fraction", "circulant fraction")):
-        _lo, _hi = np.percentile(_null[:, _mi], [5, 95])
+        _lo, _hi = np.percentile(_NULL[:, _mi], [5, 95])
         _ax.axhspan(_lo, _hi, color=plot_utils.FIG.colors["orange"], alpha=0.15, zorder=0)
-        _ax.axhline(_null[:, _mi].mean(), ls="--", lw=1.0,
+        _ax.axhline(_NULL[:, _mi].mean(), ls="--", lw=1.0,
                     color=plot_utils.FIG.colors["orange"], zorder=1)
-        for _x, (_nm, _sep, _) in enumerate(REL_PANELS):
-            _v = [(group_fraction(_X, S_REL), circulant_fraction(_X, S_REL)) for _X in
-                  (pair_codes("mlp" if _nm.startswith("mlp") else _nm, wd=0.0, separate=_sep, seed=_s)[0]
-                   for _s in _SEEDS)]
+        for _x, _l in enumerate(ARCHS_REL):
+            _v = [(group_fraction(rel_codes[_l, _s], S_REL),
+                   circulant_fraction(rel_codes[_l, _s], S_REL)) for _s in SEEDS_REL]
             _ax.scatter([_x] * len(_v), [t[_mi] for t in _v], s=42, color="0.25", zorder=3)
-        _ax.set_xticks(range(len(REL_PANELS)))
-        _ax.set_xticklabels([n for n, _, _ in REL_PANELS], rotation=30, ha="right", fontsize=9)
+        _ax.set_xticks(range(len(_LABELS)))
+        _ax.set_xticklabels(_LABELS, rotation=30, ha="right", fontsize=9)
         _ax.set_ylim(0, 1.05); _ax.set_ylabel(_lbl, fontsize=11)
         _ax.set_title(f"{_lbl} (band = random-code null)", fontsize=11)
         plot_utils.FIG.style_axes(_ax)
 
-    # which irrep gets chosen, over 16 seeds: the flat spectrum implies no preference
+    # which irrep each run picks: a flat spectrum implies no preference
     _ax = _axm[2]
-    for _nm, _sep, _off in [("rnn", True, -0.18), ("mlp separate", True, 0.18)]:
-        _ks = [max(KS_REL, key=lambda k: frequency_plane(
-                  pair_codes("mlp" if _nm.startswith("mlp") else _nm, wd=0.0, separate=_sep, seed=_s)[0],
-                  S_REL, k)[1]) for _s in range(16)]
-        _ax.bar(np.array(KS_REL) + _off, [_ks.count(k) for k in KS_REL], width=0.34, label=_nm)
-    _ax.axhline(16 / len(KS_REL), ls="--", lw=1.2, color=plot_utils.FIG.colors["orange"])
+    for _l, _off in [("rel_rnn", -0.18), ("rel_mlp", 0.18)]:
+        _ks = [dominant_frequency(rel_codes[_l, _s])[0] for _s in SEEDS_REL]
+        _ax.bar(np.array(KS_REL) + _off, [_ks.count(k) for k in KS_REL], width=0.34,
+                label=_l.removeprefix("rel_"))
+    _ax.axhline(len(SEEDS_REL) / len(KS_REL), ls="--", lw=1.2, color=plot_utils.FIG.colors["orange"])
     _ax.set_xticks(KS_REL); _ax.set_xlabel("dominant frequency $k$", fontsize=11)
-    _ax.set_ylabel("runs (of 16)", fontsize=11)
+    _ax.set_ylabel(f"runs (of {len(SEEDS_REL)})", fontsize=11)
     _ax.set_title("which irrep is chosen (dashed = uniform)", fontsize=11)
     _ax.legend(fontsize=9, frameon=False)
     plot_utils.FIG.style_axes(_ax)
