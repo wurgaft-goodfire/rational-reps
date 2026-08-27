@@ -206,7 +206,7 @@ class Evaluator:
         return {"cka_vs_predicted": cka(reps, self.predicted_E),
                 "rsa_vs_predicted": rsa(reps, self.predicted_E)}
 
-    def input_code(self, model, project=False):
+    def input_code(self, model, project=True):
         """The pre-decode code of every input the task defines — the one accessor the metrics and
         the notebooks share. ``None`` when the architecture exposes no vector code."""
         if not hasattr(model, "input_reps"):

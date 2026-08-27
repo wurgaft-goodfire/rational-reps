@@ -11,6 +11,8 @@ from omegaconf import OmegaConf
 from src.code.config import Config
 from src.code.data import KernelDataset
 from src.code.eval import Evaluator, cka, rsa
+from src.code.geometry import factor_logcond
+from src.code.geometry import factor_logcond
 
 
 def _config(n=16):
@@ -28,10 +30,11 @@ class _EmbModel:
     """Fake model exposing a fixed embedding table + uniform logits over outcomes."""
     output_key = "logits"
 
-    def __init__(self, weight, num_dims, device="cpu"):
+    def __init__(self, weight, readout, num_dims, device="cpu"):
         self._emb = nn.Embedding.from_pretrained(
             torch.tensor(weight, dtype=torch.float64)).to(device)   # where the dataset's ids live
         self.num_dims = num_dims
+        self.readout = torch.tensor(readout)      # logits = code @ readout.T, as in every model
 
     def get_input_embeddings(self):
         return self._emb
@@ -54,18 +57,19 @@ def test_evaluator_scores_matching_embedding_near_one_and_shuffled_lower():
     config = _config(n=16)
     dataset = KernelDataset(config)
     evaluator = Evaluator(config, dataset)
-    E = evaluator.predicted_E                                # (16, k)
+    # the predicted factorization: E is the code, D the decoder that turns it into the target
+    _, E, D, _ = factor_logcond(np.asarray(dataset.conditional, float))
 
     vocab, d = dataset.vocab_size, E.shape[1]
     weight = np.zeros((vocab, d)); weight[dataset.item_tokens.numpy()] = E
-    metrics, _ = evaluator.evaluate(_EmbModel(weight, dataset.num_dims, dataset.device))
+    metrics, _ = evaluator.evaluate(_EmbModel(weight, D.T, dataset.num_dims, dataset.device))
     assert metrics["rsa_vs_predicted"] > 0.99
     assert metrics["cka_vs_predicted"] > 0.99
 
     shuffled = weight.copy()
     perm = np.random.default_rng(0).permutation(16)
     shuffled[dataset.item_tokens.numpy()] = E[perm]
-    m2, _ = evaluator.evaluate(_EmbModel(shuffled, dataset.num_dims, dataset.device))
+    m2, _ = evaluator.evaluate(_EmbModel(shuffled, D.T, dataset.num_dims, dataset.device))
     assert m2["rsa_vs_predicted"] < metrics["rsa_vs_predicted"]
 
 

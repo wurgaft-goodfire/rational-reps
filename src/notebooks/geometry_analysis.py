@@ -251,7 +251,7 @@ def _(
         _codes, _E, _colors = {}, None, None
         for _v in RUNNERS_REL:
             _model, _ds = load_run(_op, _v)
-            _codes[_v.removeprefix("rel_")] = input_code(_model, _ds, project=True)
+            _codes[_v.removeprefix("rel_")] = input_code(_model, _ds)
             if _E is None:                       # the oracle factors the dataset's log-conditional
                 _E = np.asarray(predicted_geometry(_ds.conditional), float)
                 # colour each pair by its answer: the distinct target rows, ranked by expected outcome
@@ -362,7 +362,7 @@ def _(
     rel_codes = {}                                   # (runner, seed) -> readout-projected pair code
     for _r in ARCHS_REL:
         for _s in SEEDS_REL:
-            rel_codes[_r, _s] = input_code(*load_run("modular_add", _r, seed=_s), project=True)
+            rel_codes[_r, _s] = input_code(*load_run("modular_add", _r, seed=_s))
             print(f"{_r:20s} seed {_s}  "
                   f"circulant={circulant_fraction(rel_codes[_r, _s], S_REL):.2f}  "
                   f"s-frac={group_fraction(rel_codes[_r, _s], S_REL):.2f}", flush=True)

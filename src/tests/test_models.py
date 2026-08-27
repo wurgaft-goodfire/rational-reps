@@ -114,7 +114,7 @@ def test_input_code_is_one_row_per_input_and_keeps_what_the_decoder_reads():
             return torch.arange(12).unsqueeze(1)
 
     model, ds = MLPModel(_cfg(arity=1)), _DS()
-    raw, proj = input_code(model, ds), input_code(model, ds, project=True)
+    raw, proj = input_code(model, ds, project=False), input_code(model, ds)
     B = readout_basis(model, ds)
     assert raw.shape == (12, 16) and proj.shape == (12, len(B))
 

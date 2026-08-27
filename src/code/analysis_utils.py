@@ -32,15 +32,18 @@ def decoder_weights(model, dataset):
         W = model.mlp[-1].weight
     elif hasattr(model, "head"):                               # rnn
         W = model.head.weight[dataset.label_tokens]
+    elif hasattr(model, "decoder"):                            # sae: the bottleneck's readout
+        W = model.decoder.weight
     else:                                                      # causal LM: the unembedding
         W = model.get_output_embeddings().weight[dataset.label_tokens]
     return W.detach().float().cpu().numpy()
 
 
-def input_code(model, dataset, project=False):
-    """Pre-decode code of every input the task defines, ``(n_inputs, d)``. ``project`` re-expresses
-    it in the readout's row space, dropping the directions the decoder cannot read. ``None`` when
-    the architecture has no vector code (a bilinear readout reads an outer product)."""
+def input_code(model, dataset, project=True):
+    """Pre-decode code of every input the task defines, ``(n_inputs, d)``. ``project`` (the default)
+    re-expresses it in the readout's row space: the loss says nothing about directions the decoder
+    cannot read, so they are not part of the geometry the task pins down. ``None`` when the
+    architecture has no vector code (a bilinear readout reads an outer product)."""
     with torch.no_grad():
         X = model.input_reps(dataset.model_inputs())
     if X is None:
@@ -56,7 +59,7 @@ def logit_r2(model, dataset):
     geometry; a target with zero-probability outcomes does not require it."""
     L = np.asarray(dataset.conditional, float)
     Lc = L - L.mean(1, keepdims=True)
-    lg = input_code(model, dataset) @ decoder_weights(model, dataset).T
+    lg = input_code(model, dataset, project=False) @ decoder_weights(model, dataset).T
     lg = lg - lg.mean(1, keepdims=True)
     scale = (lg * Lc).sum() / (Lc ** 2).sum()
     return float(1 - ((lg - scale * Lc) ** 2).sum() / ((scale * Lc) ** 2).sum())
