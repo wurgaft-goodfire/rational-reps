@@ -42,18 +42,20 @@ def test_figure_path_pdf_for_paper_final(tmp_path):
     assert Path(p).suffix == ".pdf"
 
 
-def test_save_figure_infers_format_from_extension(tmp_path):
+def test_save_figure_writes_one_format_when_asked(tmp_path):
+    """``format=`` forces a single file rather than the PNG+PDF pair, still filed under its format
+    subfolder — and the bytes match the format, not just the extension."""
     config = _config(tmp_path, "graph", "linear", "structure=ring")
     fig, ax = plt.subplots()
     ax.plot([0, 1], [0, 1])
 
-    png, pdf = figure_path(config, "f"), figure_path(config, "f", ext="pdf")
-    save_figure(fig, png)
-    save_figure(fig, pdf)
+    base = Path(figure_path(config, "f"))
+    save_figure(fig, base, format="png")
+    save_figure(fig, base.with_suffix(".pdf"), format="pdf")
     plt.close(fig)
 
-    assert Path(png).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"   # PNG magic, not PDF bytes in a .png
-    assert Path(pdf).read_bytes()[:5] == b"%PDF-"
+    assert (base.parent / "png" / "f.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert (base.parent / "pdf" / "f.pdf").read_bytes()[:5] == b"%PDF-"
 
 
 def test_plot_trajectory_overlay_panels_and_parity():
@@ -95,3 +97,21 @@ def test_plot_factorization_renders_the_three_panel_decomposition():
     assert axes["E"].images[0].get_array().shape == (24, 3)
     assert axes["D"].images[0].get_array().shape == (3, 24)
     plt.close(fig)
+
+
+def test_save_figure_writes_both_formats_into_per_format_subfolders(tmp_path):
+    """One call, both formats, filed by format: the caller names ``.../figures/name.png`` and the
+    files land in ``figures/png/name.png`` and ``figures/pdf/name.pdf``, so a directory holds one
+    kind of file and the PDFs never clutter the browsable PNGs."""
+    config = _config(tmp_path, "graph", "linear", "structure=ring")
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+
+    asked = Path(figure_path(config, "both"))
+    save_figure(fig, asked)
+    plt.close(fig)
+
+    png, pdf = asked.parent / "png" / "both.png", asked.parent / "pdf" / "both.pdf"
+    assert png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert pdf.read_bytes()[:5] == b"%PDF-"
+    assert not asked.exists()                      # nothing left loose in figures/

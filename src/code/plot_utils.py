@@ -67,9 +67,10 @@ class FigureGenerator:
         ax.tick_params(length=tick_length, width=tick_width)
 
     def save_figure(self, fig, filepath, format=None, dpi=300):
-        """Save figure with publication-quality settings and selective rasterization. ``format=None``
-        infers the format from the filepath extension (``.png`` for viewing, ``.pdf`` for papers).
-        Returns the figure, so a save call at the end of a marimo cell renders it."""
+        """Save a figure with publication-quality settings and selective rasterization, as both
+        ``.png`` (viewing) and ``.pdf`` (papers) — name either one and the sibling is written
+        beside it. ``format`` forces a single format instead. Returns the figure, so a save call
+        at the end of a marimo cell renders it."""
         for ax in fig.get_axes():
             for collection in ax.collections:
                 if collection.__class__.__name__ in ['QuadMesh', 'AxesImage']:
@@ -77,8 +78,15 @@ class FigureGenerator:
                 if hasattr(collection, '_offsets') and hasattr(collection._offsets, 'shape'):
                     if collection._offsets.shape[0] > 500:
                         collection.set_rasterized(True)
-        fig.savefig(filepath, bbox_inches='tight', dpi=dpi, format=format)
-        print(f"Saved figure to {filepath}")
+        # file by format: figures/name.png -> figures/png/name.png and figures/pdf/name.pdf, so a
+        # directory holds one kind of file and the PDFs never clutter the browsable PNGs
+        asked = Path(filepath)
+        exts = [asked.suffix or ".png"] if format else [".png", ".pdf"]
+        paths = [asked.parent / ext.lstrip(".") / asked.with_suffix(ext).name for ext in exts]
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(path, bbox_inches='tight', dpi=dpi, format=format)
+        print(f"Saved figure to {paths[0]}" + (f" (+{paths[1].suffix})" if len(paths) > 1 else ""))
         return fig
 
 
