@@ -35,5 +35,18 @@ def test_entailment_is_a_nested_hierarchy():
 
 
 def test_build_tensor_dispatch_and_arity():
-    assert build_tensor({"operation": "modular_add", "p": 5}).shape == (5, 5, 5)      # arity 2
-    assert build_tensor({"operation": "modular_add", "p": 5, "arity": 3}).ndim == 4   # arity 3
+    assert build_tensor({"relation": "modular_add", "p": 5}).shape == (5, 5, 5)      # arity 2
+    assert build_tensor({"relation": "modular_add", "p": 5, "arity": 3}).ndim == 4   # arity 3
+
+
+def test_every_relation_builds_from_the_setting_defaults_alone():
+    """``relation=X`` must be enough: the setting cannot carry one relation's kwargs (a ``p`` for
+    modular arithmetic) into builders that take ``n`` or ``nbit``, or selecting a relation fails
+    on a TypeError nobody asked for."""
+    from src.code.data import _RELATION_BUILDERS, init_dataset
+    from src.code.train import resolve_config
+
+    for name in _RELATION_BUILDERS:
+        cfg = resolve_config(["setting=relational", f"relation={name}", "runner=linear"])
+        ds = init_dataset(cfg)
+        assert ds.n_items > 1 and ds.n_outcomes > 1, name

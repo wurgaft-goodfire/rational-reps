@@ -92,7 +92,7 @@ def test_canonical_gauge_recovers_the_dft_on_modular_addition():
     from src.code.geometry import canonical_gauge, factor_logcond, fourier_basis
 
     p = 12
-    M = relation_tensor({"operation": "modular_add", "p": p}).reshape(p * p, p)
+    M = relation_tensor({"relation": "modular_add", "p": p}).reshape(p * p, p)
     Lc, E, D, S = factor_logcond(M)
     Eg, Dg = canonical_gauge(E, D, fourier_basis(p))
 

@@ -92,7 +92,7 @@ def test_bilinear_modular_addition_learns_a_circle():
     p = 7
     mc = {"vocab_size": 4, "num_classes": 4, "arity": 2, "embed_dim": 10, "init_scale": 0.3}
     cfg = OmegaConf.create({
-        "setting": "relational", "operation": "modular_add", "operation_kwargs": {"p": p},
+        "setting": "relational", "relation": "modular_add", "relation_kwargs": {"p": p},
         "random_seed": 1, "model_kwargs": {"model_type": "linear", "model_config": mc},
         "training_kwargs": {"batch_size": 256, "context_length": 6},
         "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},

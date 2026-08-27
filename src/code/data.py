@@ -200,9 +200,14 @@ class KernelDataset(Dataset):
         outcome draws are fresh per copy, so a large batch averages the sampling noise."""
         return tuples.repeat(max(1, -(-self._batch_size() // len(tuples))), 1)
 
+    def input_tuples(self):
+        """Every input the task defines, once: ``(n_items ** arity, arity)``. Training tiles this
+        to fill a batch; analysis wants it untiled, one row per distinct input."""
+        return self.item_tokens.to(self.device).unsqueeze(1)
+
     def _input_tuples(self):
-        """Every input tuple, tiled to ``batch_size``: ``(k * n_items, arity)``."""
-        return self._tile(self.item_tokens.to(self.device).unsqueeze(1))
+        """``input_tuples`` tiled to ``batch_size``."""
+        return self._tile(self.input_tuples())
 
     def _row_index(self, inputs):
         """Row of ``P`` addressed by each input tuple."""
@@ -269,7 +274,7 @@ class RelationalDataset(KernelDataset):
     thing that differs from any other kernel."""
 
     def _build(self, config):
-        T = relation_tensor(_spec(config, "operation", "operation_kwargs"))
+        T = relation_tensor(_spec(config, "relation", "relation_kwargs"))
         self.arity = T.ndim - 1                                   # (n_items,)*arity + (n_outcomes,)
         self.n_items = T.shape[0]
         self.features = None
@@ -282,10 +287,10 @@ class RelationalDataset(KernelDataset):
             return T.reshape(self.n_items, -1), flat
         return T, flat
 
-    def _input_tuples(self):
+    def input_tuples(self):
         items = self.item_tokens.to(self.device)
         tuples = torch.cartesian_prod(*([items] * self.arity))    # (n ** arity, arity)
-        return self._tile(tuples.unsqueeze(1) if self.arity == 1 else tuples)
+        return tuples.unsqueeze(1) if self.arity == 1 else tuples
 
     def _row_index(self, inputs):
         flat = torch.zeros(len(inputs), dtype=torch.long, device=self.device)
@@ -695,9 +700,9 @@ def stacked_conditional(specs, mode="union", gamma=0.8):
     return cooccur_logcond(A, gamma)
 
 
-# ── Relational operations (order >= 2): the latent structure is an operation c = a*b ──
+# ── Relations (order >= 2): the latent structure is a relation c = a*b ──
 
-def modular_add(p=12, arity=2):
+def modular_add(p=11, arity=2):
     """c = (a + b + ...) mod p  -> a circle (turning addition into rotation)."""
     T = np.zeros((p,) * arity + (p,))
     for idx in itertools.product(range(p), repeat=arity):
@@ -805,15 +810,15 @@ _RELATION_BUILDERS = {
     "standard_mult": standard_mult, "product": product, "maximum": maximum,
     "averaging": averaging, "set_intersection": set_intersection, "entailment": entailment,
 }
-GROUP_OPERATIONS = {"modular_add", "modular_mult", "standard_add", "standard_mult", "product"}
+GROUP_RELATIONS = {"modular_add", "modular_mult", "standard_add", "standard_mult", "product"}
 
 
 def relation_tensor(spec):
-    """Build the conditional tensor ``T`` for an operation spec ``{'operation': name, **params}``.
+    """Build the conditional tensor ``T`` for a relation spec ``{'relation': name, **params}``.
     Graded ops (max/averaging/entailment) factor cleanly; group ops are degenerate (the trained
     model selects a single frequency -> a circle)."""
-    params = {k: v for k, v in dict(spec).items() if k != "operation"}
-    name = spec["operation"]
+    params = {k: v for k, v in dict(spec).items() if k != "relation"}
+    name = spec["relation"]
     if name not in _RELATION_BUILDERS:
-        raise ValueError(f"Unknown operation {name!r}; known: {sorted(_RELATION_BUILDERS)}")
+        raise ValueError(f"Unknown relation {name!r}; known: {sorted(_RELATION_BUILDERS)}")
     return _RELATION_BUILDERS[name](**params)

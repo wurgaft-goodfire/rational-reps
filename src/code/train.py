@@ -187,7 +187,7 @@ def resolve_config(overrides, name=None, cache_dir=None, make_run_dirs=False):
         cfg = compose(config_name="config", overrides=overrides, return_hydra_config=True)
     # override_dirname is only computed under Hydra; grab it, then drop the hydra node so the config
     # resolves/saves cleanly.
-    override_dirname = clean_dirname(cfg.hydra.job.override_dirname, cfg.get("structure"))
+    override_dirname = clean_dirname(cfg.hydra.job.override_dirname, cfg.get("structure"), cfg.get("relation"))
     with open_dict(cfg):
         del cfg["hydra"]
     cache_dir = cache_dir or os.getenv("CACHE_DIR") or str(here() / "outputs")

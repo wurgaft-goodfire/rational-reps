@@ -88,3 +88,27 @@ def test_get_supports_nested_paths_and_default():
     cfg = _cfg(save_steps_method="end_only")
     assert cfg.get("training_kwargs.eval_steps") == 100
     assert cfg.get("does.not.exist", default=7) == 7
+
+
+def test_clean_dirname_names_the_relation_without_being_asked():
+    """Several settings share ``setting: relational``, so the run dir must carry the relation the
+    way it carries a graph's structure — injected from the resolved config, not from remembering
+    to pass an override, or every relation collides on one directory."""
+    from src.code.config import clean_dirname
+
+    assert clean_dirname("model_kwargs.model_config.hidden_size=128", relation="modular_add") \
+        == "relation=modular_add,model_kwargs.model_config.hidden_size=128"
+    assert clean_dirname("relation=maximum,x=1", relation="maximum") == "relation=maximum,x=1"
+    assert clean_dirname("gamma=0.8", structure="ring") == "structure=ring,gamma=0.8"
+
+
+def test_clean_dirname_canonicalises_boolean_overrides():
+    """The CLI and ``compose()`` disagree on bool casing — ``pair_inputs=true`` against
+    ``pair_inputs=True`` — which gives one run two directories, so a notebook silently retrains
+    what the CLI already trained. Canonicalise the value so both paths land in one place."""
+    from src.code.config import clean_dirname
+
+    assert clean_dirname("pair_inputs=true") == "pair_inputs=True"
+    assert clean_dirname("pair_inputs=True") == "pair_inputs=True"
+    assert clean_dirname("infer_latent=false") == "infer_latent=False"
+    assert clean_dirname("name=trueish") == "name=trueish"        # only whole values, not prefixes

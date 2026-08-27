@@ -1,8 +1,9 @@
 # @package _global_
-# Order-2+ task: the latent structure is an operation c = a*b; the conditional is a tensor
-# read out bilinearly. Graded ops (max/averaging/entailment) factor cleanly; group ops
+# Order-2+ task: the latent structure is a relation c = a*b; the conditional is a tensor
+# read out bilinearly. Graded relations (max/averaging/entailment) factor cleanly; group relations
 # (modular_add/mult, product) are degenerate and the trained model selects a frequency -> circle.
 setting: relational
-operation: modular_add   # see the operation gallery in src/code/data.py
-operation_kwargs:
-  p: 12
+relation: modular_add    # see the relation gallery in src/code/data.py
+# each builder carries its own defaults, so `relation=X` alone is enough; override deliberately
+# with e.g. +relation_kwargs.p=13
+relation_kwargs: {}

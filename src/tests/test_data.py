@@ -60,7 +60,7 @@ def test_ring_conditional_is_circulant():
 def test_relational_dataset_infers_arity_and_shapes():
     for arity, op_kwargs in [(2, {"p": 7}), (3, {"p": 5, "arity": 3})]:
         cfg = OmegaConf.create({
-            "setting": "relational", "operation": "modular_add", "operation_kwargs": op_kwargs,
+            "setting": "relational", "relation": "modular_add", "relation_kwargs": op_kwargs,
             "random_seed": 0, "training_kwargs": {"batch_size": 8, "context_length": 6},
         })
         ds = RelationalDataset(Config(cfg))
@@ -153,7 +153,7 @@ def test_relational_lm_is_scored_only_on_the_outcome():
     independent of a). Scoring it would cost log p nats of irreducible loss and spend half the
     gradient on noise, so every input position is masked out."""
     cfg = OmegaConf.create({
-        "setting": "relational", "operation": "modular_add", "operation_kwargs": {"p": 7},
+        "setting": "relational", "relation": "modular_add", "relation_kwargs": {"p": 7},
         "random_seed": 0, "training_kwargs": {"batch_size": 8, "context_length": 6},
     })
     ds = RelationalDataset(Config(cfg))
@@ -168,7 +168,7 @@ def test_relational_pair_inputs_flatten_to_a_matrix_kernel():
     """``pair_inputs`` makes each (a, b) tuple one token: arity 1, a (p^2, p) matrix conditional
     whose plain SVD (no tensor factorization) carries the degenerate Fourier circles."""
     cfg = OmegaConf.create({
-        "setting": "relational", "operation": "modular_add", "operation_kwargs": {"p": 7},
+        "setting": "relational", "relation": "modular_add", "relation_kwargs": {"p": 7},
         "pair_inputs": True, "random_seed": 0,
         "training_kwargs": {"batch_size": 8, "context_length": 6},
     })
@@ -190,7 +190,24 @@ def test_every_relation_builder_returns_its_tensor():
              "averaging": {"grid": 2}, "set_intersection": {"nbit": 2},
              "entailment": {"depth": 1, "branch": 2}}
     for name in _RELATION_BUILDERS:
-        T = relation_tensor({"operation": name, **small[name]})
+        T = relation_tensor({"relation": name, **small[name]})
         assert T is not None, f"{name} returned None"
         assert T.ndim >= 3 and T.shape[0] == T.shape[1]
         assert np.allclose(T.reshape(-1, T.shape[-1]).sum(1), 1.0), f"{name} rows are not normalised"
+
+
+def test_input_tuples_enumerates_once_and_the_batch_tiles_it():
+    """``input_tuples`` is the enumeration itself — every input the task defines, each once — and
+    the pointwise batch is that enumeration tiled. Analysis wants the former, training the latter."""
+    cfg = OmegaConf.create({
+        "setting": "relational", "relation": "modular_add", "relation_kwargs": {"p": 6},
+        "random_seed": 0, "training_kwargs": {"batch_size": 100, "context_length": 6},
+    })
+    ds = RelationalDataset(Config(cfg))
+    tuples = ds.input_tuples()
+    assert tuples.shape == (36, 2)                          # every (a, b) once, untiled
+    assert torch.equal(tuples, torch.cartesian_prod(*([ds.item_tokens.to(ds.device)] * 2)))
+    assert ds[0]["input_ids"][:, :2].shape == (108, 2)      # ceil(100/36) = 3 copies
+
+    ring = KernelDataset(_config("pointwise", n=8, batch_size=8))
+    assert ring.input_tuples().shape == (8, 1)              # arity 1 keeps the column

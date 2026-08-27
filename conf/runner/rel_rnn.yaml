@@ -1,0 +1,29 @@
+# @package _global_
+# Relational experiment: a and b as separate tokens.
+# Width, decay and input format are baked in here, not passed as CLI
+# overrides, so the notebook and the CLI cannot spell them differently and split one run in two.
+#   python -m src.code.train runner=rel_rnn
+defaults:
+  - override /setting: relational
+  - override /model: rnn
+  - override /train: default
+  - _self_
+
+name: rnn
+output_dir: ${run_dir}/checkpoints
+sample_mode: pointwise
+training_kwargs:
+  weight_decay: 0.03
+  learning_rate: 0.005
+  batch_size: 4096
+model_kwargs:
+  model_config:
+    embed_dim: 128
+    hidden_size: 128
+
+# the seed sweep is part of the preset: `python -m src.code.train -m runner=<this>` trains all
+# five, and the notebook loads them by seed. `random_seed` stays in the run dir, so seeds separate.
+hydra:
+  sweeper:
+    params:
+      random_seed: 0,1,2,3,4

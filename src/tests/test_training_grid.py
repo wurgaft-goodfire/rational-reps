@@ -52,7 +52,7 @@ def test_features_training_runs(tmp_path):
 def test_relational_training_runs(tmp_path):
     # group op: rsa vs the (degenerate) factor_tensor is low, so we only check it runs + scores
     model, dataset, evaluator, history, _ = train_inline(
-        ["setting=relational", "operation=modular_add", "operation_kwargs.p=7", "runner=linear"] + _QUICK,
+        ["setting=relational", "relation=modular_add", "relation_kwargs.p=7", "runner=linear"] + _QUICK,
         name="grid_relational", cache_dir=str(tmp_path))
     _check(history, dataset, model)
 
