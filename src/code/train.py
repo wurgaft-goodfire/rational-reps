@@ -147,11 +147,17 @@ def _run_key(cfg):
     return c
 
 
-def _target_digest(dataset):
-    """Fingerprint of the task tensor a run trains on. The run dir is keyed by the override string,
-    so a code change to a builder moves the target while leaving the config identical; this catches
-    that. Shapes and values both enter the hash."""
-    T = np.ascontiguousarray(np.asarray(dataset.conditional, dtype=np.float64))
+def _kernel(dataset):
+    """Fingerprint of the kernel ``P``, the outcome distribution a run is fit to. The run dir is
+    keyed by the override string, so a code change to a builder moves the task while leaving the
+    config identical; this catches that. Shapes and values both enter the hash.
+
+    Deliberately not ``conditional``, which is the log-space object the geometry oracle factors:
+    changing how the oracle reads a task must not invalidate weights trained on the same kernel."""
+    target = getattr(dataset, "P", None)
+    if target is None:
+        target = dataset.conditional
+    T = np.ascontiguousarray(np.asarray(getattr(target, "cpu", lambda: target)(), dtype=np.float64))
     return hashlib.sha1(repr(T.shape).encode() + T.tobytes()).hexdigest()[:16]
 
 
@@ -161,7 +167,7 @@ def _run_exists(config, dataset):
     re-runs."""
     resolved_path = os.path.join(config.run_dir, "config_resolved.yaml")
     with open_dict(config.cfg):
-        config.cfg.target_digest = _target_digest(dataset)
+        config.cfg.kernel = _kernel(dataset)
     stale = os.path.exists(resolved_path) and _run_key(OmegaConf.load(resolved_path)) != _run_key(config.cfg)
     config.to_yaml(resolved_path)
     if os.path.exists(config.output_dir) and len(os.listdir(config.output_dir)) > 0:

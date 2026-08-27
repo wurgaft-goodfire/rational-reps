@@ -8,9 +8,3 @@ relation: modular_add    # see the relation gallery in src/code/data.py
 # with e.g. +relation_kwargs.p=13
 relation_kwargs: {}
 
-# Lapse rate: with this probability the response is uniform over the outcomes. Most of these
-# relations answer with a set, so most outcomes have probability zero — and KL weights an outcome
-# by its true probability, so a zero one is unscored and its logit unconstrained. The lapse makes
-# every outcome possible, which identifies the whole log-conditional without moving the predicted
-# geometry (CKA(E*(0.05), E*(0)) > 0.99; see test_relations).
-lapse: 0.05

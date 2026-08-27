@@ -52,19 +52,6 @@ def input_code(model, dataset, project=True):
     return X @ readout_basis(model, dataset).T if project else X
 
 
-def logit_r2(model, dataset):
-    """How much of the task's row-centred log-conditional the model's readout actually realises,
-    at the best global scale (a softmax ignores per-row constants, CKA ignores overall scale).
-    1.0 means the logits *are* the target, which is the premise under which low loss pins the
-    geometry; a target with zero-probability outcomes does not require it."""
-    L = np.asarray(dataset.conditional, float)
-    Lc = L - L.mean(1, keepdims=True)
-    lg = input_code(model, dataset, project=False) @ decoder_weights(model, dataset).T
-    lg = lg - lg.mean(1, keepdims=True)
-    scale = (lg * Lc).sum() / (Lc ** 2).sum()
-    return float(1 - ((lg - scale * Lc) ** 2).sum() / ((scale * Lc) ** 2).sum())
-
-
 def readout_basis(model, dataset, tol=1e-4):
     """Orthonormal rows spanning the centered decoder's row space. A code component orthogonal to
     it cannot change the output, so it is not part of the geometry the task pins down."""

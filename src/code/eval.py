@@ -55,6 +55,15 @@ def cca(X, Y, tol=1e-5, keep=None):
     return float(np.linalg.svd(Bx.T @ By, compute_uv=False).mean())
 
 
+def cka_null(oracle, repeats=20, seed=0):
+    """CKA of a random code against ``oracle``: the floor a score has to clear. It depends on how
+    many rows the code has — with a handful of items a random code already scores well — so every
+    reported score needs its own null beside it."""
+    oracle = np.asarray(oracle, float)
+    rng = np.random.default_rng(seed)
+    return float(np.mean([cka(rng.normal(size=oracle.shape), oracle) for _ in range(repeats)]))
+
+
 def _rankdata(a):
     """Average ranks of a 1-D array (tied values share their mean rank). Values within a small
     relative tolerance are treated as tied (exact ties up to float noise)."""

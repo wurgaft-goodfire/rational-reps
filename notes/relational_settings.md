@@ -22,15 +22,29 @@ uniform as its answer when the set is all you know.
 
 ## Kept
 
+Every scored relation is graded: a delta answer makes all outcomes equidistant, so its pair code
+is a simplex with no geometry to predict. Modular addition is that case, and survives only as the
+factorization figure, where the DFT gauge is the point.
+
 | relation | operands | answer | predicted geometry |
 |---|---|---|---|
-| `set_intersection` | two subsets | members of `a ∧ b` | hypercube, rank = nbit (code = the bits, R² = 1.0000) |
-| `symmetric_difference` | two subsets | members of `a △ b` | hypercube, rank = nbit; 240/256 answerable (only `a △ a = ∅` fails) |
-| `entailment` | two tree nodes | common ancestors of `a, b` | ancestor/tree embedding; class Gram tracks tree distance 0.88 vs 0.43 for delta |
-| `between` | two positions | the interval `[min, max]` | staircase (nested sets); 36 distinct targets vs `max`'s 8 |
-| `common_divisors` | two integers | divisors of `gcd(a,b)` | nested divisor sets, rank 11 (prime exponents explain only 0.60) |
-| approximate addition | two magnitudes | estimate of `a + b` under Weber noise | **rank 2, code = `log(a+b)`, R² = 1.0000** |
-| `modular_add` (appendix) | two group elements | `(a+b) mod p` | flat spectrum: a regular simplex, fixed only up to gauge |
+| `approx_add` | two magnitudes | `a + b` under Weber noise | a line: rank 1, code = `log(a+b)` |
+| `pitch_transpose` | note, interval | the transposed note, confusable in height and in chroma | a helix: rank 3, one linear axis plus a degenerate cos/sin pair |
+| `between` | two positions | the interval `[min, max]` | intervals by midpoint; least compressible of the six (eff-rank 6.7, null 0.11) |
+| `feature_taxonomy` | two consistent feature sets | is a drawn feature shared? | a grid, one axis per chain — the nesting is what stops it being a cube |
+| `set_difference` | two subsets | is a drawn feature in `a` but not `b`? | a box: rank nbit, axes scaled by salience, and asymmetric |
+| `entailment` | two tree nodes | a common ancestor of `a, b` | the tree, read as an ultrametric over the leaves |
+
+Two design rules earned by measurement:
+
+* **Ask about every feature, not the answer's members.** Sampling from `a ∧ b` makes a one-member
+  answer a sharper row than a three-member one, which stretches the cube and needs a null outcome
+  to reach rank nbit at all. Asking "draw a feature — does the predicate hold?" weights every
+  coordinate equally and the cube comes out exact (edges 1.000 / 1.412 / 1.728).
+* **The predicate cannot change the geometry.** In that form `∩`, `∪` and `⊕` all measure
+  identically (spectrum 1, 1, .84, 0), because each feature contributes an independent binary
+  coordinate. Only *dependencies between features* break the cube — which is what
+  `feature_taxonomy` adds, and why it is numerically identical to gcd on the divisors of 36.
 
 `entailment` uses the uniform-over-common-ancestors form, not the Bayesian one, to keep it a relation.
 
@@ -81,6 +95,8 @@ value 0.79 vs 0.90) but costs the closed form.
 
 | candidate | why |
 |---|---|
+| `set_intersection` | in the flag form every bitwise predicate gives the identical cube, so it duplicated `set_difference` — which keeps the slot for being asymmetric |
+| `common_divisors` | eff-rank 7.9 at n=12 and *worse* as n grows (21.1 at n=30): more primes mean more near-orthogonal directions. Its grid content survives as `feature_taxonomy` |
 | `maximum` | throws away one operand: 64 pairs collapse onto 8 targets, and holding `a` fixed every smaller `b` gives the same answer. Replaced by `between` |
 | `standard_mult` | 42 nearly-unique products, so the spectrum is flat (eff-rank 40). Multiplication is addition in log space only on the *exponent lattice*, and the prime exponents explain just 0.05 of the code. Replaced by `common_divisors` |
 | `standard_add` | sums have no canonical associated set, so no derived grading |

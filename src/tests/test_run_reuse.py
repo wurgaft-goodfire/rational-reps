@@ -16,6 +16,10 @@ class _DS:
     """The only thing reuse needs from a dataset: the task tensor it will train on."""
     conditional: np.ndarray
 
+    @property
+    def P(self):
+        return self.conditional
+
 
 def _cfg(tmp_path, sigma, cache_dir=None):
     return Config(OmegaConf.create({
@@ -74,3 +78,20 @@ def test_a_changed_task_tensor_invalidates_a_run(tmp_path):
 
     assert not _run_exists(cfg, _DS(np.ones((3, 3)) / 3))          # builder changed -> retrain
     assert os.listdir(cfg.cfg.output_dir) == []                    # ... and the stale run is wiped
+
+
+def test_the_digest_tracks_the_training_target_not_the_oracle_s_view():
+    """Runs train on the outcome distribution ``P``; ``conditional`` is the log-space object the
+    geometry oracle factors. Changing how the oracle reads the task must not invalidate weights
+    fit to an identical target."""
+    from src.code.train import _kernel
+
+    @dataclass
+    class _DS2:
+        conditional: np.ndarray
+        P: np.ndarray
+
+    P = np.array([[0.5, 0.5], [0.25, 0.75]])
+    same_task_new_oracle = _DS2(np.log(P) * 3.0, P)          # oracle rescaled, target untouched
+    assert _kernel(_DS2(np.log(P), P)) == _kernel(same_task_new_oracle)
+    assert _kernel(_DS2(np.log(P), P)) != _kernel(_DS2(np.log(P), P[::-1]))

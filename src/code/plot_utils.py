@@ -275,7 +275,7 @@ def _frame_2d(ax, XY, margin=0.12):
     d0, d1 = np.ptp(XY[:, 0]), np.ptp(XY[:, 1])
     if min(d0, d1) < 0.1 * max(d0, d1):
         pad = 0.25 * max(d0, d1)
-        ax.set_ylim(XY[:, 1].min() - pad, XY[:, 1].max() + pad); ax.margins(x=0.05)
+        ax.set_ylim(XY[:, 1].min() - pad, XY[:, 1].max() + pad); ax.margins(x=margin)
     else:
         ax.set_aspect("equal"); ax.margins(margin)        # pad so edge points aren't clipped
     FIG.clean(ax); ax.set_anchor("N")
@@ -600,6 +600,27 @@ def gram_heatmap(ax, reps, title="Gram", cmap=None):
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
 
 
+def merge_panels(paths, labels=None, ncols=2, width=21, label_size=26):
+    """Tile saved panel images into one lettered figure, filling column by column so the letters
+    read (a, b, c) down the first column. Row heights follow each row's tallest panel."""
+    import matplotlib.image as mpimg
+    paths = list(paths)
+    nrows = -(-len(paths) // ncols)
+    order = [[i + c * nrows for c in range(ncols) if i + c * nrows < len(paths)] for i in range(nrows)]
+    imgs = [mpimg.imread(p) for p in paths]
+    ratios = [max(imgs[i].shape[0] / imgs[i].shape[1] for i in row) for row in order]
+    fig = plt.figure(figsize=(width, 0.5 * width * sum(ratios) + 2.5))
+    gs = fig.add_gridspec(nrows, ncols, height_ratios=ratios, hspace=0.18, wspace=0.08,
+                          left=0.02, right=0.98, top=0.96, bottom=0.03)
+    for r, row in enumerate(order):
+        for c, i in enumerate(row):
+            ax = fig.add_subplot(gs[r, c])
+            ax.imshow(imgs[i]); ax.axis("off")
+            name = f" {labels[i]}" if labels is not None else ""
+            ax.set_title(f"({chr(97 + i)}){name}", loc="left", fontsize=label_size, pad=14)
+    return fig
+
+
 def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None, scores=None,
                           coords=None):
     """Two rows: predicted code beside each model's pre-decode representation (top, laid out per the
@@ -610,7 +631,7 @@ def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None,
     when the spectrum is flat (a group), where PCA picks an arbitrary mixture of irreps."""
     names = ["predicted"] + list(embeddings)
     reps = [E_pred] + list(embeddings.values())
-    is_tree = spec is not None and spec["structure"] == "tree"
+    is_tree = spec is not None and spec.get("structure") == "tree"
     view = _view(spec)
     if is_tree:
         parents, items = _tree_items(spec, len(E_pred))
@@ -720,7 +741,7 @@ def _draw_ultrametric(ax, leaf_E, colors, cmax, cmap=None):
     Z = linkage(pdist(np.asarray(leaf_E, float)), method="average")   # scipy clusters
     heights = np.concatenate([np.zeros(n), Z[:, 2]])
     children = {n + i: [int(a), int(b)] for i, (a, b, *_) in enumerate(Z)}
-    tol = 0.2 * heights.max()
+    tol = 0.2 * (Z[:, 2].max() - Z[:, 2].min()) if len(Z) > 1 else np.inf
 
     def _kept_children(u):                       # absorb near-equal-height binary sub-merges
         out = []

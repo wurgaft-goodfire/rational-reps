@@ -165,3 +165,86 @@ def test_embedding_panels_accept_precomputed_scatter_coordinates():
     assert np.allclose(fig.axes[2].collections[0].get_offsets(), circle)   # the chosen plane
     assert fig.axes[3].images[0].get_array().shape == (12, 12)             # Gram is still 12x12
     plt.close(fig)
+
+
+def test_ultrametric_survives_leaves_that_are_all_far_apart():
+    """The merge-absorbing tolerance must scale with the spread of merge heights, not their
+    absolute size. A relational pair code puts every leaf far from every other -- entailment's
+    merge heights are 2.93 / 3.22 / 3.33, so the level gaps are 10% and 3% of the maximum and a
+    tolerance of 0.2 * max swallows every merge, collapsing an exact ultrametric to a star."""
+    import numpy as np
+    from src.code.data import apply_lapse, entailment
+    from src.code.geometry import predicted_geometry
+    from src.code.plot_utils import _draw_ultrametric
+
+    n_nodes, leaves = 13, list(range(4, 13))            # depth 2, branch 3: 9 leaves, 4 inner nodes
+    T = np.asarray(entailment(2, 3), float).reshape(-1, n_nodes)
+    E = np.asarray(predicted_geometry(np.log(apply_lapse(T, 0.05))), float)
+    parent = [-1, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]
+    lca = [max(set(_chain(a, parent)) & set(_chain(b, parent)),
+               key=lambda u: len(_chain(u, parent)))
+           for a in range(n_nodes) for b in range(n_nodes)]
+    lca = np.array(lca)
+    leaf_code = np.stack([E[lca == c].mean(0) for c in leaves])
+
+    fig, ax = plt.subplots()
+    _draw_ultrametric(ax, leaf_code, np.arange(len(leaves)), len(leaves))
+    # the merge nodes are the one scatter that is not the 9 coloured leaves
+    merges = [c for c in ax.collections if len(c.get_offsets()) not in (0, len(leaves))]
+    drawn = sum(len(c.get_offsets()) for c in merges)
+    assert drawn >= 4, f"dendrogram collapsed to {drawn} internal node(s); the 3 branches are lost"
+    plt.close(fig)
+
+
+def _chain(v, parent):
+    """A node's ancestors, root last."""
+    out = []
+    while v != -1:
+        out.append(v); v = parent[v]
+    return out
+
+
+def test_embedding_panels_accept_a_spec_that_only_sets_the_view():
+    """A relational panel may want a 3-D scatter without naming a graph structure, so the spec can
+    carry ``view`` alone."""
+    import numpy as np
+    from src.code.plot_utils import plot_embedding_panels
+
+    E = np.random.default_rng(0).normal(size=(10, 5))
+    fig = plot_embedding_panels(E, {"mlp": E}, spec={"view": "3d"})
+    assert len(fig.axes) == 4
+    plt.close(fig)
+
+
+def test_a_wide_flat_scatter_is_not_clipped_at_the_edges():
+    """approx_add's code is a long shallow arc. The near-1-D branch used a fixed 5% x-margin, too
+    tight for the marker radius, so the extreme points were cut in half at both ends."""
+    import numpy as np
+    from src.code.plot_utils import scatter_geometry
+
+    x = np.linspace(0, 10, 24)
+    XY = np.c_[x, 0.2 * np.sin(x / 3)]                    # wide and shallow
+    fig, ax = plt.subplots()
+    scatter_geometry(ax, XY, "arc")
+
+    lo, hi = ax.get_xlim()
+    pad = min(XY[:, 0].min() - lo, hi - XY[:, 0].max()) / np.ptp(XY[:, 0])
+    assert pad > 0.1, f"only {pad:.1%} of x-padding: the end markers will be clipped"
+    plt.close(fig)
+
+
+def test_merge_panels_lays_saved_panels_out_column_major_with_letters(tmp_path):
+    """The merged figures are just saved panels tiled and lettered; the notebook should say that
+    in one call rather than rebuild a gridspec each time."""
+    from src.code.plot_utils import merge_panels, save_figure
+
+    paths = []
+    for i in range(4):
+        f, ax = plt.subplots(figsize=(2, 1)); ax.plot([0, i])
+        save_figure(f, tmp_path / f"panel{i}.png", format="png"); plt.close(f)
+        paths.append(tmp_path / "png" / f"panel{i}.png")
+
+    fig = merge_panels(paths, labels=["w", "x", "y", "z"], ncols=2)
+    assert [a.get_title(loc="left") for a in fig.axes] == ["(a) w", "(c) y", "(b) x", "(d) z"]
+    assert all(not a.axison for a in fig.axes)
+    plt.close(fig)

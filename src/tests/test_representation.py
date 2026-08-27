@@ -4,6 +4,7 @@ A model whose embedding *is* the predicted geometry must score CKA/RSA ~ 1; a sh
 must score lower. Also guards the gating: datasets without a `.conditional` emit no rep metrics.
 """
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
@@ -115,23 +116,13 @@ def test_cca_is_not_dominated_by_directions_that_carry_no_variance():
     assert cca(X, Y, keep=1.0) < 0.85                        # keeping it drags the score down
 
 
-def test_logit_r2_is_one_when_the_model_realises_the_log_conditional():
-    """The premise behind 'low loss pins the geometry': a model whose readout reproduces the
-    row-centred log-conditional scores 1, and CCA against E* is then 1 by construction."""
-    import torch
-    from src.code.analysis_utils import logit_r2, input_code
-    from src.code.geometry import factor_logcond, predicted_geometry
-    from src.code.eval import cca
+def test_cka_null_is_the_floor_a_score_has_to_clear_and_rises_with_fewer_rows():
+    """A random code is not at zero: with only a handful of rows it already matches well, so every
+    score needs its own null beside it. Four rows sit far above thirty."""
+    from src.code.eval import cka_null
 
-    dataset = KernelDataset(_config(n=16))
-    L = np.asarray(dataset.conditional, float)
-    _, E, D, _ = factor_logcond(L)
-
-    class _Exact:                                            # logits = E @ D = the centred target
-        readout = torch.tensor(D.T, dtype=torch.float64)
-        def input_reps(self, input_ids):
-            return torch.tensor(E, dtype=torch.float64)
-
-    model = _Exact()
-    assert logit_r2(model, dataset) > 0.999
-    assert cca(input_code(model, dataset), predicted_geometry(L)) > 0.999
+    rng = np.random.default_rng(0)
+    few, many = rng.standard_normal((4, 3)), rng.standard_normal((60, 3))
+    assert cka_null(few) > 3 * cka_null(many)
+    assert cka_null(many) < 0.2
+    assert cka_null(many, seed=1) == pytest.approx(cka_null(many, seed=1))    # deterministic

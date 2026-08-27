@@ -177,3 +177,25 @@ def test_log_conditional_clamps_zeros_and_leaves_probabilities_alone():
     assert np.allclose(L[0, :2], np.log(0.5))
     assert (L[[0, 1], [2, 1]] == LOG_FLOOR).all()          # exact zeros hit the floor
     assert L.min() >= LOG_FLOOR                            # and nothing sits below it
+
+
+def test_log_conditional_floors_impossible_outcomes_not_merely_unlikely_ones():
+    """LOG_FLOOR stands in for log 0, which has no value. Clipping *small but real* probabilities
+    to it flattens a distribution's tails onto a constant and invents structure: pitch_transpose's
+    Gaussian reaches exp(-32) at the far end, and clipping it takes the code from rank 3 to 19."""
+    from src.code.data import pitch_transpose
+    from src.code.geometry import LOG_FLOOR, log_conditional, predicted_geometry
+
+    P = np.asarray(pitch_transpose(), float).reshape(-1, 25)
+    assert (P > 0).all() and P.min() < np.exp(LOG_FLOOR)      # dense, but with a very thin tail
+
+    L = log_conditional(P)
+    assert np.allclose(L, np.log(P))                          # nothing is impossible, nothing floored
+
+    E = predicted_geometry(L)
+    S = np.linalg.svd(E - E.mean(0), compute_uv=False)
+    assert np.sum(S > 1e-6 * S[0]) == 3, f"tail clipping inflated the rank: {S[:6] / S[0]}"
+
+    # a genuine zero still gets the floor
+    Z = np.array([[0.5, 0.5, 0.0]])
+    assert log_conditional(Z)[0, 2] == LOG_FLOOR

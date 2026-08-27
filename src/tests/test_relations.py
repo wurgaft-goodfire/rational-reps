@@ -3,7 +3,7 @@
 model (see test_convergence)."""
 import numpy as np
 
-from src.code.data import (maximum, averaging, set_intersection, entailment, apply_lapse,
+from src.code.data import (maximum, averaging, set_intersection, set_difference, entailment, apply_lapse,
                           relation_tensor as build_tensor)
 from src.code.geometry import factor_logcond, log_conditional
 
@@ -69,35 +69,6 @@ def test_every_relation_builds_from_the_setting_defaults_alone():
 def _rows(T):
     return T.reshape(-1, T.shape[-1])
 
-
-def test_graded_set_relations_spread_over_the_answer_and_name_the_empty_set():
-    """A graded set relation answers "give me an element of the result", so the row is uniform over
-    the result's members. The empty set is a real element of the lattice, so it gets its own outcome
-    rather than being faked as a uniform row over everything."""
-    from src.code.data import set_intersection, symmetric_difference
-    nbit = 4
-    for build, op in [(set_intersection, lambda a, b: a & b),
-                      (symmetric_difference, lambda a, b: a ^ b)]:
-        T = build(nbit=nbit, graded=True)
-        assert T.shape == (2**nbit, 2**nbit, 2**nbit + 1)      # + the empty-set outcome
-        R = _rows(T)
-        assert np.allclose(R.sum(1), 1.0)
-        for a in (0, 5, 15):
-            for b in (0, 3, 15):
-                s, row = op(a, b), T[a, b]
-                members = [1 << i for i in range(nbit) if s >> i & 1]
-                if not members:
-                    assert row[-1] == 1.0, f"{a},{b}: empty answer must be the null outcome"
-                else:
-                    assert row[-1] == 0.0
-                    assert np.allclose(row[members], 1 / len(members))
-                    assert np.isclose(row.sum() - row[members].sum(), 0.0)
-        # delta form is unchanged: one-hot on the result, no null outcome
-        D = build(nbit=nbit, graded=False)
-        assert D.shape == (2**nbit,) * 3
-        assert D[5, 3, op(5, 3)] == 1.0 and D[5, 3].sum() == 1.0
-
-
 def test_graded_entailment_spreads_over_the_common_ancestors():
     """Common ancestors of a and b are exactly the ancestors of their LCA, so the graded row covers
     that path and never needs a null outcome (the root is always common)."""
@@ -155,20 +126,160 @@ def test_approximate_addition_is_graded_by_weber_noise():
     r2 = 1 - ((E - X @ np.linalg.lstsq(X, E, rcond=None)[0])**2).sum() / ((E - E.mean(0))**2).sum()
     assert r2 > 0.999, f"code should be log(a+b), got R2={r2:.4f}"
 
+def test_shared_feature_relations_are_an_exact_cube():
+    """Sampling a feature from the *intersection* makes a 1-member answer a sharper distribution
+    than a 3-member one, which stretches the cube and needs a null outcome to reach rank nbit.
+    Sampling from all nbit features and reporting a yes/no flag gives nbit equal binary
+    coordinates: rank nbit exactly, and edges in the cube's 1 : sqrt(2) : sqrt(3) ratios."""
+    from src.code.geometry import predicted_geometry
+    from src.code.data import apply_lapse
 
-def test_a_lapse_rate_removes_impossible_outcomes_without_moving_the_geometry():
-    """A target with zeros is not identified by the loss: KL puts no weight on outcomes the task
-    calls impossible, so their logits are free and E* asserts structure nothing constrains. Mixing
-    in a lapse rate fixes that, and it must do so without changing the prediction being tested."""
-    from src.code.geometry import predicted_geometry, log_conditional
-    from src.code.eval import cka
+    for build, answer in [(set_intersection, lambda a, b: a & b),
+                          (lambda nbit: set_difference(nbit, salience=None),
+                           lambda a, b: a & ~b & 7)]:
+        T = build(nbit=3)
+        n = 8
+        assert T.shape == (n, n, 6)                                  # 3 features x {yes, no}
+        pts_all = predicted_geometry(np.log(apply_lapse(np.asarray(T, float).reshape(-1, 6), 0.05)))
+        ans = np.array([answer(a, b) for a in range(n) for b in range(n)])
+        pts = np.stack([pts_all[ans == c].mean(0) for c in np.unique(ans)])
+        pts = pts - pts.mean(0)
 
-    T = set_intersection(4)
-    M = np.asarray(T, float).reshape(-1, T.shape[-1])
-    E0 = predicted_geometry(log_conditional(M))
+        S = np.linalg.svd(pts, compute_uv=False)
+        assert np.sum(S > 1e-6 * S[0]) == 3, f"rank {S}"
+        D = np.sqrt(((pts[:, None] - pts[None]) ** 2).sum(-1))
+        hd = np.array([[bin(x ^ y).count("1") for y in range(n)] for x in range(n)])
+        edge = D[hd == 1].mean()
+        assert D[hd == 1].std() < 1e-6 * edge                        # every edge the same length
+        for h in (2, 3):
+            assert abs(D[hd == h].mean() / edge - np.sqrt(h)) < 0.01, f"h={h}"
 
-    lapsed = apply_lapse(M, 0.05)
-    assert (lapsed > 0).all()                                  # no outcome is impossible any more
-    assert np.allclose(lapsed.sum(1), 1.0)
-    assert np.allclose(lapsed, 0.95 * M + 0.05 / M.shape[1])   # a uniform mixture, nothing else
-    assert cka(predicted_geometry(np.log(lapsed)), E0) > 0.99  # same predicted geometry
+
+def test_set_difference_is_asymmetric_and_intersection_is_not():
+    """Tversky's two terms: common features are symmetric, distinctive features of a are not."""
+    I, D = set_intersection(nbit=3), set_difference(nbit=3)
+    assert np.allclose(I, I.transpose(1, 0, 2))
+    assert not np.allclose(D, D.transpose(1, 0, 2))
+
+
+def test_entailment_defaults_to_a_binary_tree_of_depth_three():
+    """Branching by 3 makes E*'s top two singular values exactly degenerate, so that plane is only
+    pinned up to a rotation; branching by 2 removes the symmetry. Depth 3 also cuts the share of
+    pairs whose only common ancestor is the root."""
+    from src.code.geometry import predicted_geometry
+    from src.code.data import apply_lapse
+
+    T = entailment()
+    n = T.shape[0]
+    assert n == 15                                                   # 1 + 2 + 4 + 8
+    M = apply_lapse(np.asarray(T, float).reshape(-1, n), 0.05)
+    root_only = np.mean([np.count_nonzero(r > r.min()) == 1 for r in M])
+    assert root_only < 0.6, f"{root_only:.2f} of pairs share only the root"
+
+    E = np.asarray(predicted_geometry(np.log(M)), float)
+    S = np.linalg.svd(E - E.mean(0), compute_uv=False)
+    assert S[1] < 0.95 * S[0], f"top pair still degenerate: {S[:3] / S[0]}"
+
+
+def test_lapse_leaves_a_target_that_already_has_full_support_alone():
+    """The lapse exists to identify outcomes the loss cannot see -- ones with zero probability.
+    A target that is already dense needs nothing, and mixing in uniform would clip its tails,
+    which is exactly what raises the rank spuriously (approx_add: rank 1 -> 21)."""
+    from src.code.data import approx_add, apply_lapse
+    from src.code.geometry import predicted_geometry
+
+    dense = np.asarray(approx_add(), float).reshape(-1, 23)
+    assert (dense > 0).all()
+    assert apply_lapse(dense, 0.05) is dense                     # untouched, not merely close
+
+    E = predicted_geometry(np.log(apply_lapse(dense, 0.05)))
+    S = np.linalg.svd(E - E.mean(0), compute_uv=False)
+    assert np.sum(S > 1e-8 * S[0]) <= 4, f"dense target should stay low rank, got {S[:6]/S[0]}"
+
+    sparse = np.asarray(set_difference(3), float).reshape(-1, 6)
+    assert (sparse == 0).any() and (apply_lapse(sparse, 0.05) > 0).all()   # still applied here
+
+
+def test_salience_weighted_difference_pins_every_axis():
+    """Equal salience makes two cube axes exactly the same length, so that plane is only fixed up
+    to a rotation. Unequal salience -- Tversky's weights -- gives distinct axes, so the prediction
+    is a box with stated edge ratios rather than a cube up to gauge."""
+    from src.code.geometry import predicted_geometry
+    from src.code.data import apply_lapse
+
+    T = set_difference(nbit=3)
+    M = apply_lapse(np.asarray(T, float).reshape(-1, np.shape(T)[-1]), 0.05)
+    E = predicted_geometry(np.log(M))
+    S = np.linalg.svd(E - E.mean(0), compute_uv=False)[:3] / np.linalg.svd(E - E.mean(0), compute_uv=False)[0]
+    assert S[1] < 0.98 and S[2] < 0.95 * S[1], f"axes still degenerate: {S}"
+    assert not np.allclose(T, T.transpose(1, 0, 2))               # and still asymmetric
+
+
+def test_feature_taxonomy_is_a_grid_not_a_cube():
+    """Features in chains: the specific one entails the general, so items are the consistent sets
+    and the shared-feature answer is a pair of chain levels -- a grid. Independent features would
+    give a cube, whose axes come in a degenerate pair."""
+    from src.code.geometry import predicted_geometry
+    from src.code.data import apply_lapse, feature_taxonomy
+
+    T = feature_taxonomy(chains=2, depth=2)
+    assert T.shape == (9, 9, 8)                                   # 9 consistent items, 4 features x2
+    E = predicted_geometry(np.log(apply_lapse(np.asarray(T, float).reshape(-1, 8), 0.05)))
+    assert np.sum(np.linalg.svd(E - E.mean(0), compute_uv=False)
+                  > 1e-6 * np.linalg.svd(E - E.mean(0), compute_uv=False)[0]) == 4   # one per feature
+
+    # the grid is a claim about the answers, so read it off the answer classes: shared level per
+    # chain. Over raw pairs the spectrum is reweighted by how many pairs share an answer.
+    items = [(i, j) for i in range(3) for j in range(3)]
+    cls = [tuple(min(x, y) for x, y in zip(A, B)) for A in items for B in items]
+    keys = sorted(set(cls))
+    pts = np.stack([E[[i for i, c in enumerate(cls) if c == k]].mean(0) for k in keys])
+    pts = pts - pts.mean(0)
+    U = np.linalg.svd(pts, full_matrices=False)[0][:, :2]
+    S = np.linalg.svd(pts, compute_uv=False)
+    assert S[1] < 0.95 * S[0], f"top pair degenerate like a cube: {S[:3] / S[0]}"
+    for axis, v in enumerate(zip(*keys)):                         # top-2 plane is the two chains
+        v = np.asarray(v, float) - np.mean(v)
+        fit = U @ np.linalg.lstsq(U, v, rcond=None)[0]
+        assert 1 - ((v - fit) ** 2).sum() / (v ** 2).sum() > 0.9, f"chain {axis} not in the plane"
+
+
+def test_pitch_transpose_is_a_helix():
+    """Pitch is height plus chroma: responses confuse neighbours (Gaussian in height) and notes an
+    octave apart (von Mises in chroma). log p is then quadratic plus cosine in (c - s), so the code
+    is one linear dimension plus a degenerate cos/sin pair -- a helix."""
+    from src.code.geometry import predicted_geometry
+    from src.code.data import pitch_transpose
+
+    T = pitch_transpose()
+    M = np.asarray(T, float).reshape(-1, np.shape(T)[-1])
+    assert (M > 0).all()                                          # dense: the lapse must not touch it
+    E = predicted_geometry(np.log(M))
+    S = np.linalg.svd(E - E.mean(0), compute_uv=False)
+    assert np.sum(S > 1e-6 * S[0]) == 3, f"not a helix: {S[:6] / S[0]}"
+    assert abs(S[1] - S[2]) < 0.1 * S[1]                          # the circular pair is degenerate
+    assert S[1] < 0.6 * S[0]                                      # height dominates chroma
+
+
+def test_answer_classes_group_pairs_that_share_a_target():
+    """Panels show one point per distinct answer, so each relation says which class a pair falls
+    in. Indices follow the relation's own structure -- cube vertex, tree node -- so a figure can
+    draw that structure over the code."""
+    from src.code.data import answer_classes, set_difference, entailment
+
+    cls, spec = answer_classes("set_difference")
+    assert spec == {"structure": "hypercube", "n": 3}
+    T = np.asarray(set_difference(3), float).reshape(-1, 6)
+    for c in np.unique(cls):                                     # a class is one target row
+        assert np.allclose(T[cls == c], T[cls == c][0])
+    assert set(cls) == set(range(8))                             # indexed as cube vertices
+
+    cls, spec = answer_classes("entailment")
+    assert spec["structure"] == "tree" and len(spec["parents"]) == 15
+    T = np.asarray(entailment(), float).reshape(-1, 15)
+    for c in np.unique(cls):
+        assert np.allclose(T[cls == c], T[cls == c][0])
+
+    # relations with no structure to draw fall back to grouping identical target rows
+    cls, spec = answer_classes("approx_add")
+    assert spec is None and len(np.unique(cls)) == 23

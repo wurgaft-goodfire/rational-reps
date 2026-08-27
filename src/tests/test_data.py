@@ -157,9 +157,10 @@ def test_relational_lm_is_scored_only_on_the_outcome():
         "random_seed": 0, "training_kwargs": {"batch_size": 8, "context_length": 6},
     })
     ds = RelationalDataset(Config(cfg))
-    labels = ds[0]["labels"]
+    batch = ds[0]                                                # one draw: outcomes are sampled
+    labels = batch["labels"]
     assert (labels[:, :2] == -100).all()                         # a and b are inputs, not targets
-    assert (labels[:, 2] == ds[0]["input_ids"][:, 2]).all()
+    assert (labels[:, 2] == batch["input_ids"][:, 2]).all()
     # exactly one scored transition per row, so a perfect model reaches zero loss
     assert int((labels[:, 1:] != -100).sum()) == len(labels)
 
@@ -169,7 +170,7 @@ def test_relational_pair_inputs_flatten_to_a_matrix_kernel():
     whose plain SVD (no tensor factorization) carries the degenerate Fourier circles."""
     cfg = OmegaConf.create({
         "setting": "relational", "relation": "modular_add", "relation_kwargs": {"p": 7},
-        "pair_inputs": True, "random_seed": 0,
+        "pair_inputs": True, "random_seed": 0, "lapse": 0.0,
         "training_kwargs": {"batch_size": 8, "context_length": 6},
     })
     ds = RelationalDataset(Config(cfg))
@@ -189,8 +190,10 @@ def test_every_relation_builder_returns_its_tensor():
              "standard_mult": {"m": 4}, "product": {"p": 3, "q": 2}, "maximum": {"n": 4},
              "averaging": {"grid": 2}, "set_intersection": {"nbit": 2},
              "entailment": {"depth": 1, "branch": 2},
-             "symmetric_difference": {"nbit": 2}, "between": {"n": 4},
-             "common_divisors": {"n": 6}, "approx_add": {"m": 5}}
+             "symmetric_difference": {"nbit": 2}, "set_difference": {"nbit": 2},
+             "between": {"n": 4},
+             "common_divisors": {"n": 6}, "approx_add": {"m": 5},
+             "feature_taxonomy": {"chains": 2, "depth": 1}, "pitch_transpose": {"n": 4}}
     for name in _RELATION_BUILDERS:
         T = relation_tensor({"relation": name, **small[name]})
         assert T is not None, f"{name} returned None"
@@ -222,7 +225,7 @@ def test_relational_conditional_is_the_flat_log_conditional():
 
     cfg = OmegaConf.create({
         "setting": "relational", "relation": "modular_add", "relation_kwargs": {"p": 7},
-        "random_seed": 0, "training_kwargs": {"batch_size": 8},
+        "random_seed": 0, "lapse": 0.0, "training_kwargs": {"batch_size": 8},
     })
     ds = RelationalDataset(Config(cfg))
 

@@ -10,13 +10,19 @@ from torch.utils.data import Dataset
 from .config import Config
 from .geometry import log_conditional
 
-def apply_lapse(P, lapse):
+def apply_lapse(P, lapse=0.05):
     """Mix a conditional with the uniform distribution: ``(1 - lapse) p + lapse / C``. A target with
     zeros is not identified by the loss — KL weights an outcome by its true probability, so an
     impossible one constrains nothing and its logit is free. A lapse rate ("with probability
-    ``lapse`` the response is random") makes every outcome possible, hence every logit scored."""
+    ``lapse`` the response is random") makes every outcome possible, hence every logit scored.
+
+    A target that already has full support is returned untouched: there is nothing to identify, and
+    mixing in uniform would only flatten its tails onto the floor, which raises the rank spuriously
+    (approx_add goes from rank 1 to rank 21). So this is safe to apply to every conditional."""
     P = np.asarray(P, dtype=np.float64)
-    return (1 - lapse) * P + lapse / P.shape[-1] if lapse else P
+    if not lapse or (P > 0).all():
+        return P
+    return (1 - lapse) * P + lapse / P.shape[-1]
 
 
 def _spec(config, name_key, kwargs_key):
@@ -111,7 +117,7 @@ class KernelDataset(Dataset):
         L, self.info = graph_build(spec)
         self.n_items = len(L)
         self.features = self.info.get("Z")                        # item feature codes, if any
-        P = apply_lapse(np.exp(L), config.get("lapse", 0.0))
+        P = apply_lapse(np.exp(L), config.get("lapse", 0.05))
         return np.log(P), torch.tensor(P, dtype=torch.float32, device=self.device)
 
     def _layout(self):
@@ -300,7 +306,7 @@ class RelationalDataset(KernelDataset):
         self.n_items = T.shape[0]
         self.features = None
         # per-input-tuple outcome distribution, flattened over the tuple for fast lookup
-        M = apply_lapse(T.reshape(-1, T.shape[-1]), config.get("lapse", 0.0))
+        M = apply_lapse(T.reshape(-1, T.shape[-1]), config.get("lapse", 0.05))
         flat = torch.tensor(M, dtype=torch.float32, device=self.device)
         if config.get("pair_inputs", False):
             self.n_items, self.arity = flat.shape[0], 1           # each input tuple is one token
@@ -791,27 +797,31 @@ def averaging(grid=4, sigma=0.7):
     return T
 
 
-def _graded_set(nbit, op):
-    """Uniform over the members of ``op(a, b)``, an extra final outcome for the empty set. The
-    answer to "give me an element of the result" is uniform when the set is all you know, and the
-    empty set is a real element of the lattice, so it is named rather than faked as a flat row."""
+def _graded_set(nbit, bit_op, salience=None):
+    """Draw one of the ``nbit`` features uniformly and report whether ``bit_op`` holds for it:
+    outcomes are ``(feature, yes)`` then ``(feature, no)``.
+
+    Sampling from the *result set* instead makes a one-member answer a sharper row than a
+    three-member one, so the cube comes out stretched and needs a null outcome to reach rank nbit
+    at all (a distribution over k outcomes has only k-1 free numbers). Asking about every feature
+    gives each one an equal binary coordinate, so the code is the hypercube exactly."""
+    w = np.full(nbit, 1.0) if salience is None else np.asarray(salience, float)[:nbit]
+    w = w / w.sum()                                   # how often each feature is the one asked about
     n = 2 ** nbit
-    T = np.zeros((n, n, n + 1))
+    T = np.zeros((n, n, 2 * nbit))
     for a in range(n):
         for b in range(n):
-            members = [1 << i for i in range(nbit) if op(a, b) >> i & 1]
-            if members:
-                T[a, b, members] = 1.0 / len(members)
-            else:
-                T[a, b, n] = 1.0                              # the empty set
+            for i in range(nbit):
+                hit = bit_op(a >> i & 1, b >> i & 1)
+                T[a, b, i if hit else nbit + i] = w[i]
     return T
 
 
-def set_intersection(nbit=4, graded=True):
+def set_intersection(nbit=3, graded=True):
     """c = a & b over feature sets (Boolean lattice) -> the hypercube. ``graded``: uniform over the
     members of the intersection (Tversky's *common* features); else one-hot on the subset itself."""
     if graded:
-        return _graded_set(nbit, lambda a, b: a & b)
+        return _graded_set(nbit, lambda x, y: x and y)
     n = 2 ** nbit; T = np.zeros((n, n, n))
     for a in range(n):
         for b in range(n):
@@ -819,12 +829,56 @@ def set_intersection(nbit=4, graded=True):
     return T
 
 
-def symmetric_difference(nbit=4, graded=True):
+def set_difference(nbit=3, graded=True, salience=(1.0, 0.5, 0.25)):
+    """c = a & ~b: Tversky's *distinctive* features of a. Asymmetric — complementing one slot is
+    not a relabelling the shared embedding can absorb. ``salience`` is how often each feature is
+    the one asked about, Tversky's feature weights: equal weights make two axes the same length and
+    leave that plane fixed only up to a rotation, unequal ones give a box with pinned edges."""
+    m = 2 ** nbit - 1
+    if graded:
+        return _graded_set(nbit, lambda x, y: x and not y, salience)
+    n = 2 ** nbit; T = np.zeros((n, n, n))
+    for a in range(n):
+        for b in range(n):
+            T[a, b, a & ~b & m] = 1.0
+    return T
+
+
+def feature_taxonomy(chains=2, depth=2):
+    """Shared features when the features form chains: the specific one entails the general, so an
+    item is a *consistent* feature set — one level per chain. The answer to "draw a feature; do
+    both have it?" is then the pair of shared levels, so the code is a grid, one axis per chain,
+    rather than the cube independent features would give."""
+    items = list(itertools.product(range(depth + 1), repeat=chains))
+    feats = [(c, l) for c in range(chains) for l in range(1, depth + 1)]
+    T = np.zeros((len(items), len(items), 2 * len(feats)))
+    for i, A in enumerate(items):
+        for j, B in enumerate(items):
+            shared = [min(x, y) for x, y in zip(A, B)]
+            for m, (c, l) in enumerate(feats):
+                T[i, j, m if shared[c] >= l else len(feats) + m] = 1.0 / len(feats)
+    return T
+
+
+def pitch_transpose(n=12, n_out=25, sigma=2.5, kappa=1.5, per_octave=12):
+    """Transpose a note by an interval and name the result. Responses confuse neighbouring pitches
+    (Gaussian in height) and notes an octave apart (von Mises in chroma) — Shepard's two components
+    of pitch. ``log p`` is then quadratic plus cosine in ``c - (a + b)``, so the code is one linear
+    dimension plus a cos/sin pair: a helix. Dense by construction, so no lapse is applied."""
+    s = (np.arange(n * n) // n + np.arange(n * n) % n).reshape(n, n)
+    c = np.arange(n_out)
+    L = (-(c[None, None, :] - s[..., None]) ** 2 / (2 * sigma ** 2)
+         + kappa * np.cos(2 * np.pi * (c[None, None, :] - s[..., None]) / per_octave))
+    P = np.exp(L - L.max(-1, keepdims=True))
+    return P / P.sum(-1, keepdims=True)
+
+
+def symmetric_difference(nbit=3, graded=True):
     """c = a ^ b: Tversky's *distinctive* features, and addition in Z_2^nbit. As a class label the
     group makes it flat-spectrum and gauge-only; as a set it is rank nbit with the code on the bits.
     Only ``a ^ a`` is empty, so the null outcome carries 1/2^nbit of the rows."""
     if graded:
-        return _graded_set(nbit, lambda a, b: a ^ b)
+        return _graded_set(nbit, lambda x, y: x != y)
     n = 2 ** nbit; T = np.zeros((n, n, n))
     for a in range(n):
         for b in range(n):
@@ -873,7 +927,7 @@ def approx_add(m=12, weber=0.4):
     return T
 
 
-def entailment(depth=2, branch=3, graded=True):
+def entailment(depth=3, branch=2, graded=True):
     """The common ancestors of a and b on an is-a tree -> a hierarchy embedding. Those are exactly
     the ancestors of LCA(a, b), so ``graded`` spreads over that path (never empty: the root is
     always common) while ``graded=False`` keeps the one-hot on the LCA alone."""
@@ -903,11 +957,46 @@ def entailment(depth=2, branch=3, graded=True):
     return T
 
 
+# Depth-3 binary tree, breadth-first, matching what ``entailment`` builds.
+_ENTAILMENT_TREE = [-1, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6]
+
+
+def answer_classes(relation, **kwargs):
+    """Which answer class each input pair falls into, and how to draw that class set.
+
+    Pairs sharing a target row share an answer, so the geometry lives over classes rather than
+    pairs. Where the classes carry a structure a figure can draw — the cube's vertices, the tree's
+    nodes — they are indexed to match it; otherwise identical target rows are simply grouped.
+    Returns ``(class per pair, draw spec or None)``."""
+    T = relation_tensor({"relation": relation, **kwargs})
+    n, flat = T.shape[0], T.reshape(-1, T.shape[-1])
+    a, b = np.arange(n * n) // n, np.arange(n * n) % n
+    if relation in ("set_intersection", "set_difference", "symmetric_difference"):
+        nbit = int(np.log2(n))
+        op = {"set_intersection": lambda x, y: x & y,
+              "set_difference": lambda x, y: x & ~y & (n - 1),
+              "symmetric_difference": lambda x, y: x ^ y}[relation]
+        return op(a, b), {"structure": "hypercube", "n": nbit}
+    if relation == "entailment":
+        parents = _ENTAILMENT_TREE
+        def ancestors(v):
+            out = []
+            while v != -1:
+                out.append(v); v = parents[v]
+            return out
+        lca = [max(set(ancestors(x)) & set(ancestors(y)), key=lambda u: len(ancestors(u)))
+               for x, y in zip(a, b)]
+        return np.array(lca), {"structure": "tree", "parents": parents}
+    return np.unique(flat, axis=0, return_inverse=True)[1].ravel(), None
+
+
 _RELATION_BUILDERS = {
     "modular_add": modular_add, "standard_add": standard_add, "modular_mult": modular_mult,
     "standard_mult": standard_mult, "product": product, "maximum": maximum,
     "averaging": averaging, "set_intersection": set_intersection, "entailment": entailment,
-    "symmetric_difference": symmetric_difference, "between": between,
+    "symmetric_difference": symmetric_difference,
+    "set_difference": set_difference, "feature_taxonomy": feature_taxonomy,
+    "pitch_transpose": pitch_transpose, "between": between,
     "common_divisors": common_divisors, "approx_add": approx_add,
 }
 GROUP_RELATIONS = {"modular_add", "modular_mult", "standard_add", "standard_mult", "product"}

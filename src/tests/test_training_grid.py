@@ -50,10 +50,24 @@ def test_features_training_runs(tmp_path):
 
 
 def test_relational_training_runs(tmp_path):
-    # group op: rsa vs the (degenerate) factor_tensor is low, so we only check it runs + scores
+    """A two-slot relation trains through the shared pipeline. The linear readout is bilinear here
+    — it contracts the outer product of the two embeddings — so there is no vector the decoder
+    reads and the geometry metrics are absent by design; the loss still has to fall."""
     model, dataset, evaluator, history, _ = train_inline(
-        ["setting=relational", "relation=modular_add", "relation_kwargs.p=7", "runner=linear"] + _QUICK,
+        ["setting=relational", "relation=modular_add", "+relation_kwargs.p=7", "runner=linear"] + _QUICK,
         name="grid_relational", cache_dir=str(tmp_path))
+    assert dataset.arity == 2
+    assert evaluator.input_code(model) is None                 # a bilinear readout has no code
+    assert "cka_vs_predicted" not in history.columns
+    assert history.iloc[-1]["loss"] < 1.0
+
+
+def test_relational_training_scores_geometry_when_the_code_is_a_vector(tmp_path):
+    """With one embedding per input slot concatenated, the penultimate activation is the code, so
+    the same relation does produce geometry metrics."""
+    model, dataset, evaluator, history, _ = train_inline(
+        ["setting=relational", "relation=modular_add", "+relation_kwargs.p=7", "runner=mlp"] + _QUICK,
+        name="grid_relational_mlp", cache_dir=str(tmp_path))
     _check(history, dataset, model)
 
 

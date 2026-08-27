@@ -2,14 +2,19 @@
 geometry a network should learn) and a decoder ``D`` (the readout)."""
 import numpy as np
 
-# A zero-probability outcome has no finite log. Every conditional is clamped here before it is
+# A zero-probability outcome has no finite log. Every conditional is floored here before it is
 # factored, so the oracle sees one floor everywhere instead of a per-caller magic number.
 LOG_FLOOR = -20.0
 
 
 def log_conditional(P):
-    """``log p(outcome | input)`` with zero probabilities clamped to ``LOG_FLOOR``."""
-    return np.log(np.clip(np.asarray(P, dtype=np.float64), np.exp(LOG_FLOOR), None))
+    """``log p(outcome | input)``, with *impossible* outcomes set to ``LOG_FLOOR``.
+
+    Only exact zeros are floored. Clipping small-but-real probabilities would flatten a
+    distribution's tails onto a constant and invent structure the task does not have — a Gaussian
+    response kernel reaching exp(-32) is rank 3, but rank 19 once its tail is clipped."""
+    P = np.asarray(P, dtype=np.float64)
+    return np.where(P > 0, np.log(np.where(P > 0, P, 1.0)), LOG_FLOOR)
 
 
 def factor_logcond(L):
