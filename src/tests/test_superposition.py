@@ -1,6 +1,7 @@
 """The superposition oracle (geometry.py): closed-form geometry of a rank-limited softmax
 on Bernoulli features, from notes/superposition.tex. Every test pins an analytic answer."""
 import numpy as np
+import pytest
 
 from src.code import geometry
 from src.code.geometry import (balanced_code, feature_directions, feature_objective,
@@ -189,3 +190,33 @@ def test_fantope_leverage_orders_allocation_by_importance():
     h, _ = geometry.fantope_leverage(alpha, 0.3, 3, n_samples=16384, iters=400)
     assert np.all(np.diff(h) < 0.02)                  # decreasing along the ladder
     assert h[0] > h[-1] + 0.2
+
+
+@pytest.mark.slow
+def test_predicted_map_pins_the_diagonal_and_makes_all_row_sums_negative():
+    # the theory's exact anchor: centred diag(R) = alpha_i (1 - 1/m) on the represented
+    # set, and every represented feature carries net-negative couplings.
+    m, d, p = 10, 3, 0.3
+    alpha = 6.0 * (1.0 + np.arange(m)) ** -0.5
+    R, b = geometry.predicted_map(alpha, p, d, n_samples=4096, n_starts=1, maxiter=2000)
+    Rc = R - R.mean(1, keepdims=True)
+    dg = np.diag(Rc)
+    rep = dg > 0.15
+    target = alpha * (1 - 1.0 / m)
+    assert rep[:2].all()
+    # pinning is sub-1% at m = 64; at this toy scale the variance-mismatch term allows ~10%
+    assert np.abs(dg[rep][:3] / target[rep][:3] - 1).max() < 0.15
+    Sr = (Rc - np.diag(dg)).sum(1)
+    assert (Sr[rep] < 0).all()
+
+
+def test_logit_features_recovers_planted_balanced_sizes():
+    rng = np.random.default_rng(4)
+    m, d, p, n = 32, 3, 0.3, 8192
+    Z = (rng.random((n, m)) < p).astype(float)
+    E = np.zeros((m, d))
+    E[0, 0], E[1, 1], E[2, 2] = 2.0, 1.5, 1.0        # orthogonal writers, sizes 4/2.25/1
+    L = (Z - Z.mean(0)) @ (E @ E.T)                  # mean-free code: sizes are exact
+    sizes = (geometry.logit_features(L, Z, d) ** 2).sum(1)
+    assert np.allclose(sizes[:3], [4.0, 2.25, 1.0], rtol=0.05)
+    assert sizes[3:].max() < 0.05

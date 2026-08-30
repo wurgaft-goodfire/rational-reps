@@ -14,26 +14,22 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Superposition: the predicted geometry of a rank-limited softmax
+    # Superposition: the map, the gauge, and the measured geometry
 
     $m$ binary features $z_i \sim \mathrm{Bernoulli}(p)$, target
-    $p_\star(x{=}i \mid z) \propto \exp(\alpha_i z_i)$ with $\alpha_i = 8\,(i{+}1)^{-1/2}$.
-    A rank-$d$ model embeds each feature as $E_i \in \mathbb{R}^d$. The theory
-    (`notes/superposition.tex`) says the learned representation minimizes
+    $p_\star(x{=}i \mid z) \propto \exp(\alpha_i z_i)$ with $\alpha_i = 8\,(i{+}1)^{-1/2}$,
+    rank-$d$ additive model. The theory (`notes/map_theory.md`) predicts in layers:
 
-    $$\mathcal J(E) = \tfrac12\sum_i\big(\|E_i\|^2-\alpha_i\big)^2
-      + \tfrac{p}{2}\sum_{i\neq j}\langle E_i,E_j\rangle^2,$$
+    1. **The map** $R$ (feature $\to$ output, gauge-invariant): diagonal pinned at the
+       centred target, $R_{ii} = \alpha_i(1 - 1/m)$, off-diagonals negative and
+       asymmetric (reader $= \kappa_i \times$ writer, directions tied).
+    2. **Allocation**: dimensional capacity $h_i$ from the convex Fantope program.
+    3. **Measured geometry**: the balanced-SVD factorization of $R$ — this, not the map,
+       is where the "amplified" head norms come from.
 
-    whose solution is set by one capacity level $\alpha_\star$ spending the budget exactly:
-
-    - $\alpha_i > \alpha_\star$: **dedicated** orthogonal direction, $\|E_i\|^2 = \alpha_i$;
-    - $p\alpha_\star < \alpha_i \le \alpha_\star$: **shared** tight frame,
-      $\|E_i\|^2 = (\alpha_i - p\alpha_\star)/(1-p)$;
-    - $\alpha_i \le p\alpha_\star$: **dropped**, $E_i = 0$.
-
-    Trained sizes are measured by gauge-fixing the model (`balanced_code`), regressing the
-    code on the features (`feature_vectors`), and rescaling to balanced units:
-    $\|E_i\|^2 = \sqrt{Np(1-p)}\,\|V_i\|^2$.
+    The predicted map is `geometry.predicted_map` (task-only, no training data); measured
+    feature vectors of any logit matrix come from `geometry.logit_features`, applied
+    identically to trained models and to the prediction.
     """)
     return
 
@@ -46,8 +42,8 @@ def _(mo):
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
     from src.code.data import feature_cube
-    from src.code.geometry import (balanced_code, feature_vectors, fitted_features,
-                                   leverage, predicted_features)
+    from src.code.geometry import (balanced_code, fantope_leverage, feature_vectors,
+                                   leverage, logit_features, predicted_map)
     from src.code.train import resolve_config, train_inline
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -57,6 +53,7 @@ def _(mo):
     SEEDS = range(5)
     R = np.sqrt(N * P * (1 - P))                       # the one global activation scale
     ALPHA = SCALE * (1.0 + np.arange(M)) ** -BETA
+    ALPHA_C = ALPHA * (1 - 1.0 / M)                    # centred target diagonal
     Z = feature_cube(N, M, P, scale=SCALE, seed=0, spectrum="power", beta=BETA)[1]["Z"]
 
     TASK = ["setting=feature_cube", f"structure_kwargs.N={N}", f"structure_kwargs.m={M}",
@@ -64,8 +61,6 @@ def _(mo):
             f"+structure_kwargs.beta={BETA}", f"structure_kwargs.p={P}"]
     CONFIG = resolve_config(TASK)
     COL = plot_utils.FIG.colors
-
-    PRED = {d: predicted_features(ALPHA, P, d) for d in D_GRID}    # (W, sizes, own, astar)
 
     def trained_sizes(d, seed):
         """One trained run's per-feature vectors in balanced units: (E_meas (m, d), sizes)."""
@@ -81,80 +76,81 @@ def _(mo):
 
     return (
         ALPHA,
+        ALPHA_C,
         COL,
         CONFIG,
         D_GRID,
+        M,
         P,
-        PRED,
         SEEDS,
-        fitted_features,
+        Z,
+        fantope_leverage,
         leverage,
+        logit_features,
         np,
         plot_utils,
         plt,
+        predicted_map,
         trained_sizes,
     )
+
+
+@app.cell
+def _(ALPHA, D_GRID, P, Z, fantope_leverage, logit_features, np, predicted_map):
+    # the theory pipeline, task-only: predicted map -> measured-style predicted vectors,
+    # and the Fantope allocation. (A few minutes of deterministic optimization per budget.)
+    PRED_MAP = {}
+    E_PRED = {}
+    H_FANT = {}
+    for _d in D_GRID:
+        _R, _b = predicted_map(ALPHA, P, _d, n_samples=16384, n_starts=3)
+        PRED_MAP[_d] = (_R, _b)
+        E_PRED[_d] = logit_features(Z @ _R + _b, Z, _d)
+        H_FANT[_d] = fantope_leverage(ALPHA, P, _d, n_samples=16384, iters=1200)[0]
+    return E_PRED, H_FANT, PRED_MAP
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 1 — the closed form solves the objective (no training)
+    ## Figure 1 — the map anchor (no training)
 
-    Left row: $\|E_i\|^2$ against $\alpha_i$; line = closed form, dots = L-BFGS run directly
-    on $\mathcal J$ from random starts. Right row: eigenvalues of $E^\top E$; line = predicted
-    $\{\alpha_i\ \text{dedicated}\} \cup \{\alpha_\star\ \text{repeated}\}$, open dots = L-BFGS.
+    Top: diagonal of the predicted centred map against $\alpha_i(1 - 1/m)$; the identity
+    line is the theory's exact anchor. Bottom: each represented feature's off-diagonal
+    row sum $S_i = \sum_{j \ne i} R_{ij}$.
 
-    **Criterion**: dots on the line everywhere, spike-then-flat spectrum. A gap falsifies the
-    implementation, not the theory.
+    **Criterion**: represented diagonals on the identity line (sub-percent away from the
+    representation threshold); every represented row sum strictly negative. A diagonal
+    far above the line would mean the map itself amplifies — the old misreading.
     """)
     return
 
 
 @app.cell
-def _(
-    ALPHA,
-    COL,
-    CONFIG,
-    D_GRID,
-    P,
-    PRED,
-    fitted_features,
-    np,
-    plot_utils,
-    plt,
-):
+def _(ALPHA, ALPHA_C, COL, CONFIG, D_GRID, PRED_MAP, np, plot_utils, plt):
     _fig, _axes = plt.subplots(2, len(D_GRID), figsize=(4.4 * len(D_GRID), 7.2))
     for _j, _d in enumerate(D_GRID):
-        _W, _sizes, _own, _astar = PRED[_d]
-        _Wf = fitted_features(ALPHA, P, _d, n_starts=4)
-        _sf = (_Wf ** 2).sum(1)
+        _R = PRED_MAP[_d][0]
+        _Rc = _R - _R.mean(1, keepdims=True)
+        _dg = np.diag(_Rc)
+        _rep = _dg > 0.15
 
         _ax = _axes[0, _j]
-        _ax.plot(ALPHA, _sizes, color=COL["orange"], lw=2.4, zorder=3, label="closed form")
-        _ax.scatter(ALPHA, _sf, s=30, color=COL["blue"], zorder=4, label="L-BFGS on $\\mathcal{J}$")
-        for _x, _ls in [(_astar, "--"), (P * _astar, ":")]:
-            _ax.axvline(_x, color="0.55", lw=1.2, ls=_ls, zorder=2)
-        _ax.text(_astar, _ax.get_ylim()[1] * 0.9, r" $\alpha_\star$", color="0.4", fontsize=12)
-        _ax.text(P * _astar, _ax.get_ylim()[1] * 0.9, r" $p\alpha_\star$", color="0.4", fontsize=12)
+        _ax.plot([0, ALPHA_C[0]], [0, ALPHA_C[0]], color="0.55", lw=1.2, ls="--", zorder=2)
+        _ax.scatter(ALPHA_C, _dg, s=30, color=COL["blue"], zorder=3, edgecolors="none")
         _ax.set_title(f"$d = {_d}$", fontsize=15)
-        _ax.set_xlabel(r"$\alpha_i$")
+        _ax.set_xlabel(r"$\alpha_i (1 - 1/m)$")
         plot_utils.FIG.style_axes(_ax)
 
         _ax = _axes[1, _j]
-        _ev_pred = np.sort(np.concatenate([ALPHA[_own], np.full(_d - _own.sum(), _astar)]))[::-1]
-        _ev_fit = np.sort(np.linalg.eigvalsh(_Wf.T @ _Wf))[::-1]
-        _ax.plot(np.arange(1, _d + 1), _ev_pred, "o-", color=COL["orange"], lw=2.2, ms=7,
-                 zorder=3, label="predicted")
-        _ax.scatter(np.arange(1, _d + 1), _ev_fit, s=70, facecolor="none",
-                    edgecolor=COL["blue"], lw=2, zorder=4, label="L-BFGS")
-        _ax.set_xlabel("eigenvalue index")
-        _ax.set_xticks(np.arange(1, _d + 1, max(1, _d // 6)))
+        _S = (_Rc - np.diag(_dg)).sum(1)
+        _ax.axhline(0, color="0.75", lw=1)
+        _ax.scatter(ALPHA[_rep], _S[_rep], s=30, color=COL["blue"], zorder=3,
+                    edgecolors="none")
+        _ax.set_xlabel(r"$\alpha_i$ (represented)")
         plot_utils.FIG.style_axes(_ax)
-    _axes[0, 0].set_ylabel(r"$\|E_i\|^2$")
-    _axes[1, 0].set_ylabel(r"eigenvalues of $E^\top E$")
-    _axes[0, 0].legend(frameon=False, fontsize=11)
-    _axes[1, 0].legend(frameon=False, fontsize=11)
+    _axes[0, 0].set_ylabel(r"predicted $R_{ii}$")
+    _axes[1, 0].set_ylabel(r"row sum $S_i$")
     _fig.tight_layout()
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig1_theory_check"))
     return
@@ -163,19 +159,16 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 2 — the three regimes in a trained network
+    ## Figure 2 — measured sizes: trained vs the theory pipeline
 
-    Dots: measured $\|E_i\|^2$ (5 seeds). Line: the piecewise prediction. Verticals at
-    $p\alpha_\star$ (representation threshold) and $\alpha_\star$ (dedication threshold).
+    Dots: measured $\|E_i\|^2$ (5 seeds). Line: the same measurement applied to the
+    predicted map's logits — the balanced factorization of $R_{\rm pred}$.
 
-    **Criterion**: measured sizes drop to zero below $p\alpha_\star$ and rise with
-    $\alpha_i$; the represented count is bracketed by the prediction.
-
-    **Known deviation (understood)**: the head sits *above* $\alpha_1$ and the count runs
-    low. Both are properties of the balanced gauge, not of the input-output map: the
-    gauge-invariant map diagonal (`logit_map`) is pinned at $\bar\alpha_i$ exactly, and
-    the excess measured norm is the balanced factorization of an asymmetric map (reader
-    $= \kappa_i \times$ writer). See `notes/map_theory.md`.
+    **Criterion**: the line runs through the dots *including the amplified head and the
+    S-shaped rise* — both are properties of the balanced gauge of an asymmetric map, and
+    the prediction must reproduce them without any fit to the trained runs. Known residual:
+    at $d = 12$ the trained head sits above the line — the non-additive (strong-pair)
+    class effect, outside the additive theory (`notes/map_theory.md`).
     """)
     return
 
@@ -187,19 +180,16 @@ def _(D_GRID, SEEDS, trained_sizes):
 
 
 @app.cell
-def _(ALPHA, COL, CONFIG, D_GRID, P, PRED, RUNS, np, plot_utils, plt):
+def _(ALPHA, COL, CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt):
     _fig, _axes = plt.subplots(1, len(D_GRID), figsize=(4.6 * len(D_GRID), 4.4), sharex=True)
     for _ax, _d in zip(_axes, D_GRID):
-        _W, _sizes, _own, _astar = PRED[_d]
         for _k, (_E, _s) in enumerate(RUNS[_d]):
             _ax.scatter(ALPHA, _s, s=26, color=COL["blue"], alpha=0.5, edgecolors="none",
                         zorder=3, label="trained (5 seeds)" if _k == 0 else None)
+        _sp = (E_PRED[_d] ** 2).sum(1)
         _o = np.argsort(ALPHA)
-        _ax.plot(ALPHA[_o], _sizes[_o], color=COL["orange"], lw=2.6, zorder=4, label="predicted")
-        _ax.axvline(_astar, color="0.55", lw=1.2, ls="--", zorder=2)
-        _ax.axvline(P * _astar, color="0.55", lw=1.2, ls=":", zorder=2)
-        _ax.text(_astar, _ax.get_ylim()[1] * 0.88, r" $\alpha_\star$", color="0.4", fontsize=13)
-        _ax.text(P * _astar, _ax.get_ylim()[1] * 0.88, r" $p\alpha_\star$", color="0.4", fontsize=13)
+        _ax.plot(ALPHA[_o], _sp[_o], color=COL["orange"], lw=2.6, zorder=4,
+                 label="theory pipeline")
         _ax.set_title(f"$d = {_d}$", fontsize=15)
         _ax.set_xlabel(r"$\alpha_i$")
         plot_utils.FIG.style_axes(_ax)
@@ -215,34 +205,28 @@ def _(mo):
     mo.md(r"""
     ## Figure 2b — dimensional allocation (leverage)
 
-    Gauge-free capacity shares: $h_i = P_{ii}$ with $P$ the hat matrix of the measured
-    feature vectors ($0 \le h_i \le 1$, $\sum_i h_i = d$; invariant to any invertible
-    transform of the code). Overlay: the closed form
-    $h_i = [(\alpha_i/\alpha_\star - p)/(1-p)]_0^1$.
+    Gauge-free capacity shares $h_i = P_{ii}$ (hat matrix of the measured vectors,
+    invariant to any invertible transform of the code) against the Fantope prediction —
+    a certified convex program on the task alone.
 
-    **Criterion**: a $0 \to$ fractional $\to 1$ ramp tracking the prediction (corr
-    $\approx 0.95$), transitions shifted modestly right; full dedication ($h = 1$) only
-    approached as $d$ grows. A head feature far below the ramp falsifies the allocation
-    theory.
+    **Criterion**: the Fantope curve tracks the trained ramp including the sub-1
+    shoulder (fractional dedication) and the transition locations; the represented
+    count matches to within a couple of features.
     """)
     return
 
 
 @app.cell
-def _(ALPHA, CONFIG, D_GRID, P, PRED, RUNS, leverage, np, plot_utils, plt):
+def _(ALPHA, COL, CONFIG, D_GRID, H_FANT, RUNS, leverage, np, plot_utils, plt):
     _fig, _axes = plt.subplots(1, len(D_GRID), figsize=(4.6 * len(D_GRID), 4.2))
     for _ax, _d in zip(_axes, D_GRID):
-        _astar = PRED[_d][3]
-        _hp = np.clip((ALPHA / _astar - P) / (1 - P), 0.0, 1.0)
         for _k, (_E, _s) in enumerate(RUNS[_d]):
-            _ax.scatter(ALPHA, leverage(_E)[0], s=22, color=plot_utils.FIG.colors["blue"],
-                        alpha=0.45, edgecolors="none", zorder=3,
+            _ax.scatter(ALPHA, leverage(_E)[0], s=22, color=COL["blue"], alpha=0.45,
+                        edgecolors="none", zorder=3,
                         label="trained (5 seeds)" if _k == 0 else None)
         _o = np.argsort(ALPHA)
-        _ax.plot(ALPHA[_o], _hp[_o], color=plot_utils.FIG.colors["orange"], lw=2.4,
-                 zorder=4, label="predicted")
-        _ax.axvline(_astar, color="0.55", lw=1.2, ls="--", zorder=2)
-        _ax.axvline(P * _astar, color="0.55", lw=1.2, ls=":", zorder=2)
+        _ax.plot(ALPHA[_o], H_FANT[_d][_o], color=COL["orange"], lw=2.4, zorder=4,
+                 label="Fantope")
         _ax.set_ylim(-0.05, 1.1)
         _ax.set_title(f"$d = {_d}$", fontsize=15)
         _ax.set_xlabel(r"$\alpha_i$")
@@ -259,27 +243,27 @@ def _(mo):
     mo.md(r"""
     ## Figure 3a/b — geometry without orientation
 
-    **(a)** Eigenvalues of the measured frame operator $\sum_i E_iE_i^\top$ (dots, 5 seeds)
-    against the predicted $\{\alpha_i\ \text{dedicated}\} \cup \{\alpha_\star\ \text{flat}\}$.
-    **(b)** Each feature's interference load $\sum_{j\neq i}\langle E_i,E_j\rangle^2$ against
-    its measured $\|E_i\|^2$; the prediction is the parabola
-    $\alpha_\star\|E_i\|^2 - \|E_i\|^4$, zero at both ends.
+    **(a)** Eigenvalues of the measured frame operator $\sum_i E_i E_i^\top$ (dots, 5
+    seeds) against the theory pipeline's eigenvalues. **(b)** Interference load
+    $\sum_{j\neq i}\langle E_i,E_j\rangle^2$ against $\|E_i\|^2$; orange open dots are
+    the prediction's features.
 
-    **Criterion**: (a) spike-plus-flat-block at the predicted levels; (b) dots on the parabola,
-    and dedicated features at zero load — orthogonal to everything, not merely large.
+    **Criterion**: (a) matching spectra including the head spike; (b) trained dots and
+    predicted dots trace the same load curve — in particular the head carries a large
+    load (it is *not* orthogonal to the rest; its extra norm cancels interference).
     """)
     return
 
 
 @app.cell
-def _(ALPHA, COL, CONFIG, D_GRID, PRED, RUNS, np, plot_utils, plt):
+def _(CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt, COL):
     _fig, _axes = plt.subplots(2, len(D_GRID), figsize=(4.4 * len(D_GRID), 7.4))
     for _j, _d in enumerate(D_GRID):
-        _Wp, _sizes, _own, _astar = PRED[_d]
+        _Ep = E_PRED[_d]
         _ax = _axes[0, _j]
-        _ev_pred = np.sort(np.concatenate([ALPHA[_own], np.full(_d - _own.sum(), _astar)]))[::-1]
+        _ev_pred = np.sort(np.linalg.eigvalsh(_Ep.T @ _Ep))[::-1]
         _ax.plot(np.arange(1, _d + 1), _ev_pred, "o-", color=COL["orange"], lw=2.2, ms=7,
-                 zorder=4, label="predicted")
+                 zorder=4, label="theory pipeline")
         for _k, (_E, _s) in enumerate(RUNS[_d]):
             _ev = np.sort(np.linalg.eigvalsh(_E.T @ _E))[::-1]
             _ax.scatter(np.arange(1, _d + 1), _ev, s=30, color=COL["blue"], alpha=0.6,
@@ -290,9 +274,11 @@ def _(ALPHA, COL, CONFIG, D_GRID, PRED, RUNS, np, plot_utils, plt):
         plot_utils.FIG.style_axes(_ax)
 
         _ax = _axes[1, _j]
-        _grid = np.linspace(0, _astar, 200)
-        _ax.plot(_grid, _astar * _grid - _grid ** 2, color=COL["orange"], lw=2.4, zorder=4,
-                 label=r"$\alpha_\star\|E_i\|^2 - \|E_i\|^4$")
+        _Gp = _Ep @ _Ep.T
+        _sp = np.diag(_Gp)
+        _lp = (_Gp ** 2).sum(1) - _sp ** 2
+        _ax.scatter(_sp, _lp, s=55, facecolor="none", edgecolor=COL["orange"], lw=1.8,
+                    zorder=4, label="theory pipeline")
         for _k, (_E, _s) in enumerate(RUNS[_d]):
             _G = _E @ _E.T
             _load = (_G ** 2).sum(1) - np.diag(_G) ** 2
@@ -314,22 +300,22 @@ def _(mo):
     mo.md(r"""
     ## Figure 3c — the vectors themselves ($d = 3$)
 
-    Basis from the trained model itself: the dedicated direction is the top feature's unit
-    vector; the shared plane is its orthogonal complement. Top row: shared-plane arrows,
-    trained (seed 0) beside the predicted realization, colored by $\alpha_i$. Bottom row: each
-    feature's component along the dedicated direction ($x$) against the magnitude of the rest
-    ($y$).
+    Basis from each model itself: the top feature's unit vector, and its orthogonal
+    complement as the shared plane. Top row: shared-plane arrows, trained (seed 0) beside
+    the theory pipeline, colored by $\alpha_i$. Bottom row: component along the top
+    feature's direction ($x$) against the magnitude of the rest ($y$).
 
-    **Criterion**: arrow lengths match left-right (angles are free — the unpredicted
-    orientation); bottom row forms an L, with no shared feature leaking onto the $x$ axis.
+    **Criterion**: arrow lengths match left-right (angles are the free orientation); in
+    the bottom row both panels show the same shape — including the head's *nonzero*
+    in-plane component (the anti-aligned interference budget).
     """)
     return
 
 
 @app.cell
-def _(ALPHA, CONFIG, PRED, RUNS, np, plot_utils, plt):
-    _Wp, _sizes_p, _own_p, _astar = PRED[3]
+def _(ALPHA, CONFIG, E_PRED, RUNS, np, plot_utils, plt):
     _E = RUNS[3][0][0]                                     # trained, seed 0
+    _Ep = E_PRED[3]
     _fig, _axes = plt.subplots(2, 2, figsize=(9.2, 8.6))
     _cmap = plt.cm.viridis
     _norm = plt.Normalize(0, ALPHA[0])
@@ -343,7 +329,7 @@ def _(ALPHA, CONFIG, PRED, RUNS, np, plot_utils, plt):
         return _para, _resid @ _Q.T
 
     for _ax, _Emat, _title in [(_axes[0, 0], _E, "trained (seed 0)"),
-                               (_axes[0, 1], _Wp, "predicted")]:
+                               (_axes[0, 1], _Ep, "theory pipeline")]:
         _, _xy = _split(_Emat)
         _rep = np.flatnonzero((_Emat ** 2).sum(1) > 0.05)[1:]   # shared, visibly represented
         for _i in _rep:
@@ -356,12 +342,12 @@ def _(ALPHA, CONFIG, PRED, RUNS, np, plot_utils, plt):
         plot_utils.FIG.clean(_ax)
 
     for _ax, _Emat, _title in [(_axes[1, 0], _E, "trained (seed 0)"),
-                               (_axes[1, 1], _Wp, "predicted")]:
+                               (_axes[1, 1], _Ep, "theory pipeline")]:
         _para, _xy = _split(_Emat)
         _sc = _ax.scatter(np.abs(_para), np.linalg.norm(_xy, axis=1), s=55,
                           c=ALPHA, cmap=_cmap, norm=_norm, zorder=3, edgecolors="none")
         _ax.axhline(0, color="0.8", lw=1); _ax.axvline(0, color="0.8", lw=1)
-        _ax.set_xlabel("component on the dedicated direction")
+        _ax.set_xlabel("component on the top feature's direction")
         _ax.set_title(_title, fontsize=13)
         plot_utils.FIG.style_axes(_ax)
     _axes[1, 0].set_ylabel("magnitude of the rest")
@@ -375,22 +361,22 @@ def _(mo):
     mo.md(r"""
     ## Figure 3d — Gram fingerprint at every budget
 
-    $\langle E_i, E_j\rangle$ over the top 16 features, trained (seed 0) beside the predicted
-    realization, per budget.
+    $\langle E_i, E_j\rangle$ over the top 16 features, trained (seed 0) beside the
+    theory pipeline, per budget.
 
-    **Criterion**: diagonal = the three-regime sizes; dedicated rows blank off-diagonal; the
-    shared block a small even haze. Individual shared off-diagonals need not match — only the
-    structure.
+    **Criterion**: matching diagonals (including the amplified head), negative haze in
+    the represented block on both sides. Individual off-diagonals need not match — only
+    the structure.
     """)
     return
 
 
 @app.cell
-def _(CONFIG, D_GRID, PRED, RUNS, np, plot_utils, plt):
+def _(CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt):
     _k = 16
     _fig, _axes = plt.subplots(len(D_GRID), 2, figsize=(8.4, 4.0 * len(D_GRID)))
     for _j, _d in enumerate(D_GRID):
-        _pairs = [(RUNS[_d][0][0], "trained (seed 0)"), (PRED[_d][0], "predicted")]
+        _pairs = [(RUNS[_d][0][0], "trained (seed 0)"), (E_PRED[_d], "theory pipeline")]
         _lim = max(np.abs(_E[:_k] @ _E[:_k].T).max() for _E, _ in _pairs)
         for _i, (_E, _title) in enumerate(_pairs):
             _ax = _axes[_j, _i]

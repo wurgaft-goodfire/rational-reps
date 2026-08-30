@@ -277,3 +277,50 @@ def fantope_leverage(alpha, p, d, n_samples=65536, iters=2000, step=0.05, seed=0
         H = _fantope_project(H - step * 0.5 * (grad + grad.T), d)
     Hf = Q @ H @ Q.T
     return np.diag(Hf).copy(), Hf
+
+
+def predicted_map(alpha, p, d, n_samples=16384, n_starts=3, seed=0, maxiter=8000):
+    """The theory's predicted feature -> output map: minimize exact CE over the
+    tied-direction class (writer W_i, reader kappa_i W_i, bias) on a fixed-seed Bernoulli
+    sample of the task. Returns (R (m, m), b (m,)) with R = W (kappa * W)^T."""
+    import torch
+    from scipy.optimize import minimize
+    torch.set_default_dtype(torch.float64)
+    torch.set_num_threads(1)                # tiny matmuls: multithreading only thrashes
+    alpha = np.asarray(alpha, float)
+    m = len(alpha)
+    rng = np.random.default_rng(seed)
+    Z = torch.tensor((rng.random((n_samples, m)) < p).astype(float))
+    P = torch.softmax(Z * torch.tensor(alpha), 1)
+
+    def fg(f):
+        t = torch.tensor(f, requires_grad=True)
+        W = t[:m * d].reshape(m, d); k = t[m * d:m * d + m]; b = t[m * d + m:]
+        L = (Z @ W) @ (k[:, None] * W).T + b
+        J = (torch.logsumexp(L, 1) - (P * L).sum(1)).mean()
+        J.backward()
+        return float(J.detach()), t.grad.numpy()
+
+    best = None
+    for _ in range(n_starts):
+        x0 = np.concatenate([0.3 * rng.normal(size=m * d), np.ones(m), np.zeros(m)])
+        r = minimize(fg, x0, jac=True, method="L-BFGS-B",
+                     options=dict(maxiter=maxiter, maxfun=2 * maxiter, ftol=1e-13, gtol=1e-9))
+        if best is None or r.fun < best.fun:
+            best = r
+    W = best.x[:m * d].reshape(m, d)
+    kap = best.x[m * d:m * d + m]
+    return W @ (kap[:, None] * W).T, best.x[m * d + m:]
+
+
+def logit_features(L, Z, d):
+    """Measured feature vectors of a logit matrix: balanced SVD of the row-centred
+    logits, additive regression of the code on Z, rescaled to balanced units.
+    Returns E (m, d) with sizes ||E_i||^2 comparable to alpha."""
+    L = np.asarray(L, float)
+    Z = np.asarray(Z, float)
+    Lc = L - L.mean(1, keepdims=True)
+    U, S, _ = np.linalg.svd(Lc, full_matrices=False)
+    H = U[:, :d] * np.sqrt(S[:d])
+    scale = np.sqrt(len(Z) * Z.mean() * (1 - Z.mean()))
+    return np.sqrt(scale) * feature_vectors(H, Z)[0]
