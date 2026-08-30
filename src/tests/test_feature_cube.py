@@ -5,8 +5,7 @@ from omegaconf import OmegaConf
 
 from src.code.config import Config
 from src.code.data import KernelDataset, feature_cube
-from src.code.geometry import (feature_stats, expected_ce, feature_vectors,
-                               nuclear_features, truncation_features as truncation)
+from src.code.geometry import factor_logcond
 
 
 def test_features_kernel_structure():
@@ -26,42 +25,11 @@ def test_features_kernel_structure():
 
 
 def test_features_effective_rank_is_m_minus_1():
-    # the softmax gauge absorbs one dimension: d = m - 1 recovers Bayes, d = m - 2 does not
-    logP, info = feature_cube(N=128, m=5, p=0.4, decay=0.9, scale=1.75, seed=0)
-    I = np.eye(len(logP))
-    m = logP.shape[1]
-    A, D = truncation(logP, d=m - 1)
-    ce, bayes = expected_ce(I, logP, A, D, np.zeros(m))
-    assert ce - bayes < 1e-8
-    A, D = truncation(logP, d=m - 2)
-    ce, _ = expected_ce(I, logP, A, D, np.zeros(m))
-    assert ce - bayes > 1e-3
-
-
-def test_features_nuclear_beats_truncation_under_budget():
+    # the softmax gauge absorbs one dimension: row-centring the log-conditional leaves
+    # exactly m - 1 nonzero singular values, so a rank-(m-1) code is already exact.
     logP, _ = feature_cube(N=128, m=5, p=0.4, decay=0.9, scale=1.75, seed=0)
-    I = np.eye(len(logP))
-    A0, D0 = truncation(logP, d=2)
-    ce_cf, bayes = expected_ce(I, logP, A0, D0, np.zeros(logP.shape[1]))
-    A, D, b, _ = nuclear_features(logP, I, d=2, fit_bias=False)
-    ce, _ = expected_ce(I, logP, A, D, b)
-    assert np.allclose(b, 0.0)
-    assert ce <= ce_cf + 1e-4
-
-
-def test_feature_stats_recover_the_ladder():
-    logP, info = feature_cube(N=128, m=6, p=0.3, decay=0.85, scale=1.6, seed=1)
-    a_hat, b_hat = feature_stats(logP, info["Z"])
-    assert np.allclose(a_hat, info["alpha"])                      # swing = alpha, exactly
-    assert np.allclose(b_hat, b_hat[0])                           # no feature intercepts
-
-
-def test_feature_vectors_recover_additive_fit():
-    rng = np.random.default_rng(0)
-    Z = (rng.random((32, 5)) > 0.5).astype(float)
-    W, c = rng.normal(size=(5, 3)), rng.normal(size=3)
-    V, v0 = feature_vectors(Z @ W + c, Z)
-    assert np.allclose(V, W) and np.allclose(v0, c)
+    _, _, _, S = factor_logcond(logP)
+    assert (S[:4] > 1e-8).all() and S[4] < 1e-8
 
 
 def _wa_config():

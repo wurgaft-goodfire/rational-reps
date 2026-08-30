@@ -28,13 +28,6 @@ def factor_logcond(L):
     return Lc, U * rootS, rootS[:, None] * Vt, S
 
 
-def truncation_features(L, d):
-    """Rank-d prefix of the factorization of ``L``: the truncation oracle at budget d.
-    Returns (A (d, N), D (d, n_x)) for the identity lift."""
-    _, E, D, _ = factor_logcond(L)
-    return E[:, :d].T, D[:d]
-
-
 def fourier_basis(p):
     """Real DFT modes of ``Z_p`` as rows: cos/sin at each frequency, Nyquist once when p is even.
     The canonical gauge for group operations (modular add/mult), whose factorization is degenerate
@@ -85,240 +78,202 @@ def class_means(X, labels, n=None):
     return M.T @ X / count[:, None], count
 
 
-def group_fraction(X, labels, n=None):
-    """Share of code variance explained by ``labels`` alone: 1 when the code is a function of the
-    label, about 1/n for a code unrelated to it. ``X`` (rows = items) is centered first."""
-    X = np.asarray(X, float)
-    X = X - X.mean(0)
-    m, count = class_means(X, labels, n)
-    return float((count[:, None] * m ** 2).sum() / (X ** 2).sum())
-
-
-def frequency_plane(X, labels, k, n=None):
-    """Codes projected onto the plane that frequency ``k`` of a cyclic ``labels`` spans, with that
-    frequency's share of the class-mean energy and its circularity (sigma_2 / sigma_1 of the plane,
-    1 for a true circle). Returns ``(xy (len(X), 2), energy, circularity)``."""
-    X = np.asarray(X, float)
-    X = X - X.mean(0)
-    m, _ = class_means(X, labels, n)
-    ang = 2 * np.pi * k * np.arange(len(m)) / len(m)
-    B = np.c_[np.cos(ang), np.sin(ang)].T @ m                 # the two mode coordinates, (2, d)
-    sv = np.linalg.svd(B, compute_uv=False)
-    energy = (2 / len(m)) * (B ** 2).sum() / (m ** 2).sum()
-    return X @ np.linalg.qr(B.T)[0], float(energy), float(sv[1] / max(sv[0], 1e-12))
-
-
-def circulant_fraction(X, labels, n=None):
-    """Share of the class-mean Gram explained by its translation-invariant part: 1 when the Gram
-    depends only on the label difference (a ring), lower when it does not. Radii may differ across
-    frequencies without cost, so this tests the symmetry, not the spectrum."""
-    m, _ = class_means(np.asarray(X, float) - np.mean(X, 0), labels, n)
-    m = m / np.linalg.norm(m, axis=1, keepdims=True).mean()
-    G = m @ m.T
-    off = (np.arange(len(m))[:, None] - np.arange(len(m))[None, :]) % len(m)
-    C = np.zeros_like(G)
-    for o in range(len(m)):                                   # average each diagonal offset
-        C[off == o] = G[off == o].mean()
-    return float(1 - ((G - C) ** 2).sum() / (G ** 2).sum())
-
-
 def predicted_geometry(log_cond):
     """Predicted code ``E``, one row per input, for a log-conditional ``L[input, outcome]``."""
     return factor_logcond(log_cond)[1]
 
-##### Budgeted CE-optimal codes: truncation vs superposition #####
 
-def support_targets(Z, Lf):
-    """Target conditionals p(x|z) = softmax(Z @ Lf) per code row. (N, n_x)."""
-    from scipy.special import softmax
-    return softmax(Z @ Lf, axis=1)
+##### Superposition: predicted geometry of a rank-limited softmax (notes/superposition.tex) #####
 
-
-def expected_ce(Z, Lf, A, D, b, w=None):
-    """Weighted expected CE (nats) of the linear-code model, and the Bayes CE. Returns (ce, bayes)."""
-    from scipy.special import logsumexp, xlogy
-    Z = np.asarray(Z, float)
-    N = len(Z)
-    w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
-    P = support_targets(Z, Lf)
-    G = Z @ A.T @ D + b
-    logq = G - logsumexp(G, axis=1, keepdims=True)
-    ce = -(w[:, None] * P * logq).sum()
-    bayes = -(w[:, None] * xlogy(P, P)).sum()
-    return ce, bayes
+def feature_objective(W, alpha, p):
+    """The capacity surrogate: J = 1/2 sum_i (||E_i||^2 - alpha_i)^2
+    + p/2 sum_{i != j} <E_i, E_j>^2, with rows of W as the E_i."""
+    G = np.asarray(W, float) @ np.asarray(W, float).T
+    s = np.diag(G)
+    return float(0.5 * ((s - np.asarray(alpha, float)) ** 2).sum()
+                 + 0.5 * p * ((G ** 2).sum() - (s ** 2).sum()))
 
 
-def capacity_allocation(A, D, d):
-    """Per-outcome share of the d code dimensions: ``s`` (n_x,) summing to d. Centres the
-    softmax row-shift out of ``G = A.T @ D``, rebalances to the gauge gradient descent picks,
-    and splits the budget by squared decoder-column norm."""
-    G = np.asarray(A, float).T @ np.asarray(D, float)
-    G = G - G.mean(1, keepdims=True)                          # kill the softmax shift gauge
-    _, S, Vt = np.linalg.svd(G, full_matrices=False)
-    n2 = np.linalg.norm(np.sqrt(S[:d])[:, None] * Vt[:d], axis=0) ** 2
-    return d * n2 / n2.sum()
-
-
-def predicted_allocation(alpha, p, d):
-    """Weak-coupling closed form for the capacity share ``s`` (m,), summing to d, of a
-    feature cube with importances ``alpha`` and Bernoulli(p) features. Small logits make CE
-    a Frobenius loss, so the rank-d code is the top-d PCA of the row-centred log-conditional,
-    whose second moment is ``p^2 H aa' H + p(1-p) H diag(a^2) H`` with H the centring
-    projector. The balanced decoder carries sqrt(S), hence the sqrt(lambda) weighting."""
-    alpha = np.asarray(alpha, float)[:, None]
+def feature_sizes(alpha, p, d):
+    """Squared strengths ||E_i||^2 at budget d and the capacity level alpha_star.
+    One scalar sets three regimes: alpha_i > alpha_star gets a dedicated dimension at
+    s = alpha_i; p alpha_star < alpha_i <= alpha_star shares at s = (alpha_i - p alpha_star)
+    / (1 - p); weaker features get nothing. alpha_star spends the budget exactly
+    (sum of clipped dimension fractions = d) and is found by scanning the set breakpoints:
+    within fixed dedicated/active counts the budget is linear in alpha_star.
+    Returns (sizes (m,), alpha_star)."""
+    alpha = np.asarray(alpha, float)
     m = len(alpha)
-    H = np.eye(m) - 1.0 / m
-    Ha = H @ alpha
-    Mmat = p * p * (Ha @ Ha.T) + p * (1 - p) * (H @ np.diag(alpha[:, 0] ** 2) @ H)
-    lam, V = np.linalg.eigh(Mmat)
-    lam, V = np.maximum(lam[::-1][:d], 0.0), V[:, ::-1][:, :d]
-    n2 = (V ** 2 * np.sqrt(lam)[None, :]).sum(1)
-    return d * n2 / n2.sum()
+    if m <= d:                                        # capacity does not bind
+        return alpha.copy(), 0.0
+    a = np.sort(alpha)[::-1]
+    csum = np.concatenate([[0.0], np.cumsum(a)])
+    for n_ded in range(d):                            # dedicated count; < d leaves shared room
+        for n_act in range(n_ded + 1, m + 1):         # dedicated + shared count
+            astar = (csum[n_act] - csum[n_ded]) / ((1 - p) * (d - n_ded) + p * (n_act - n_ded))
+            ok_ded = (n_ded == 0 or a[n_ded - 1] > astar) and a[n_ded] <= astar
+            ok_act = a[n_act - 1] > p * astar and (n_act == m or a[n_act] <= p * astar)
+            if ok_ded and ok_act:
+                sizes = np.where(alpha > astar, alpha,
+                                 np.maximum(alpha - p * astar, 0.0) / (1 - p))
+                return sizes, astar
+    raise RuntimeError("no consistent capacity level; degenerate importance spectrum")
 
 
-def _prox_nuclear(R, t):
-    """Soft-threshold the spectrum of ``R`` by ``t`` (the proximal map of t*||R||_*)."""
-    U, S, Vt = np.linalg.svd(R, full_matrices=False)
-    return (U * np.maximum(S - t, 0.0)) @ Vt
+def _tight_frame(s, k):
+    """Vectors with squared norms ``s`` spread evenly over k dimensions:
+    V (n, k) with V^T V = (sum s / k) I. Feasible iff max s <= sum s / k.
+
+    Chan-Li construction: keep a pool of mutually orthogonal vectors (initially sqrt(c) axes
+    and zeros, outer-product sum c I). Serve the largest remaining target from the two pool
+    vectors straddling it: rotating an orthogonal pair reaches any norm between theirs
+    exactly, and replaces them by one leftover, preserving both the outer-product sum and
+    the pool's orthogonality."""
+    s = np.asarray(s, float)
+    n, c = len(s), s.sum() / k
+    pool = [np.sqrt(c) * np.eye(k)[i] for i in range(k)] + [np.zeros(k)] * (n - k)
+    out = np.zeros((n, k))
+    order = np.argsort(-s, kind="stable")
+    for idx in order[:-1]:
+        t = s[idx]
+        norms = np.array([v @ v for v in pool])
+        above, below = norms >= t, norms <= t
+        assert above.any() and below.any(), "no straddling pair; majorization violated"
+        i = int(np.flatnonzero(above)[np.argmin(norms[above])])   # smallest norm >= t
+        j = int(np.flatnonzero(below)[np.argmax(norms[below])])   # largest norm <= t
+        if i == j or norms[i] == norms[j]:                        # exact hit, no rotation
+            out[idx] = pool.pop(i)
+            continue
+        u, v = pool[i], pool[j]
+        co = np.sqrt((t - norms[j]) / (norms[i] - norms[j]))
+        si = np.sqrt(1.0 - co ** 2)
+        out[idx] = co * u + si * v
+        pool = [w for l, w in enumerate(pool) if l not in (i, j)] + [-si * u + co * v]
+    out[order[-1]] = pool[0]
+    return out
 
 
-def _solve_penalized_ce(P, X, w, lam, n_pen, R0, max_iter=10000, tol=1e-10):
-    """FISTA global minimum over R of sum_x w_x CE(P[x], softmax(X[x] @ R)) plus
-    lam * ||R[:n_pen]||_* (rows past n_pen — the bias row — are unpenalized). Returns R."""
-    from scipy.special import logsumexp
-    step = 2.0 / np.linalg.eigvalsh(X.T @ (X * w[:, None]))[-1]   # 1/L, L = lmax(X'WX)/2
-
-    def objective(R):
-        G = X @ R
-        ce = (w * (logsumexp(G, axis=1) - (P * G).sum(1))).sum()
-        return ce + lam * np.linalg.svd(R[:n_pen], compute_uv=False).sum()
-
-    R, Y, t, f_prev = R0.copy(), R0.copy(), 1.0, np.inf
-    for it in range(max_iter):
-        G = X @ Y
-        Q = np.exp(G - logsumexp(G, axis=1, keepdims=True))
-        Rn = Y - step * (X.T @ ((Q - P) * w[:, None]))
-        Rn[:n_pen] = _prox_nuclear(Rn[:n_pen], step * lam)
-        t_next = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * t * t))
-        Y = Rn + ((t - 1.0) / t_next) * (Rn - R)
-        R, t = Rn, t_next
-        if it % 20 == 19:
-            f = objective(R)
-            if f > f_prev:                                        # restart the momentum
-                Y, t = R.copy(), 1.0
-            elif f_prev - f < tol * max(1.0, abs(f)):
-                break
-            f_prev = f
-    return R
+def feature_directions(sizes, own_axis, d):
+    """Vectors W (m, d) realizing the sizes: dedicated features on orthonormal axes, the
+    rest an even spread over the remaining dimensions. Zero rows for dropped features."""
+    sizes = np.asarray(sizes, float)
+    own = np.flatnonzero(own_axis)
+    shared = np.flatnonzero(~np.asarray(own_axis, bool) & (sizes > 0))
+    W = np.zeros((len(sizes), d))
+    W[own, np.arange(len(own))] = np.sqrt(sizes[own])
+    if len(shared):
+        W[shared, len(own):] = _tight_frame(sizes[shared], d - len(own))
+    return W
 
 
-def _polish_features(A0, D0, b0, Z, P, w, fit_bias, maxiter=2000):
-    """Joint L-BFGS on exact weighted CE from a fixed init (deterministic basin descent).
-    Returns (A, D, b, ce)."""
-    from scipy.special import logsumexp
+def predicted_features(alpha, p, d):
+    """The full prediction, no training: capacity level, sizes, directions.
+    Returns (W (m, d), sizes (m,), own_axis (m,), alpha_star)."""
+    alpha = np.asarray(alpha, float)
+    sizes, astar = feature_sizes(alpha, p, d)
+    own_axis = alpha > astar
+    return feature_directions(sizes, own_axis, d), sizes, own_axis, astar
+
+
+def fitted_features(alpha, p, d, n_starts=6, seed=0):
+    """Best W found by minimizing feature_objective directly (L-BFGS, several starts).
+    A brute-force reference for the closed form, not a prediction."""
     from scipy.optimize import minimize
-    (d, m), nx = A0.shape, P.shape[1]
+    alpha = np.asarray(alpha, float)
+    m = len(alpha)
 
-    def unpack(theta):
-        A = theta[:d * m].reshape(d, m)
-        D = theta[d * m:d * m + d * nx].reshape(d, nx)
-        b = theta[d * m + d * nx:] if fit_bias else np.zeros(nx)
-        return A, D, b
+    def fg(f):
+        W = f.reshape(m, d)
+        G = W @ W.T
+        s = np.diag(G).copy()
+        off = G - np.diag(s)
+        J = 0.5 * ((s - alpha) ** 2).sum() + 0.5 * p * (off ** 2).sum()
+        grad = 2.0 * (s - alpha)[:, None] * W + 2.0 * p * (off @ W)
+        return J, grad.ravel()
 
-    def fg(theta):
-        A, D, b = unpack(theta)
-        G = Z @ A.T @ D + b
-        Q = np.exp(G - logsumexp(G, 1, keepdims=True))
-        ce = (w * (logsumexp(G, 1) - (P * G).sum(1))).sum()
-        E = (Q - P) * w[:, None]
-        grads = [(Z.T @ E @ D.T).T.ravel(), (A @ Z.T @ E).ravel()]
-        if fit_bias:
-            grads.append(E.sum(0))
-        return ce, np.concatenate(grads)
-
-    theta0 = np.concatenate([A0.ravel(), D0.ravel()] + ([b0] if fit_bias else []))
-    r = minimize(fg, theta0, jac=True, method="L-BFGS-B", options=dict(maxiter=maxiter))
-    A, D, b = unpack(r.x)
-    return A, D, b, r.fun
+    rng = np.random.default_rng(seed)
+    best = None
+    for _ in range(n_starts):
+        r = minimize(fg, 0.5 * rng.normal(size=m * d), jac=True, method="L-BFGS-B",
+                     options=dict(maxiter=20000, maxfun=30000, ftol=1e-15, gtol=1e-12))
+        if best is None or r.fun < best.fun:
+            best = r
+    return best.x.reshape(m, d)
 
 
-def nuclear_features(Lf, Z, d, w=None, fit_bias=True, path=(0.5, 0.2, 0.08, 0.03, 0.01, 0.003)):
-    """Rank-d code via the nuclear-norm regularization path of the exact-CE fit: the convex
-    program CE(Z R + b) + lam*||R||_* is solved globally along a decreasing lam ladder
-    (warm-started continuation), each solution is truncated to rank d and polished by joint
-    L-BFGS, plus one polish from a small fixed init (the basin training's small-init
-    dynamics reach, which the path's truncations can miss); everything is deterministic.
-    Best exact CE wins; the scale is split balanced. Returns (A (d, m), D (d, n_x), b (n_x), S)."""
-    Lf = np.asarray(Lf, float); Z = np.asarray(Z, float)
-    N, m = Z.shape
-    w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
-    P = support_targets(Z, Lf)
-    nx = P.shape[1]
-    X = np.column_stack([Z, np.ones(N)]) if fit_bias else Z
-    q = w @ P                                                     # bias-only optimum
-    Q0 = np.tile(q if fit_bias else np.full(nx, 1.0 / nx), (N, 1))
-    lam_hi = np.linalg.norm(Z.T @ ((Q0 - P) * w[:, None]), 2)     # above: R = 0
-
-    R, best = np.zeros((X.shape[1], nx)), None
-    for frac in path:
-        R = _solve_penalized_ce(P, X, w, frac * lam_hi, m, R)
-        U, S, Vt = np.linalg.svd(R[:m])
-        rootS = np.sqrt(S[:d])
-        b0 = R[m] if fit_bias else np.zeros(nx)
-        fit = _polish_features((U[:, :d] * rootS).T, rootS[:, None] * Vt[:d], b0,
-                               Z, P, w, fit_bias)
-        if best is None or fit[3] < best[3]:
-            best = fit
-    rng = np.random.default_rng(0)
-    fit = _polish_features(0.01 * rng.normal(size=(d, m)), 0.01 * rng.normal(size=(d, nx)),
-                           np.zeros(nx), Z, P, w, fit_bias)
-    if fit[3] < best[3]:
-        best = fit
-    A, D, b, _ = best
-    U2, S2, V2t = np.linalg.svd(A.T @ D)                          # plain balanced split
-    rootS = np.sqrt(S2[:d])
-    return (U2[:, :d] * rootS).T, rootS[:, None] * V2t[:d], b, S2[:d]
-
-
-def feature_vectors(H, Z, w=None):
-    """Weighted least-squares additive fit ``H ~ Z V + 1 v0``: effective feature vectors and
-    the constant (mean-code) component. Returns (V (m, d), v0 (d,))."""
-    H = np.asarray(H, float); Z = np.asarray(Z, float)
-    N = len(Z)
-    w = np.full(N, 1.0 / N) if w is None else np.asarray(w, float) / np.sum(w)
-    X = np.column_stack([Z, np.ones(N)]) * np.sqrt(w)[:, None]
-    V = np.linalg.lstsq(X, np.sqrt(w)[:, None] * H, rcond=None)[0]
+def feature_vectors(H, Z):
+    """Least-squares additive fit H ~ Z V + 1 v0: the vector each feature writes into the
+    code. Returns (V (m, d), v0 (d,))."""
+    Z = np.asarray(Z, float)
+    X = np.column_stack([Z, np.ones(len(Z))])
+    V = np.linalg.lstsq(X, np.asarray(H, float), rcond=None)[0]
     return V[:-1], V[-1]
 
 
-def feature_stats(G, Z):
-    """Gauge-free per-feature swing and intercept of logits ``G`` (N, m) on 0/1 features
-    ``Z`` (N, m): least squares G[x, i] ~ a_i Z[x, i] + b_i + c_x, intercepts pinned by
-    mean(c) = 0. Returns (a_hat (m,), b_hat (m,))."""
-    G = np.asarray(G, float); Z = np.asarray(Z, float)
-    N, m = Z.shape
-    per_attribute = np.tile(np.eye(m), (N, 1))                    # one indicator column per feature
-    X = np.hstack([Z.ravel()[:, None] * per_attribute, per_attribute, np.repeat(np.eye(N), m, 0)])
-    theta = np.linalg.lstsq(X, G.ravel(), rcond=None)[0]
-    return theta[:m], theta[m:2 * m] + theta[2 * m:].mean()
+def balanced_code(E, readout):
+    """Gauge-fix a trained (code, readout) pair: row-centre the logits (the softmax shift
+    gauge) and split the SVD scale evenly (the balance gradient descent finds).
+    Returns (H (N, d), D (m, d)) with H @ D^T the centred logits."""
+    G = np.asarray(E, float) @ np.asarray(readout, float).T
+    G = G - G.mean(1, keepdims=True)
+    d = E.shape[1]
+    U, S, Vt = np.linalg.svd(G, full_matrices=False)
+    root = np.sqrt(S[:d])
+    return U[:, :d] * root, (root[:, None] * Vt[:d]).T
 
 
-def superposition_measure(A):
-    """Elhage et al.'s per-feature superposition score sum_{j != i} (a_hat_i . a_j)^2 for
-    feature columns A (d, m); 0 = the feature has a dimension to itself."""
-    A = np.asarray(A, float)
-    nrm = np.linalg.norm(A, axis=0)
-    Ahat = A / np.where(nrm > 0, nrm, 1.0)
-    G = Ahat.T @ A
-    return (G ** 2).sum(1) - np.diag(G) ** 2
+def logit_map(L, Z):
+    """Additive fit of the row-centred logits, L_c ~ Z R + 1 b^T: the gauge-invariant
+    feature -> output map. Returns (R (m, m), b (m,), r2)."""
+    L = np.asarray(L, float)
+    L = L - L.mean(1, keepdims=True)
+    X = np.column_stack([np.asarray(Z, float), np.ones(len(L))])
+    C = np.linalg.lstsq(X, L, rcond=None)[0]
+    r2 = 1.0 - ((L - X @ C) ** 2).sum() / (L ** 2).sum()
+    return C[:-1], C[-1], float(r2)
 
 
-def _row_space(M, tol=1e-9):
-    U, s, _ = np.linalg.svd(np.asarray(M, float).T, full_matrices=False)
-    return U[:, s > tol * s[0]]
+def leverage(W):
+    """Hat matrix of the rows of W: P = W (W^T W)^+ W^T. Invariant to any invertible
+    transform of the columns; diag in [0, 1] sums to rank(W). Returns (diag (m,), P)."""
+    W = np.asarray(W, float)
+    P = W @ np.linalg.pinv(W.T @ W) @ W.T
+    return np.diag(P).copy(), P
 
 
-def principal_angles(M1, M2):
-    """Principal angles (radians, ascending) between the row spaces of M1 and M2."""
-    s = np.linalg.svd(_row_space(M1).T @ _row_space(M2), compute_uv=False)
-    return np.arccos(np.clip(s, -1.0, 1.0))
+def _fantope_project(A, d):
+    """Nearest symmetric H to A with 0 <= H <= I and tr H = d (eigenvalue water-filling)."""
+    lam, V = np.linalg.eigh(A)
+    lo, hi = lam.min() - 1.0, lam.max()
+    for _ in range(100):
+        nu = 0.5 * (lo + hi)
+        lo, hi = (lo, nu) if np.clip(lam - nu, 0.0, 1.0).sum() < d else (nu, hi)
+    return (V * np.clip(lam - 0.5 * (lo + hi), 0.0, 1.0)) @ V.T
+
+
+def fantope_leverage(alpha, p, d, n_samples=65536, iters=2000, step=0.05, seed=0):
+    """Convex capacity allocation: minimize E_z KL(p*(.|z) || softmax(H J (alpha o z)))
+    over the Fantope {0 <= H <= I, tr H = d, H 1 = 0}, by projected gradient in a basis
+    of 1-perp. Returns (h (m,) = diag H*, H* (m, m))."""
+    from scipy.special import logsumexp
+    alpha = np.asarray(alpha, float)
+    m = len(alpha)
+    rng = np.random.default_rng(seed)
+    Z = (rng.random((n_samples, m)) < p).astype(float)
+    G = Z * alpha
+    P = np.exp(G - logsumexp(G, axis=1, keepdims=True))
+    Q = np.linalg.svd(np.eye(m) - 1.0 / m)[0][:, :m - 1]
+    LQ = (G - G.mean(1, keepdims=True)) @ Q
+    H = (d / (m - 1)) * np.eye(m - 1)
+    f_prev = np.inf
+    for _ in range(iters):
+        L = LQ @ H @ Q.T
+        f = (logsumexp(L, axis=1) - (P * L).sum(1)).mean()
+        if f > f_prev + 1e-12:
+            step *= 0.5
+        f_prev = f
+        q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
+        grad = LQ.T @ ((q - P) @ Q) / n_samples
+        H = _fantope_project(H - step * 0.5 * (grad + grad.T), d)
+    Hf = Q @ H @ Q.T
+    return np.diag(Hf).copy(), Hf

@@ -1,0 +1,1205 @@
+\section{Capacity, Interference, and Superposition}
+\label{sec:superposition}
+
+We consider a state with \(m\) independent binary coordinates,
+\[
+z=(z_1,\ldots,z_m),
+\qquad
+z_i\overset{\mathrm{iid}}{\sim}\operatorname{Bernoulli}(p).
+\]
+
+The output is a feature label
+\[
+x\in\{1,\ldots,m\},
+\]
+and coordinate \(z_i\) raises the target logit of output \(x=i\) by
+\(\alpha_i>0\):
+\[
+p_\star(x=i\mid z)
+=
+\frac{\exp(\alpha_i z_i)}
+{\sum_j\exp(\alpha_j z_j)}.
+\]
+Equivalently, up to the row-wise softmax gauge,
+\[
+L(z,i)=\alpha_i z_i.
+\]
+
+
+\subsection{Embedding the state coordinates}
+
+Associate each state coordinate \(z_i\) with an activation vector
+\[
+E_i\in\mathbb R^d.
+\]
+Collecting these vectors as
+\[
+E=[E_1,\ldots,E_m]\in\mathbb R^{d\times m},
+\]
+the state is represented by
+\begin{equation}
+\boxed{
+E(z)=Ez=\sum_{i=1}^m z_iE_i.
+}
+\label{eq:state-embedding}
+\end{equation}
+
+Thus each coordinate is embedded separately and weighted by its current
+value. Since \(z_i\in\{0,1\}\), coordinate \(i\) contributes either nothing
+or the vector \(E_i\).
+
+The desired map from state coordinates to output logits is the diagonal
+matrix
+\[
+\operatorname{diag}(\alpha_1,\ldots,\alpha_m).
+\]
+Appendix~\ref{app:superposition-derivation} shows that the optimal balanced
+rank-\(d\) approximation to this map may be chosen positive semidefinite,
+and therefore written as
+\[
+E^\top E.
+\]
+
+The model logit for output \(i\) is consequently
+\[
+\widehat L(z,i)
+=
+\langle E(z),E_i\rangle
+=
+z_i\|E_i\|^2
++
+\sum_{j\neq i}z_j\langle E_j,E_i\rangle.
+\]
+
+The first term is the intended effect of coordinate \(i\). The remaining
+terms are unintended effects from other coordinates.
+
+\subsection{A local model of capacity}
+
+Near the target, we approximate cross-entropy quadratically.
+
+An error in coordinate \(i\)'s intended effect matters when
+\[
+z_i=1,
+\]
+which occurs with probability \(p\).
+
+An unintended effect of coordinate \(j\) on output \(i\) is present when
+\(z_j=1\), but it matters primarily when output \(i\) is relevant, which in
+this task occurs approximately when \(z_i=1\). Since the coordinates are
+independent, this coactivation event has probability
+\[
+\Pr(z_i=z_j=1)=p^2.
+\]
+
+Cross-coordinate interference therefore has relative cost
+\[
+\frac{p^2}{p}=p.
+\]
+
+This gives the capacity surrogate
+\begin{equation}
+\boxed{
+\mathcal J(E)
+=
+\frac12\sum_i
+\left(
+\|E_i\|^2-\alpha_i
+\right)^2
++
+\frac p2
+\sum_{i\neq j}
+\langle E_i,E_j\rangle^2.
+}
+\label{eq:superposition-objective}
+\end{equation}
+
+The first term rewards representing each coordinate at its desired
+strength. The second penalizes interference between coordinate embeddings
+sharing the same \(d\)-dimensional activation space.
+
+\subsection{Minimum-interference geometry}
+
+For fixed magnitudes \(\|E_i\|\), only the interference term depends on the
+directions of the vectors. Using
+\[
+\sum_{i,j}\langle E_i,E_j\rangle^2
+=
+\left\|
+\sum_iE_iE_i^\top
+\right\|_F^2,
+\]
+we see that interference is minimized by making the eigenvalues of
+\[
+\sum_iE_iE_i^\top
+\]
+as equal as the prescribed magnitudes permit.
+
+The strongest coordinates may be too large to fit into a flat spectrum.
+They therefore receive dedicated mutually orthogonal directions. The
+remaining represented coordinates form a tight frame in the remaining
+subspace.
+
+Let
+\[
+\alpha_\star
+\]
+denote the common energy carried by each shared dimension. The shared
+coordinate embeddings satisfy
+\begin{equation}
+\boxed{
+\sum_{i\in\mathcal S}E_iE_i^\top
+=
+\alpha_\star I,
+}
+\label{eq:shared-frame}
+\end{equation}
+where \(\mathcal S\) is the set of coordinates represented in superposition
+and the identity acts on the subspace left after assigning the dedicated
+directions.
+
+For a shared coordinate, differentiating
+Equation~\eqref{eq:superposition-objective} with respect to
+\(\|E_i\|^2\) gives
+\[
+0
+=
+\left(
+\|E_i\|^2-\alpha_i
+\right)
++
+p
+\left(
+\alpha_\star-\|E_i\|^2
+\right).
+\]
+Hence
+\[
+\|E_i\|^2
+=
+\frac{\alpha_i-p\alpha_\star}{1-p}.
+\]
+
+This value is positive only when
+\[
+\alpha_i>p\alpha_\star,
+\]
+and it fits inside the shared frame only when
+\[
+\|E_i\|^2\leq\alpha_\star
+\iff
+\alpha_i\leq\alpha_\star.
+\]
+
+The optimal represented magnitude is therefore
+\begin{equation}
+\boxed{
+\|E_i\|^2
+=
+\begin{cases}
+\alpha_i,
+&
+\alpha_i>\alpha_\star,
+\\[2mm]
+\dfrac{\alpha_i-p\alpha_\star}{1-p},
+&
+p\alpha_\star<\alpha_i\leq\alpha_\star,
+\\[3mm]
+0,
+&
+\alpha_i\leq p\alpha_\star.
+\end{cases}
+}
+\label{eq:superposition-magnitudes}
+\end{equation}
+
+Equivalently,
+\begin{equation}
+\boxed{
+\begin{aligned}
+\alpha_i>\alpha_\star
+&\quad\Longrightarrow\quad
+\text{dedicated orthogonal direction},
+\\
+p\alpha_\star<\alpha_i\leq\alpha_\star
+&\quad\Longrightarrow\quad
+\text{represented in superposition},
+\\
+\alpha_i\leq p\alpha_\star
+&\quad\Longrightarrow\quad
+\text{not represented}.
+\end{aligned}
+}
+\label{eq:superposition-regimes}
+\end{equation}
+
+A dedicated coordinate creates no interference and therefore receives its
+full unconstrained magnitude \(\alpha_i\). A shared coordinate receives the
+strength remaining after paying the common interference cost
+\(p\alpha_\star\). A weaker coordinate has
+\[
+E_i=0.
+\]
+
+\subsection{The dimensional budget}
+
+A dedicated coordinate consumes one complete dimension.
+
+A shared coordinate consumes the fraction
+\[
+\frac{\|E_i\|^2}{\alpha_\star}
+=
+\frac{\alpha_i/\alpha_\star-p}{1-p}
+\]
+of one shared dimension. Since the representation has total dimension \(d\),
+the capacity level \(\alpha_\star\) is determined by
+\begin{equation}
+\boxed{
+\sum_{i=1}^m
+\left[
+\frac{\alpha_i/\alpha_\star-p}{1-p}
+\right]_0^1
+=
+d,
+}
+\label{eq:dimension-budget}
+\end{equation}
+where
+\[
+[u]_0^1
+=
+\min\{1,\max\{0,u\}\}.
+\]
+
+The clipped term in Equation~\eqref{eq:dimension-budget} is the fraction of
+one dimension allocated to coordinate \(i\):
+\[
+1
+\quad\text{if it is dedicated},
+\qquad
+(0,1)
+\quad\text{if it is superposed},
+\qquad
+0
+\quad\text{if it is dropped}.
+\]
+
+Thus one scalar, \(\alpha_\star\), determines which coordinates are
+dedicated, which are represented in superposition, and which are absent.
+
+The theory fixes the norms, the dedicated directions, and the shared frame
+operator, but generally not a unique orientation of the shared tight frame.
+Different frame realizations attain the same quadratic loss.
+
+\subsection{Correlated coordinates}
+
+If the original coordinates of \(z\) are correlated, we first change to
+orthogonal predictive coordinates \(z'\). Let
+\[
+\Sigma=\operatorname{Cov}(z)
+\]
+and take
+\[
+\operatorname{diag}(\alpha)\Sigma^{1/2}
+=
+U\operatorname{diag}(\beta)V^\top.
+\]
+On the support of \(\Sigma\), define
+\[
+z'
+=
+V^\top\Sigma^{-1/2}
+\left(
+z-\mathbb E[z]
+\right).
+\]
+
+Then
+\[
+\mathbb E[z'z'^\top]=I
+\]
+and, in the corresponding output-mode basis,
+\[
+U^\top L(z,\cdot)
+=
+\operatorname{diag}(\beta)z'
+\]
+up to the output bias and softmax gauge.
+
+Thus \(z'\) is a new coordinate system on the same state space, and
+\(\beta_k\) is the predictive strength of coordinate \(z'_k\).
+
+The effective relative cost of interference must also be recomputed in
+these coordinates. Denoting it by \(p_{\mathrm{eff}}\), the same theory
+applies under
+\[
+\alpha_i\longrightarrow\beta_k,
+\qquad
+p\longrightarrow p_{\mathrm{eff}}.
+\]
+The construction of \(z'\) and \(p_{\mathrm{eff}}\) is given in
+Appendix~\ref{app:correlated-superposition}.
+
+
+\appendix
+
+\section{Derivation of the Superposition Result}
+\label{app:superposition-derivation}
+
+\subsection{From cross-entropy to the quadratic surrogate}
+
+Before imposing balance, let
+\[
+E=[E_1,\ldots,E_m]\in\mathbb R^{d\times m}
+\]
+contain the activation effects of the state coordinates, and let
+\[
+D=[D_1,\ldots,D_m]\in\mathbb R^{d\times m}
+\]
+contain the output decoder vectors.
+
+The representation is
+\[
+E(z)=\sum_j z_jE_j,
+\]
+and the predicted logit for output \(i\) is
+\[
+\widehat L(z,i)
+=
+\langle E(z),D_i\rangle
+=
+\sum_j z_j\langle E_j,D_i\rangle.
+\]
+
+Since the target logit is
+\[
+L(z,i)=\alpha_i z_i,
+\]
+the logit error is
+\begin{equation}
+\delta_i(z)
+=
+z_i
+\left(
+\langle E_i,D_i\rangle-\alpha_i
+\right)
++
+\sum_{j\neq i}
+z_j\langle E_j,D_i\rangle.
+\label{eq:general-logit-error}
+\end{equation}
+
+The exact second-order expansion of cross-entropy around the target is
+\begin{equation}
+\Delta\mathcal L
+=
+\frac12
+\mathbb E_z
+\left[
+\delta(z)^\top
+F(z)
+\delta(z)
+\right]
++
+o(\|\delta\|^2),
+\label{eq:fisher-expansion}
+\end{equation}
+where
+\[
+F(z)
+=
+\operatorname{diag}
+\bigl(
+p_\star(\cdot\mid z)
+\bigr)
+-
+p_\star(\cdot\mid z)
+p_\star(\cdot\mid z)^\top
+\]
+is the softmax Fisher matrix.
+
+To obtain the analytic capacity model, we make three local approximations:
+
+\begin{enumerate}
+    \item retain the dominant diagonal output curvature \(F_{ii}(z)\);
+    \item neglect cross terms between distinct entries of the logit-error
+    matrix;
+    \item approximate intended-effect curvatures as equal across the
+    represented coordinates.
+\end{enumerate}
+
+An error in the intended effect of coordinate \(i\) has curvature
+\[
+\mathbb E_z
+\left[
+F_{ii}(z)z_i
+\right].
+\]
+
+An unintended effect of coordinate \(j\) on output \(i\), with \(j\neq i\),
+has curvature
+\[
+\mathbb E_z
+\left[
+F_{ii}(z)z_j
+\right].
+\]
+
+For this DGP, output \(i\) is most relevant when \(z_i=1\). Thus
+\(F_{ii}(z)\) is concentrated mainly on examples with \(z_i=1\). Since the
+coordinates are independent,
+\[
+\mathbb E_z
+\left[
+F_{ii}(z)z_j
+\right]
+\approx
+p\,
+\mathbb E_z
+\left[
+F_{ii}(z)z_i
+\right],
+\qquad
+j\neq i.
+\]
+
+Equivalently, an intended-effect error is costly on an event of probability
+\(p\), whereas an unintended cross-coordinate effect is costly primarily on
+the coactivation event
+\[
+z_i=z_j=1,
+\]
+whose probability is \(p^2\). Their relative cost is therefore \(p\).
+
+After dividing by the common intended-effect curvature, we obtain
+\begin{equation}
+\mathcal J(E,D)
+=
+\frac12
+\sum_i
+\left(
+\langle E_i,D_i\rangle-\alpha_i
+\right)^2
++
+\frac p2
+\sum_{i\neq j}
+\langle E_j,D_i\rangle^2.
+\label{eq:encoder-decoder-surrogate}
+\end{equation}
+
+For the remainder of the derivation, write
+\[
+G=E^\top D.
+\]
+Then
+\[
+G_{ji}
+=
+\langle E_j,D_i\rangle
+\]
+and
+\[
+\operatorname{rank}(G)\leq d.
+\]
+
+Equation~\eqref{eq:encoder-decoder-surrogate} is therefore equivalent to
+\begin{equation}
+\boxed{
+\mathcal J(G)
+=
+\frac12
+\sum_i
+(G_{ii}-\alpha_i)^2
++
+\frac p2
+\sum_{i\neq j}
+G_{ij}^2,
+\qquad
+\operatorname{rank}(G)\leq d.
+}
+\label{eq:rank-constrained-surrogate}
+\end{equation}
+
+Thus the model is approximating the diagonal coordinate-to-output map
+\[
+\operatorname{diag}(\alpha)
+\]
+with a rank-\(d\) matrix. Diagonal errors are failures to represent intended
+coordinate effects; off-diagonal entries are interference.
+
+\subsection{Why the optimum is a Gram matrix}
+
+Fix nonnegative diagonal values
+\[
+G_{ii}=g_i.
+\]
+At fixed diagonal, minimizing
+Equation~\eqref{eq:rank-constrained-surrogate} is equivalent to minimizing
+\[
+\|G\|_F^2,
+\]
+because
+\[
+\sum_{i\neq j}G_{ij}^2
+=
+\|G\|_F^2-\sum_i g_i^2.
+\]
+
+We first consider the regular case. Let
+\[
+S=\sum_i g_i
+\]
+and suppose
+\[
+\max_i g_i\leq\frac{S}{d}.
+\]
+
+For every matrix with rank at most \(d\),
+\[
+|\operatorname{tr}G|
+\leq
+\|G\|_\star
+\leq
+\sqrt d\,\|G\|_F.
+\]
+Since
+\[
+\operatorname{tr}G=S,
+\]
+we obtain
+\begin{equation}
+\|G\|_F^2
+\geq
+\frac{S^2}{d}.
+\label{eq:frobenius-lower-bound}
+\end{equation}
+
+Let
+\[
+\lambda=\frac{S}{d}.
+\]
+The numbers
+\[
+\frac{g_i}{\lambda}
+\]
+lie in \([0,1]\) and sum to \(d\). By the Schur--Horn theorem, there exists
+a rank-\(d\) orthogonal projection \(Q\) satisfying
+\[
+Q_{ii}=\frac{g_i}{\lambda}.
+\]
+
+The matrix
+\[
+G=\lambda Q
+\]
+has the required diagonal and attains
+Equation~\eqref{eq:frobenius-lower-bound}. It is symmetric positive
+semidefinite and may therefore be written
+\[
+G=E^\top E.
+\]
+
+Its balanced factorization uses the same vectors on the embedding and
+decoder sides, up to a common rotation.
+
+If instead
+\[
+\max_i g_i>\frac{S}{d},
+\]
+a flat rank-\(d\) spectrum is impossible. The largest diagonal entry is too
+large to share the available dimensions evenly. The minimum assigns that
+entry its own orthogonal eigendirection, removes one dimension, and repeats
+the same argument on the remaining diagonal entries.
+
+Recursing produces:
+
+\begin{enumerate}
+    \item a set of the largest entries, each with its own orthogonal
+    direction;
+    \item a remaining positive-semidefinite block with equal nonzero
+    eigenvalues.
+\end{enumerate}
+
+Thus the minimum of the general rank-constrained problem may be chosen
+positive semidefinite. In balanced coordinates we may write
+\[
+G=E^\top E,
+\]
+and Equation~\eqref{eq:rank-constrained-surrogate} becomes
+\begin{equation}
+\boxed{
+\mathcal J(E)
+=
+\frac12
+\sum_i
+\left(
+\|E_i\|^2-\alpha_i
+\right)^2
++
+\frac p2
+\sum_{i\neq j}
+\langle E_i,E_j\rangle^2.
+}
+\label{eq:gram-surrogate}
+\end{equation}
+
+The alignment of embedding and decoder vectors is therefore a consequence
+of the symmetric minimum-interference solution, rather than an additional
+assumption.
+
+\subsection{The shared tight frame}
+
+Suppose \(r\) coordinates receive dedicated directions, leaving
+\[
+d-r
+\]
+dimensions for the shared coordinates.
+
+Let \(\alpha_\star\) denote the energy in each remaining dimension. The
+shared embeddings satisfy
+\begin{equation}
+\sum_{i\in\mathcal S}E_iE_i^\top
+=
+\alpha_\star I_{d-r}.
+\label{eq:appendix-tight-frame}
+\end{equation}
+
+The total shared interference is
+\begin{align}
+\sum_{\substack{i,j\in\mathcal S\\i\neq j}}
+\langle E_i,E_j\rangle^2
+&=
+\left\|
+\sum_{i\in\mathcal S}E_iE_i^\top
+\right\|_F^2
+-
+\sum_{i\in\mathcal S}\|E_i\|^4
+\\
+&=
+(d-r)\alpha_\star^2
+-
+\sum_{i\in\mathcal S}\|E_i\|^4.
+\label{eq:shared-interference}
+\end{align}
+
+Moreover,
+\[
+\sum_{i\in\mathcal S}\|E_i\|^2
+=
+(d-r)\alpha_\star.
+\]
+
+For an active shared coordinate, differentiating the objective with respect
+to \(\|E_i\|^2\) gives
+\[
+0
+=
+\left(
+\|E_i\|^2-\alpha_i
+\right)
++
+p
+\left(
+\alpha_\star-\|E_i\|^2
+\right).
+\]
+
+Hence
+\begin{equation}
+\boxed{
+\|E_i\|^2
+=
+\frac{\alpha_i-p\alpha_\star}{1-p}.
+}
+\label{eq:appendix-shared-magnitude}
+\end{equation}
+
+\subsection{The three regimes}
+
+Equation~\eqref{eq:appendix-shared-magnitude} must satisfy both
+\[
+\|E_i\|^2>0
+\]
+and
+\[
+\|E_i\|^2\leq\alpha_\star.
+\]
+
+The first condition gives
+\[
+\alpha_i>p\alpha_\star.
+\]
+
+The second gives
+\[
+\alpha_i\leq\alpha_\star.
+\]
+
+Therefore the shared regime is
+\[
+p\alpha_\star<\alpha_i\leq\alpha_\star.
+\]
+
+If
+\[
+\alpha_i\leq p\alpha_\star,
+\]
+the derivative of the objective at \(\|E_i\|^2=0\) is nonnegative, so the
+coordinate is dropped:
+\[
+E_i=0.
+\]
+
+If
+\[
+\alpha_i>\alpha_\star,
+\]
+the stationary shared magnitude would exceed the frame level:
+\[
+\|E_i\|^2>\alpha_\star.
+\]
+The coordinate therefore receives a dedicated orthogonal direction. Since
+it then creates no interference, its magnitude minimizes only
+\[
+\frac12
+\left(
+\|E_i\|^2-\alpha_i
+\right)^2,
+\]
+giving
+\[
+\|E_i\|^2=\alpha_i.
+\]
+
+Combining the cases,
+\[
+\boxed{
+\|E_i\|^2
+=
+\begin{cases}
+\alpha_i,
+&
+\alpha_i>\alpha_\star,
+\\[2mm]
+\dfrac{\alpha_i-p\alpha_\star}{1-p},
+&
+p\alpha_\star<\alpha_i\leq\alpha_\star,
+\\[3mm]
+0,
+&
+\alpha_i\leq p\alpha_\star.
+\end{cases}
+}
+\]
+
+\subsection{Solving the dimensional budget}
+
+A dedicated coordinate consumes one dimension.
+
+A shared coordinate consumes the fraction
+\[
+\frac{\|E_i\|^2}{\alpha_\star}
+=
+\frac{\alpha_i/\alpha_\star-p}{1-p}
+\]
+of one dimension.
+
+Therefore
+\begin{equation}
+\boxed{
+\sum_i
+\left[
+\frac{\alpha_i/\alpha_\star-p}{1-p}
+\right]_0^1
+=
+d.
+}
+\label{eq:appendix-budget}
+\end{equation}
+
+The left-hand side is continuous and nonincreasing in \(\alpha_\star\).
+Whenever at least one coordinate is shared, the solution is unique.
+
+Once the dedicated and shared sets are fixed, the solution is explicit.
+Let
+\[
+\mathcal D
+=
+\{i:\alpha_i>\alpha_\star\},
+\]
+and
+\[
+\mathcal S
+=
+\{i:p\alpha_\star<\alpha_i\leq\alpha_\star\}.
+\]
+Then
+\begin{equation}
+\boxed{
+\alpha_\star
+=
+\frac{
+\sum_{i\in\mathcal S}\alpha_i
+}{
+(1-p)\bigl(d-|\mathcal D|\bigr)
++
+p|\mathcal S|
+}.
+}
+\label{eq:alpha-star-closed-form}
+\end{equation}
+
+The sets change only when \(\alpha_\star\) crosses one of the breakpoints
+\[
+\alpha_i
+\qquad\text{or}\qquad
+\frac{\alpha_i}{p}.
+\]
+Thus the exact solution can be obtained by sorting these breakpoints and
+checking the corresponding closed-form candidate; no iterative
+self-consistency solve is required.
+
+If capacity does not bind, all nonzero coordinates may instead be
+represented orthogonally with
+\[
+\|E_i\|^2=\alpha_i.
+\]
+
+\subsection{Additional geometric consequences}
+
+For a shared coordinate,
+\begin{align}
+\sum_{j\neq i}
+\langle E_i,E_j\rangle^2
+&=
+E_i^\top
+\left(
+\sum_{j\in\mathcal S}E_jE_j^\top
+\right)
+E_i
+-
+\|E_i\|^4
+\\
+&=
+\alpha_\star\|E_i\|^2-\|E_i\|^4.
+\end{align}
+
+Thus interference vanishes both when
+\[
+\|E_i\|^2=0
+\]
+and when
+\[
+\|E_i\|^2=\alpha_\star.
+\]
+Only coordinates occupying a fractional share of a dimension experience
+interference.
+
+If \(r\) coordinates are dedicated, the nonzero spectrum of the optimal
+coordinate-to-output map is
+\[
+\boxed{
+\operatorname{spec}_+(E^\top E)
+=
+\{\alpha_i:\alpha_i>\alpha_\star\}
+\cup
+\{
+\underbrace{
+\alpha_\star,\ldots,\alpha_\star
+}_{d-r\text{ times}}
+\}.
+}
+\]
+
+Minimum interference therefore produces strong-coordinate spectral spikes
+above a flat shared spectrum.
+
+The shared frame is generally not unique. Schur--Horn guarantees existence
+of a frame with the predicted norms and frame operator. When explicit
+vectors are needed, a constructive Chan--Li procedure may be used to
+produce one such realization. The particular frame produced by that
+procedure is not uniquely predicted by the quadratic objective.
+
+\subsection{Literal activation scale}
+
+The vectors \(E_i\) above are expressed in balanced feature-effect units.
+
+Suppose the state distribution is represented by \(N\) sampled states, and
+let
+\[
+Z_c[n,i]=z_i^{(n)}-p
+\]
+be the centered \(N\times m\) coordinate matrix. Independence gives
+\[
+Z_c^\top Z_c
+\approx
+Np(1-p)I.
+\]
+
+Define
+\[
+R=\sqrt{Np(1-p)}.
+\]
+
+If \(H\in\mathbb R^{N\times d}\) is the literal activation matrix and
+\(D_{\mathrm{raw}}\in\mathbb R^{d\times m}\) the literal decoder, a balanced
+realization is
+\[
+H
+=
+\frac{1}{\sqrt R}Z_cE^\top,
+\qquad
+D_{\mathrm{raw}}
+=
+\sqrt R\,E.
+\]
+
+Indeed,
+\[
+HD_{\mathrm{raw}}
+=
+Z_cE^\top E,
+\]
+and
+\[
+H^\top H
+\approx
+R\,EE^\top
+=
+D_{\mathrm{raw}}D_{\mathrm{raw}}^\top.
+\]
+
+Therefore the literal activation displacement associated with coordinate
+\(i\) is
+\[
+E_i^{\mathrm{raw}}
+=
+\frac{E_i}{\sqrt R},
+\]
+so
+\[
+\boxed{
+\|E_i^{\mathrm{raw}}\|^2
+=
+\frac{\|E_i\|^2}
+{\sqrt{Np(1-p)}}.
+}
+\]
+
+This is a single global isotropic change of units. It preserves support,
+angles, orthogonality, and tight-frame geometry.
+
+
+\section{Correlated State Coordinates}
+\label{app:correlated-superposition}
+
+Now allow the coordinates of
+\[
+z=(z_1,\ldots,z_m)
+\]
+to have an arbitrary joint distribution.
+
+Define
+\[
+\bar z=z-\mathbb E[z],
+\qquad
+\Sigma=\operatorname{Cov}(z).
+\]
+
+The varying part of the target logit vector is
+\[
+\ell_\star(z)
+=
+\operatorname{diag}(\alpha)\bar z.
+\]
+
+Restricting to the support of \(\Sigma\), take
+\begin{equation}
+\operatorname{diag}(\alpha)\Sigma^{1/2}
+=
+U\operatorname{diag}(\beta_1,\ldots,\beta_r)V^\top.
+\label{eq:correlated-svd}
+\end{equation}
+
+Equivalently, this is the singular-value decomposition of the centered
+state-to-output kernel, weighted by the state distribution.
+
+Define the new state coordinates
+\begin{equation}
+\boxed{
+z'
+=
+V^\top\Sigma^{-1/2}\bar z.
+}
+\label{eq:new-state-coordinates}
+\end{equation}
+
+Then
+\[
+\mathbb E[z'z'^\top]=I_r
+\]
+and, in the corresponding output-mode basis,
+\[
+U^\top\ell_\star(z)
+=
+\operatorname{diag}(\beta_1,\ldots,\beta_r)z'.
+\]
+
+Thus \(z'\) is a new coordinate system on the same state space, and
+\(\beta_k\) is the predictive strength of coordinate \(z'_k\). Directions
+with \(\beta_k=0\) do not change the predictive distribution and may be
+removed.
+
+The \(z'_k\) are uncorrelated, but for non-Gaussian binary data they need not
+be statistically independent. Consequently, the relative cost of
+cross-coordinate interference must be recomputed in the new coordinates.
+
+Let
+\[
+F(z)
+=
+\operatorname{diag}
+\bigl(
+p_\star(\cdot\mid z)
+\bigr)
+-
+p_\star(\cdot\mid z)
+p_\star(\cdot\mid z)^\top
+\]
+be the softmax Fisher matrix, and let \(U_k\) denote column \(k\) of \(U\).
+
+A perturbation from input coordinate \(z'_j\) into output mode \(k\) has
+local curvature
+\[
+\kappa_{jk}
+=
+\mathbb E_z
+\left[
+(z'_j)^2
+U_k^\top F(z)U_k
+\right].
+\]
+
+Assuming these curvatures are well summarized by one common
+intended-coordinate cost and one common cross-coordinate cost, define
+\begin{equation}
+\boxed{
+p_{\mathrm{eff}}
+=
+\frac{
+\dfrac{1}{r(r-1)}
+\sum_k\sum_{j\neq k}\kappa_{jk}
+}{
+\dfrac{1}{r}
+\sum_k\kappa_{kk}
+}.
+}
+\label{eq:effective-interference}
+\end{equation}
+
+The quantity \(p_{\mathrm{eff}}\) is the analogue of \(p\) in the new
+coordinates: it is the average cost of a cross-coordinate effect relative
+to the average cost of an intended-coordinate error. It is computed from
+the DGP and target probabilities, not fitted to a trained representation.
+
+The transformed capacity surrogate is
+\[
+\mathcal J(E)
+=
+\frac12
+\sum_k
+\left(
+\|E_k\|^2-\beta_k
+\right)^2
++
+\frac{p_{\mathrm{eff}}}{2}
+\sum_{k\neq\ell}
+\langle E_k,E_\ell\rangle^2.
+\]
+
+When
+\[
+0\leq p_{\mathrm{eff}}<1,
+\]
+the complete result carries over under
+\[
+\alpha_i\longrightarrow\beta_k,
+\qquad
+p\longrightarrow p_{\mathrm{eff}}.
+\]
+
+In particular, the transformed capacity level \(\beta_\star\) satisfies
+\[
+\boxed{
+\sum_k
+\left[
+\frac{
+\beta_k/\beta_\star-p_{\mathrm{eff}}
+}{
+1-p_{\mathrm{eff}}
+}
+\right]_0^1
+=
+d,
+}
+\]
+and
+\[
+\boxed{
+\|E_k\|^2
+=
+\begin{cases}
+\beta_k,
+&
+\beta_k>\beta_\star,
+\\[2mm]
+\dfrac{
+\beta_k-p_{\mathrm{eff}}\beta_\star
+}{
+1-p_{\mathrm{eff}}
+},
+&
+p_{\mathrm{eff}}\beta_\star
+<
+\beta_k
+\leq
+\beta_\star,
+\\[3mm]
+0,
+&
+\beta_k
+\leq
+p_{\mathrm{eff}}\beta_\star.
+\end{cases}
+}
+\]
+
+Thus correlations change:
+
+\[
+\boxed{
+\text{the state coordinates that compete for capacity},
+}
+\]
+their predictive strengths
+\[
+\boxed{\beta_k,}
+\]
+and the effective relative cost of their interference
+\[
+\boxed{p_{\mathrm{eff}}.}
+\]
+
+If the curvatures \(\kappa_{jk}\) vary substantially across coordinate
+pairs, no single scalar \(p_{\mathrm{eff}}\) accurately summarizes the
+loss. The correlated problem then remains a weighted rank-constrained
+optimization rather than the closed-form scalar theory above.
+
+In the iid binary setting, using the original coordinates \(z_i\) recovers
+the coactivation approximation
+\[
+p_{\mathrm{eff}}\approx p.
+\]
+After a nontrivial change of coordinates, \(p_{\mathrm{eff}}\) should be
+recomputed from Equation~\eqref{eq:effective-interference}; it need not
+numerically equal the original Bernoulli rate.

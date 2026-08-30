@@ -34,10 +34,8 @@ def _(mo):
 
     from src.code.data import apply_lapse, graph_conditional
     from src.code.geometry import (predicted_geometry, factor_logcond, canonical_gauge,
-                                   log_conditional,
-                                   fourier_basis, circulant_fraction, class_means,
-                                   frequency_plane, group_fraction)
-    from src.code.eval import cka, cka_null, rsa
+                                   log_conditional, fourier_basis, class_means)
+    from src.code.eval import cka, cka_null, cka_shuffle_null, rsa
     from src.code.train import train_inline, graph_overrides
     from src.code import plot_utils           # importing this applies the house plotting style
 
@@ -49,6 +47,8 @@ def _(mo):
         canonical_gauge,
         cka,
         cka_null,
+        cka_shuffle_null,
+        class_means,
         factor_logcond,
         fourier_basis,
         graph_conditional,
@@ -62,8 +62,17 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, cka, cka_null, class_means, np, plot_utils, predicted_geometry,
-      train_inline):
+def _(
+    FIGURES,
+    cka,
+    cka_null,
+    cka_shuffle_null,
+    class_means,
+    np,
+    plot_utils,
+    predicted_geometry,
+    train_inline,
+):
     from src.code.analysis_utils import input_code
 
     ITEM_CMAP = plot_utils.FIG.item_cmap           # twilight minus its grey ends (house item map)
@@ -83,15 +92,15 @@ def _(FIGURES, cka, cka_null, class_means, np, plot_utils, predicted_geometry,
             if oracle is None:
                 oracle = np.asarray(predicted_geometry(np.asarray(dataset.conditional, float)), float)
         scores = {label: cka(code, oracle) for label, code in codes.items()}
-        # printed, not drawn: the null is how to read the scores, not part of the geometry
-        print(f"{name:26s} null {cka_null(oracle):.2f}  "
+        print(f"{name:26s} rand {cka_null(oracle):.2f} shuf {cka_shuffle_null(oracle):.2f}  "
               + "  ".join(f"{label} {s:.2f}" for label, s in scores.items()), flush=True)
 
         show = (lambda X: class_means(X, classes)[0]) if classes is not None else (lambda X: X)
         fig = plot_utils.plot_embedding_panels(show(oracle), {k: show(v) for k, v in codes.items()},
                                                spec=spec, cmap=ITEM_CMAP, scores=scores)
         return plot_utils.save_figure(fig, FIGURES / f"{name}_panels.png")
-    return ITEM_CMAP, geometry_panel
+
+    return (geometry_panel,)
 
 
 @app.cell(hide_code=True)
@@ -146,7 +155,7 @@ def _(mo):
 
 
 @app.cell
-def _(geometry_panel, graph_overrides):
+def _(FIGURES, geometry_panel, graph_overrides, plot_utils):
     ARCHS = ["transformer", "linear", "mlp", "rnn"]
     SPECS = {
         "ring": {"structure": "ring", "cooccurrence": "diffusion", "n": 30},
@@ -163,25 +172,8 @@ def _(geometry_panel, graph_overrides):
                                     for arch in ARCHS}, spec=spec)
         for name, spec in SPECS.items()
     }
-    return (figs_settings,)
 
-
-@app.cell
-def _(figs_settings, mo):
-    mo.ui.tabs(figs_settings)
-    return
-
-
-@app.cell
-def _(mo):
-    mo.md(r"""
-    ### The six settings merged
-    """)
-    return
-
-
-@app.cell
-def _(FIGURES, SPECS, plot_utils):
+    # Merge the panels into one figure
     fig_main = plot_utils.merge_panels(
         [FIGURES / "png" / f"{name}_panels.png" for name in SPECS])
     plot_utils.save_figure(fig_main, FIGURES / "geometry_predictions_main.png", dpi=200)
@@ -221,7 +213,6 @@ def _(
     factor_logcond,
     fourier_basis,
     log_conditional,
-    np,
     plot_utils,
 ):
     from src.code.data import relation_tensor
@@ -246,20 +237,14 @@ def _(
 def _(FIGURES, geometry_panel, plot_utils):
     from src.code.data import answer_classes
 
-    # every knob (width, decay, input format, lapse) lives in the preset, so a run is named by the
-    # relation and the runner alone and nothing here can drift from what the CLI trained
     RUNNERS = ["rel_transformer", "rel_rnn", "rel_mlp", "rel_linear_paired", "rel_mlp_paired"]
-    # Only graded relations are scored: a delta answer makes every outcome equidistant, so its pair
-    # code is a simplex with no geometry to predict. Modular addition is that case, and stays as
-    # the factorization above, where the DFT gauge is the point.
     RELATIONS = ["approx_add", "pitch_transpose", "between",
                  "feature_taxonomy", "set_difference", "entailment"]
 
     figs_rel = {}
     for relation in RELATIONS:
         classes, draw_spec = answer_classes(relation)
-        runs = {runner.removeprefix("rel_"): [f"runner={runner}", f"relation={relation}",
-                                              "random_seed=0"] for runner in RUNNERS}
+        runs = {runner.removeprefix("rel_"): [f"runner={runner}", f"relation={relation}"] for runner in RUNNERS}
         figs_rel[relation] = geometry_panel(f"relational_{relation}", runs,
                                             spec=draw_spec, classes=classes)
 
@@ -267,12 +252,6 @@ def _(FIGURES, geometry_panel, plot_utils):
         [FIGURES / "png" / f"relational_{relation}_panels.png" for relation in RELATIONS],
         labels=RELATIONS)
     plot_utils.save_figure(fig_rel_main, FIGURES / "relational_predictions_main.png", dpi=200)
-    return (figs_rel,)
-
-
-@app.cell
-def _(figs_rel, mo):
-    mo.ui.tabs(figs_rel)
     return
 
 

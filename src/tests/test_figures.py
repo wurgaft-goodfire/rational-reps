@@ -233,6 +233,22 @@ def test_a_wide_flat_scatter_is_not_clipped_at_the_edges():
     plt.close(fig)
 
 
+def test_an_elongated_equal_aspect_scatter_does_not_clip_its_markers():
+    """A 7:1 cloud under equal aspect gets an axes box a fraction of an inch tall, so the 15% data
+    margin is thinner than the marker radius and the extreme marker is sliced in half (approx_add's
+    mlp_paired panel). The panel is borderless, so markers must not be clipped at all."""
+    import numpy as np
+    from src.code.plot_utils import scatter_geometry
+
+    x = np.linspace(0, 10, 24)
+    XY = np.c_[x, 0.13 * x]                               # elongated, but past the near-1-D branch
+    fig, ax = plt.subplots(figsize=(2.7, 2.95))
+    scatter_geometry(ax, XY, "elongated")
+
+    assert not ax.collections[0].get_clip_on(), "markers are clipped to the axes patch"
+    plt.close(fig)
+
+
 def test_merge_panels_lays_saved_panels_out_column_major_with_letters(tmp_path):
     """The merged figures are just saved panels tiled and lettered; the notebook should say that
     in one call rather than rebuild a gridspec each time."""

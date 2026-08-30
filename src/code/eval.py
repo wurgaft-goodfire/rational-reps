@@ -64,6 +64,16 @@ def cka_null(oracle, repeats=20, seed=0):
     return float(np.mean([cka(rng.normal(size=oracle.shape), oracle) for _ in range(repeats)]))
 
 
+def cka_shuffle_null(oracle, repeats=20, seed=0):
+    """CKA of ``oracle`` against a row-shuffled copy of itself: the leakage floor. Shuffling keeps
+    the spectrum and destroys only the row correspondence, so clearing this floor (and not just
+    ``cka_null``) means the assignment of rows is right, not merely the shape."""
+    oracle = np.asarray(oracle, float)
+    rng = np.random.default_rng(seed)
+    return float(np.mean([cka(oracle[rng.permutation(len(oracle))], oracle)
+                          for _ in range(repeats)]))
+
+
 def _rankdata(a):
     """Average ranks of a 1-D array (tied values share their mean rank). Values within a small
     relative tolerance are treated as tied (exact ties up to float noise)."""

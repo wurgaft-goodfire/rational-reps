@@ -121,3 +121,19 @@ def test_input_code_is_one_row_per_input_and_keeps_what_the_decoder_reads():
     W = decoder_weights(model, ds)
     lo, lp = raw @ W.T, proj @ (B @ W.T)
     assert np.allclose(lo - lo.mean(1, keepdims=True), lp - lp.mean(1, keepdims=True), atol=1e-4)
+
+
+def test_reverse_kl_loss_is_zero_at_the_target_with_a_hand_checkable_value():
+    # loss="reverse_kl" trains on KL(q || p*): zero exactly at logits = log p* (CE would be
+    # the entropy), and at uniform q the value is (1/3) sum log((1/3)/p_x) = 0.32429.
+    import torch.nn.functional as F
+    from src.code.models import ModelConfig, LinearModel
+
+    model = LinearModel(ModelConfig(vocab_size=4, num_classes=3, embed_dim=2, arity=1,
+                                    loss="reverse_kl"))
+    p = torch.tensor([[0.7, 0.2, 0.1]])
+    assert torch.isclose(model._finish(p.log(), p)["loss"], torch.tensor(0.0), atol=1e-7)
+    assert torch.isclose(model._finish(torch.zeros(1, 3), p)["loss"],
+                         torch.tensor(0.32429), atol=1e-4)
+    ce_model = LinearModel(ModelConfig(vocab_size=4, num_classes=3, embed_dim=2, arity=1))
+    assert torch.isclose(ce_model._finish(p.log(), p)["loss"], F.cross_entropy(p.log(), p))

@@ -126,3 +126,17 @@ def test_cka_null_is_the_floor_a_score_has_to_clear_and_rises_with_fewer_rows():
     assert cka_null(few) > 3 * cka_null(many)
     assert cka_null(many) < 0.2
     assert cka_null(many, seed=1) == pytest.approx(cka_null(many, seed=1))    # deterministic
+
+
+def test_cka_shuffle_null_keeps_the_spectrum_and_destroys_only_the_correspondence():
+    """Shuffling the oracle's rows is the leakage control: same Gram spectrum, wrong assignment.
+    A regular simplex is permutation-symmetric, so its shuffle null is exactly 1 (the geometry
+    alone scores perfectly); a line's collapses, because which row sits where is the content."""
+    from src.code.eval import cka_shuffle_null
+
+    simplex = np.eye(8) - 1 / 8                                # 8 equidistant points, centered
+    assert cka_shuffle_null(simplex) == pytest.approx(1.0)
+
+    line = np.arange(60, dtype=float)[:, None]
+    assert cka_shuffle_null(line) < 0.2
+    assert cka_shuffle_null(line, seed=1) == pytest.approx(cka_shuffle_null(line, seed=1))

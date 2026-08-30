@@ -115,6 +115,8 @@ def test_approximate_addition_is_graded_by_weber_noise():
     T = approx_add(m=m)
     R = _rows(T)
     assert np.allclose(R.sum(1), 1.0)
+    assert R.min() > 1e-5                # every logit KL-visible: the line is pinned by the
+    #                                      quadratic tails, and unscored far logits bow it
     # the mode sits on the true sum
     for a, b in [(2, 3), (7, 7), (12, 12)]:
         assert T[a - 1, b - 1].argmax() + 2 == a + b        # outcomes are the sums 2..2m
@@ -194,7 +196,7 @@ def test_lapse_leaves_a_target_that_already_has_full_support_alone():
 
     E = predicted_geometry(np.log(apply_lapse(dense, 0.05)))
     S = np.linalg.svd(E - E.mean(0), compute_uv=False)
-    assert np.sum(S > 1e-8 * S[0]) <= 4, f"dense target should stay low rank, got {S[:6]/S[0]}"
+    assert np.sum(S > 1e-6 * S[0]) <= 4, f"dense target should stay low rank, got {S[:6]/S[0]}"
 
     sparse = np.asarray(set_difference(3), float).reshape(-1, 6)
     assert (sparse == 0).any() and (apply_lapse(sparse, 0.05) > 0).all()   # still applied here
@@ -254,11 +256,13 @@ def test_pitch_transpose_is_a_helix():
     T = pitch_transpose()
     M = np.asarray(T, float).reshape(-1, np.shape(T)[-1])
     assert (M > 0).all()                                          # dense: the lapse must not touch it
+    assert M.min() > 1e-6                # every logit KL-visible: the line lives in the far tails,
+    #                                      and a logit the loss cannot see folds it into an arc
     E = predicted_geometry(np.log(M))
     S = np.linalg.svd(E - E.mean(0), compute_uv=False)
     assert np.sum(S > 1e-6 * S[0]) == 3, f"not a helix: {S[:6] / S[0]}"
     assert abs(S[1] - S[2]) < 0.1 * S[1]                          # the circular pair is degenerate
-    assert S[1] < 0.6 * S[0]                                      # height dominates chroma
+    assert S[1] < 0.8 * S[0]                                      # height dominates chroma
 
 
 def test_answer_classes_group_pairs_that_share_a_target():

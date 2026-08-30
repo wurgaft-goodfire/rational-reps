@@ -86,8 +86,8 @@ $CACHE_DIR/{setting}/{override_dirname}/{name}/
 ## Notebooks
 
 Analysis notebooks in `src/notebooks/` are [marimo](https://marimo.io/) notebooks: plain `.py`
-files, no `.ipynb` in the repo. One notebook per setting (`feature_cube_analysis.py`,
-`hmm_analysis.py`, …) plus cross-setting geometry studies.
+files, no `.ipynb` in the repo. One notebook per setting (`hmm_analysis.py`,
+`concepts_analysis.py`, …) plus cross-setting geometry studies.
 
 ```bash
 uv run marimo edit src/notebooks/<name>.py     # interactive, in the browser
@@ -150,7 +150,7 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 - `conf/config.yaml` — base defaults (setting + model + train + runner), wandb toggle, run-dir layout.
 - `src/code/config.py` — `Config` wraps the resolved `DictConfig`; seeds all RNGs; turns `save_steps_method` into a concrete checkpoint schedule.
 - `src/code/data.py` — `init_dataset` + three dataset classes (co-occurrence, relational, HMM), plus the structure gallery (graphs and co-occurrence kernels). Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
-- `src/code/geometry.py` — the rational-code oracles: spectral factorizations (`factor_logcond`, `truncation_features`), the nuclear-norm feature oracle (`nuclear_features`), and representation-comparison utilities (principal angles, superposition measures).
+- `src/code/geometry.py` — the rational-code oracles: the spectral factorization `factor_logcond` (row-centred, balanced split, exposed as `predicted_geometry`), floored logs, gauge fixing against a target basis (`canonical_gauge`, `fourier_basis`), `class_means`, and the superposition oracle (`predicted_features` and friends, from `notes/superposition.tex`).
 - `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
 - `src/code/train.py` — Hydra entry point + `train_inline` for notebooks. Sizes the model from the dataset, runs the HF `Trainer` with custom callbacks.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.

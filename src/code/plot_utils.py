@@ -277,8 +277,10 @@ def _frame_2d(ax, XY, margin=0.12):
         pad = 0.25 * max(d0, d1)
         ax.set_ylim(XY[:, 1].min() - pad, XY[:, 1].max() + pad); ax.margins(x=margin)
     else:
-        ax.set_aspect("equal"); ax.margins(margin)        # pad so edge points aren't clipped
-    FIG.clean(ax); ax.set_anchor("N")
+        # datalim keeps the axes box at full cell size and widens the short axis's limits instead:
+        # titles stay at one height across panels and the cloud centers itself in the cell
+        ax.set_aspect("equal", adjustable="datalim"); ax.margins(margin)
+    FIG.clean(ax)
 
 
 def draw_structure(ax, A, pos, title="structure", item_ids=None, cmap=None, labels=None):
@@ -334,7 +336,10 @@ def scatter_geometry(ax, XY, title, cmap=None, colors=None):
         ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([]); ax.set_title(title)
         for pane in (ax.xaxis, ax.yaxis, ax.zaxis): pane.pane.set_facecolor((1, 1, 1, 0))
     else:
-        ax.scatter(XY[:, 0], XY[:, 1], c=c, cmap=cmap, s=45)
+        # clip_on off: an elongated cloud under equal aspect gets an axes box a fraction of an
+        # inch tall, so any data-fraction margin can be thinner than the marker radius; the panel
+        # is borderless, so a marker spilling past the invisible patch is the correct rendering
+        ax.scatter(XY[:, 0], XY[:, 1], c=c, cmap=cmap, s=45, clip_on=False)
         ax.set_title(title); _frame_2d(ax, XY, margin=0.15)
 
 

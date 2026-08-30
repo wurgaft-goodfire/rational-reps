@@ -860,11 +860,14 @@ def feature_taxonomy(chains=2, depth=2):
     return T
 
 
-def pitch_transpose(n=12, n_out=25, sigma=2.5, kappa=1.5, per_octave=12):
+def pitch_transpose(n=12, n_out=23, sigma=5.0, kappa=1.5, per_octave=12):
     """Transpose a note by an interval and name the result. Responses confuse neighbouring pitches
     (Gaussian in height) and notes an octave apart (von Mises in chroma) — Shepard's two components
     of pitch. ``log p`` is then quadratic plus cosine in ``c - (a + b)``, so the code is one linear
-    dimension plus a cos/sin pair: a helix. Dense by construction, so no lapse is applied."""
+    dimension plus a cos/sin pair: a helix. Dense, so no lapse is applied — but the line is carried
+    by the quadratic tails, and KL weights a logit by the true probability, so ``sigma`` and
+    ``n_out`` must keep the smallest entry KL-visible (here 9e-6); a sharper kernel leaves the far
+    logits unscored and networks fold the line into an arc."""
     s = (np.arange(n * n) // n + np.arange(n * n) % n).reshape(n, n)
     c = np.arange(n_out)
     L = (-(c[None, None, :] - s[..., None]) ** 2 / (2 * sigma ** 2)
@@ -909,15 +912,15 @@ def common_divisors(n=12):
     return T
 
 
-def approx_add(m=12, weber=0.4):
+def approx_add(m=12, weber=0.7):
     """Estimate a + b under scalar variability: noise proportional to magnitude, i.e. Gaussian in
     log space (Weber-Fechner). Items are the magnitudes 1..m and outcomes the achievable sums
     2..2m, both laid out as plain integers — so the logarithmic geometry comes from the noise law,
     not from the outcome positions. With constant-width noise the same construction predicts a
     linear line instead, which is what makes the log line a claim rather than an assumption.
 
-    ``weber`` must keep the far tails above float noise: the rank-2 structure is exact for the
-    log-conditional, and clipping underflowed probabilities would raise the rank spuriously."""
+    The line is exactly ``log(a+b)`` at any ``weber``, but a sharper kernel drops the smallest
+    entries below what KL can score, and the unscored far logits bow the learned line."""
     from scipy.special import softmax
     out = np.arange(2, 2 * m + 1, dtype=float)
     T = np.zeros((m, m, len(out)))

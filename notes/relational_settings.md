@@ -141,7 +141,22 @@ random") makes every outcome possible without moving the prediction: `CKA(E*(0.0
 After it, logit R² is 0.997 and CKA against `E*` rises 0.813 -> 0.956, with the identifiability
 term of the decomposition at 0.998 — so the residual gap is the balanced-sqrt(S) split alone.
 
-It matters most for modular addition. With a delta target one frequency sufficed (a 2-D code
+The same pathology hits `pitch_transpose` through the tails rather than through zeros. The task is
+dense, so the lapse never touches it — but with `sigma=2.5` over offsets up to ±24, 16% of entries
+sit below 1e-6, and saturating every logit at log 1e-6 costs KL 3e-6, less than four of the five
+trained networks paid. The helix's linear axis is carried by exactly those quadratic tails, so the
+networks folded the line into an arc (the classic horseshoe: a saturating kernel's top eigenvectors
+are low-frequency modes), CKA 0.75–0.94 while RSA stayed at 0.96–0.99. `linear_paired` — a lookup
+table with no input computation — horseshoed too, so it is identifiability, not expressivity.
+Further training cannot fix it: the pull on a tail logit is the model's own mass there, so the
+logit drifts like −log(t), and weight decay freezes it. The fix keeps every entry KL-visible:
+`sigma=5, n_out=23` puts the minimum at 9e-6 (a network at KL 1e-4 can distort CKA by at most
+0.007) while preserving the rank-3 helix, a 4% degenerate-pair split, and height above chroma
+(S₁/S₀ = 0.74, was 0.36 — a flatter Gaussian cedes variance to the circle).
+
+`approx_add` had the mild version: corners at e⁻¹⁹ bowed the learned line into a shallow arc
+(CKA 0.97–1.00). The log line is exact at any `weber`, so widening it to 0.7 (minimum 1.4e-4)
+costs nothing and straightens every architecture to CKA 0.99–1.00. With a delta target one frequency sufficed (a 2-D code
 determines `s = a+b`, and scaling the readout drives KL to 0), so architectures truncated to an
 arbitrary irrep and `mlp_paired` sat at circulance 0.26-0.45. The lapse closes that route — the
 best rank-2 solution bottoms out at KL 0.56 — and every architecture now carries every irrep at

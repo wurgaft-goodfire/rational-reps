@@ -57,7 +57,7 @@ class ModelConfig(transformers.PretrainedConfig):
     model_type = "ladder"
 
     def __init__(self, vocab_size=2, num_classes=2, embed_dim=16, arity=1,
-                 hidden_size=64, num_layers=2, init_scale=0.02, l1=0.0, **kwargs):
+                 hidden_size=64, num_layers=2, init_scale=0.02, l1=0.0, loss="ce", **kwargs):
         super().__init__(**kwargs)
         self.vocab_size = vocab_size
         self.num_classes = num_classes
@@ -67,6 +67,7 @@ class ModelConfig(transformers.PretrainedConfig):
         self.num_layers = num_layers
         self.init_scale = init_scale
         self.l1 = l1                                     # SAE sparsity penalty
+        self.loss = loss                                 # "ce" or "reverse_kl"
 
 
 class _ModelBase(transformers.PreTrainedModel):
@@ -89,10 +90,16 @@ class _ModelBase(transformers.PreTrainedModel):
 
     def _finish(self, logits, labels):
         """``labels`` is the exact outcome distribution (``distribution_labels``) for the
-        readout heads, so cross-entropy takes it as class probabilities."""
+        readout heads: cross-entropy takes it as class probabilities; ``loss="reverse_kl"``
+        trains on KL(q || p*) instead, which pins q near the target where the quadratic
+        expansion is valid."""
         out = {"logits": logits}
         if labels is not None:
-            out["loss"] = F.cross_entropy(logits, labels)
+            if self.config.loss == "reverse_kl":
+                logq = F.log_softmax(logits, dim=-1)
+                out["loss"] = (logq.exp() * (logq - labels.log())).sum(-1).mean()
+            else:
+                out["loss"] = F.cross_entropy(logits, labels)
         return out
 
 

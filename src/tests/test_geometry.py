@@ -54,27 +54,6 @@ def test_factor_logcond_is_the_plain_svd_of_the_row_centered_log_conditional():
     assert np.allclose(np.linalg.norm(E, axis=0), np.linalg.norm(D, axis=1))
 
 
-def test_capacity_allocation_splits_the_budget_by_squared_decoder_norm():
-    # analytic case: balanced decoder rows [[1,-1,0,0],[0,0,2,-2]] (already row-centred, so the
-    # softmax gauge is a no-op). Column norms 1,1,2,2 -> squares 1,1,4,4 -> s = 2*[1,1,4,4]/10.
-    from src.code.geometry import capacity_allocation
-    Db = np.array([[1.0, -1.0, 0.0, 0.0], [0.0, 0.0, 2.0, -2.0]])
-    A = np.diag(np.sqrt(np.diag(Db @ Db.T)))                    # balanced: A A^T = D D^T
-    s = capacity_allocation(A, Db, 2)
-    assert np.isclose(s.sum(), 2.0)                             # the budget is the code width
-    assert np.allclose(s, [0.2, 0.2, 0.8, 0.8])
-
-
-def test_predicted_allocation_is_symmetric_for_two_features():
-    # m=2: the centring projector H = v v^T with v = [1,-1]/sqrt(2) makes the second-moment
-    # matrix exactly rank one along v, for any alpha. So the single dimension is shared evenly.
-    from src.code.geometry import predicted_allocation
-    for alpha in ([3.0, 1.0], [1.0, 1.0], [8.0, 0.5]):
-        s = predicted_allocation(np.array(alpha), p=0.3, d=1)
-        assert np.isclose(s.sum(), 1.0)
-        assert np.allclose(s, [0.5, 0.5])
-
-
 def test_canonical_gauge_recovers_the_dft_on_modular_addition():
     """Within a degenerate singular block the SVD basis is an arbitrary rotation. Rotating onto a
     target basis (here the DFT modes of Z_p) recovers structured factors without changing E @ D."""
@@ -119,54 +98,6 @@ def _circle_code(p, k, d=32, seed=0, squash=1.0):
     return xy @ Q.T, s
 
 
-def test_group_fraction_is_one_on_a_pure_group_code_and_chance_when_labels_are_shuffled():
-    """Exact recovery plus the shuffle control: a code that is a function of s alone puts all of
-    its variance on s; permuting the labels destroys the signal and leaves about 1/p."""
-    from src.code.geometry import group_fraction
-
-    p = 11
-    X, s = _circle_code(p, k=1)
-    assert group_fraction(X, s) == pytest.approx(1.0, abs=1e-9)
-    shuffled = np.random.default_rng(0).permutation(s)
-    assert group_fraction(X, shuffled) == pytest.approx(1 / p, abs=0.03)
-
-
-def test_frequency_plane_puts_all_energy_on_the_frequency_that_is_present():
-    """A code built from frequency 3 alone reports energy 1 at k=3 and 0 elsewhere."""
-    from src.code.geometry import frequency_plane
-
-    p = 11
-    X, s = _circle_code(p, k=3)
-    energy = {k: frequency_plane(X, s, k)[1] for k in range(1, p // 2 + 1)}
-    assert energy[3] == pytest.approx(1.0, abs=1e-9)
-    assert max(v for k, v in energy.items() if k != 3) < 1e-9
-
-
-def test_circularity_reports_a_known_axis_squash():
-    """Circularity is sigma_2 / sigma_1 of the fitted plane, so squashing the sine axis by a
-    known factor must read back that factor."""
-    from src.code.geometry import frequency_plane
-
-    X, s = _circle_code(11, k=1, squash=0.4)
-    assert frequency_plane(X, s, 1)[2] == pytest.approx(0.4, abs=1e-6)
-
-
-def test_circulant_fraction_ignores_radii_but_catches_a_broken_symmetry():
-    """A ring is a Gram that depends only on s - s'. Unequal radii across frequencies keep that
-    property (the rnn's case), so they must not be penalised; displacing one class must be."""
-    from src.code.geometry import circulant_fraction
-
-    p, s = 11, (np.arange(11 * 11) // 11 + np.arange(11 * 11) % 11) % 11
-    ang = 2 * np.pi * np.arange(p) / p
-    radii = [1.0, 0.3, 0.9, 0.1, 0.5]                          # deliberately uneven per frequency
-    means = np.concatenate([r * np.c_[np.cos(k * ang), np.sin(k * ang)]
-                            for k, r in zip(range(1, p // 2 + 1), radii)], axis=1)
-    assert circulant_fraction(means[s], s) == pytest.approx(1.0, abs=1e-9)
-    moved = means.copy()
-    moved[3] *= 2.5                                            # one class pushed off the ring
-    assert circulant_fraction(moved[s], s) < 0.8
-
-
 def test_log_conditional_clamps_zeros_and_leaves_probabilities_alone():
     """Softmax reads logits, so every prediction factors log p, never p. Zero-probability outcomes
     would be -inf, so the log is clamped at a single floor shared by the whole codebase."""
@@ -181,12 +112,14 @@ def test_log_conditional_clamps_zeros_and_leaves_probabilities_alone():
 
 def test_log_conditional_floors_impossible_outcomes_not_merely_unlikely_ones():
     """LOG_FLOOR stands in for log 0, which has no value. Clipping *small but real* probabilities
-    to it flattens a distribution's tails onto a constant and invents structure: pitch_transpose's
-    Gaussian reaches exp(-32) at the far end, and clipping it takes the code from rank 3 to 19."""
+    to it flattens a distribution's tails onto a constant and invents structure: a sharp
+    pitch_transpose kernel reaches exp(-32) at the far end, and clipping it takes the code from
+    rank 3 to 19. (The training default keeps its tail KL-visible; the sharp kernel is the fixture
+    here because the oracle must survive thin tails wherever they occur.)"""
     from src.code.data import pitch_transpose
     from src.code.geometry import LOG_FLOOR, log_conditional, predicted_geometry
 
-    P = np.asarray(pitch_transpose(), float).reshape(-1, 25)
+    P = np.asarray(pitch_transpose(n_out=25, sigma=2.5), float).reshape(-1, 25)
     assert (P > 0).all() and P.min() < np.exp(LOG_FLOOR)      # dense, but with a very thin tail
 
     L = log_conditional(P)
