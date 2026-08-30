@@ -101,17 +101,44 @@ $d$-dimensional) gives excess CE 0.1906 / 0.1302 / 0.0795 vs additive 0.2292 / 0
 reproducing the trained map signature (head diagonal sharpens to 8.4--8.9, additive $R^2$
 drops to 0.85--0.88, represented count rises). Two corollaries: at $d = 3$ the pairs
 class *beats* the trained network, so trained solutions are dynamics-limited rather than
-class-limited; at $d = 12$ the top-6 pair set is too narrow (the residual lives in pairs
-further down the ladder) — extend the pair set before quoting $d = 12$ numbers.
+class-limited; and with the pair set widened to the top 18 features the same holds at
+$d = 12$ (residual $R^2$ 0.026 $\to$ 0.670; excess CE 0.0751 vs trained 0.0758). The
+*allocation* of pair capacity is restart-degenerate (pair vectors replicate across
+restarts at $|\cos| \approx 0.6$ only, one dominant sparse pair per budget, no stable
+alignment with $-(R_a + R_b)$): the class-level statement is sharp, the specific pair
+solution is not identifiable, so no deterministic second-order theory is warranted.
+
+## Structure of the coupling block (measured on the oracles)
+
+The represented off-diagonal block of the centred map is rank-one to $R^2$ = 1.000 /
+0.954 at $d$ = 3/6 and drops to 0.49 at $d$ = 12; loadings concentrate on the head
+(writer side) and the one-or-two *marginal* (threshold-adjacent) features (reader side),
+with a weak uniform negative bulk underneath. Interference is priced onto the threshold
+channel — the marginal feature has the least Fisher weight to lose. $\kappa_i$ rises
+smoothly along the ladder (1 $\to$ 1.6/2/3 at $d$ = 3/6/12): weak features are
+reader-heavy, matching the trained tie-check.
+
+## The predictor in the notebook
+
+`geometry.predicted_map(alpha, p, d)` — the tied-direction + $\kappa$ CE optimum on a
+fixed-seed task sample — feeds every notebook figure through
+`geometry.logit_features` (the identical balanced measurement applied to trained models
+and predictions). Fully analytic joint objectives were tried and rejected: the
+second-order Fisher tail is unbounded below once weak-feature logits grow (its
+correction vanishes as softmax saturates), and any surrogate whose lse-term measure
+differs from its linear-term measure has unbounded descent directions. A stratified
+2^K-pattern sample reproduces the diagonal to corr 1.000 but overfits sparse tail draws.
+The iid-sample optimum is the honest deterministic predictor; the closed form remains
+open below.
 
 ## Open items
 
-- Assemble the scalar self-consistent equations from the analytic block objective
-  (exchangeable-frame ansatz over the shared block) and compare the resulting closed-form
-  size/coupling curves to the oracle across $d$.
-- The cyclic solver stalls at $d = 3$ (+0.009 above the joint optimum); treat $d=3$ as
-  the stress case for any fixed-point claim.
-- Pairs extension at $d = 12$ with a wider pair set (top-18 features).
+- A bounded closed-form joint objective (the per-block analytic objective is validated;
+  the joint version needs a tail treatment that caps saturated growth — probit-style,
+  not second-order).
+- Scalar self-consistent equations built on the measured coupling structure (marginal
+  spike + uniform bulk + $\kappa$ ramp), checked against the joint oracle at $d = 3$
+  (the cyclic fixed point stalls there, +0.009).
 
 ## Validation scripts (session 2026-08-29/30, /tmp)
 
