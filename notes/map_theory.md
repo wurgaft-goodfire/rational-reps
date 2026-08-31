@@ -84,6 +84,17 @@ and pair terms are substitutes (explicit pair vectors relax the head's anti-alig
 budget). Where a trained curve sits inside the bracket is a question about training
 dynamics, out of scope by design.
 
+**Why the theory is layered.** Everything follows from one object — the map $R$ — but
+not from one formula: $h$ is a strict marginal of $R$ (invariant to every rescaling of
+the code), and geometry is provably not a function of it — the symmetric ($\kappa
+\equiv 1$) and free optima have near-identical leverage yet measured heads of 7.8 vs
+11.6 at $d = 3$. Allocation alone admits a closed formula because the centred target map
+is exactly diagonal, so the cost of projecting the target depends only on the projector;
+the couplings and $\kappa$ require the full stationarity system, and a single
+closed-form objective for $R$ fails structurally (unbounded surrogates, mismatched
+measures — tested). One formula where a function exists, laws and certified programs
+where the object is a map, statistics where the object is a set.
+
 **Degeneracy.** The optimum is a set, not a point: orientations are free, threshold
 ties break arbitrarily (features swap $h \approx 0.5 \leftrightarrow 0.04$ across
 runs), and the pair allocation is restart-degenerate. These directions are unpredictable
