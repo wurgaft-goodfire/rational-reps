@@ -273,7 +273,18 @@ def _(mo):
 
 
 @app.cell
-def _(COL, CONFIG, D_GRID, E_DC, E_PRED, RUNS, np, plot_utils, plt):
+def _(
+    COL,
+    CONFIG,
+    D_GRID,
+    E_DC,
+    E_PAIR_ALL,
+    E_PRED,
+    RUNS,
+    np,
+    plot_utils,
+    plt,
+):
     _fig, _axes = plt.subplots(2, len(D_GRID), figsize=(4.4 * len(D_GRID), 7.4))
     for _j, _d in enumerate(D_GRID):
         _Ep = E_PRED[_d]
@@ -281,6 +292,10 @@ def _(COL, CONFIG, D_GRID, E_DC, E_PRED, RUNS, np, plot_utils, plt):
         _ev_pred = np.sort(np.linalg.eigvalsh(_Ep.T @ _Ep))[::-1]
         _ax.plot(np.arange(1, _d + 1), _ev_pred, "o-", color=COL["orange"], lw=2.2, ms=7,
                  zorder=4, label="additive theory")
+        _ev_pair = np.mean([np.sort(np.linalg.eigvalsh(_E.T @ _E))[::-1]
+                            for _E in E_PAIR_ALL[_d]], axis=0)
+        _ax.plot(np.arange(1, _d + 1), _ev_pair, "s--", color=COL["green"], lw=1.6, ms=5,
+                 zorder=4, label="additive + pairs oracle")
         _ev_dc = np.sort(np.linalg.eigvalsh(E_DC[_d].T @ E_DC[_d]))[::-1]
         _ax.plot(np.arange(1, _d + 1), _ev_dc, "x:", color="0.2", lw=1.6, ms=7,
                  zorder=5, label="certified theory (DC)")
@@ -299,6 +314,11 @@ def _(COL, CONFIG, D_GRID, E_DC, E_PRED, RUNS, np, plot_utils, plt):
         _lp = (_Gp ** 2).sum(1) - _sp ** 2
         _ax.scatter(_sp, _lp, s=55, facecolor="none", edgecolor=COL["orange"], lw=1.8,
                     zorder=4, label="additive theory")
+        _sp_pair = np.mean([( _E ** 2).sum(1) for _E in E_PAIR_ALL[_d]], axis=0)
+        _lp_pair = np.mean([(( _E @ _E.T) ** 2).sum(1) - (( _E ** 2).sum(1)) ** 2
+                            for _E in E_PAIR_ALL[_d]], axis=0)
+        _ax.scatter(_sp_pair, _lp_pair, s=40, marker="s", facecolor="none",
+                    edgecolor=COL["green"], lw=1.4, zorder=4, label="additive + pairs oracle")
         _Gdc = E_DC[_d] @ E_DC[_d].T
         _sdc = np.diag(_Gdc)
         _ax.scatter(_sdc, (_Gdc ** 2).sum(1) - _sdc ** 2, s=50, marker="x", color="0.2",
@@ -340,11 +360,12 @@ def _(mo):
 
 
 @app.cell
-def _(ALPHA, CONFIG, E_DC, E_PRED, RUNS, np, plot_utils, plt):
+def _(ALPHA, CONFIG, E_DC, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
     _E = RUNS[3][0][0]                                     # trained, seed 0
     _Ep = E_PRED[3]
-    _Edc = E_DC[3]                              # one restart: directions are not averageable
-    _fig, _axes = plt.subplots(2, 3, figsize=(13.5, 8.6))
+    _Edc = E_DC[3]
+    _Epair = E_PAIR_ALL[3][0]   # one restart: directions are degenerate                              # one restart: directions are not averageable
+    _fig, _axes = plt.subplots(2, 4, figsize=(17.5, 8.6))
     _cmap = plt.cm.viridis
     _norm = plt.Normalize(0, ALPHA[0])
 
@@ -356,8 +377,8 @@ def _(ALPHA, CONFIG, E_DC, E_PRED, RUNS, np, plot_utils, plt):
         _Q = np.linalg.svd(_resid, full_matrices=False)[2][:2]
         return _para, _resid @ _Q.T
 
-    _cols = [(_E, "trained (seed 0)"), (_Edc, "certified theory (DC)"),
-             (_Ep, "additive theory")]
+    _cols = [(_E, "trained (seed 0)"), (_Epair, "additive + pairs oracle"),
+             (_Edc, "certified theory (DC)"), (_Ep, "additive theory")]
     for _c, (_Emat, _title) in enumerate(_cols):
         _ax = _axes[0, _c]
         _, _xy = _split(_Emat)
@@ -380,7 +401,7 @@ def _(ALPHA, CONFIG, E_DC, E_PRED, RUNS, np, plot_utils, plt):
         _ax.set_title(_title, fontsize=13)
         plot_utils.FIG.style_axes(_ax)
     _axes[1, 0].set_ylabel("magnitude of the rest")
-    _fig.colorbar(_sc, ax=_axes[:, 2], label=r"$\alpha_i$", shrink=0.8)
+    _fig.colorbar(_sc, ax=_axes[:, 3], label=r"$\alpha_i$", shrink=0.8)
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3c_vectors_d3"))
     return
 

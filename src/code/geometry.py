@@ -390,11 +390,11 @@ def dc_map(alpha, p, d, n_top=18, n_samples=8192, seed=0,
     return C @ Uout.T, r.x[Phi.shape[1] * d:], mu, sd
 
 
-def waterfill_h(alpha, p, d, outer=60, n_strong=6, nodes=20):
-    """The allocation formula: water-filling h solving g_i(h_i) = nu, sum h = d, with the
-    pressure g_i = alpha_i p (E[p*_i|z_i=1] - E[q_i|z_i=1]) in closed form: the top
-    n_strong competitors' on/off patterns enumerated exactly, the weak tail lognormal
-    moment-matched, the 1-d logistic integral by fixed quadrature. Returns (h (m,), nu)."""
+def waterfill_h(alpha, p, d, outer=12, n_strong=6, nodes=20, damp=0.6):
+    """The allocation formula: water-filling h with the closed-form hybrid-field pressure
+    g_i = alpha_i p (E[p*_i|z_i=1] - E[q_i|z_i=1]). Solved faithfully: bisect the level
+    nu for the budget, with per-feature monotone solves of g_i(h_i) = nu (calibrated
+    biases inside), field updated in a damped outer loop. Returns (h (m,), nu)."""
     import itertools
     alpha = np.asarray(alpha, float)
     m = len(alpha)
@@ -404,50 +404,68 @@ def waterfill_h(alpha, p, d, outer=60, n_strong=6, nodes=20):
     t, w = np.polynomial.hermite_e.hermegauss(nodes)
     w = w / w.sum()
 
-    def emean(a, gains, b, i):
+    def field(gains, b, i):
         others = [j for j in range(m) if j != i]
         strong, weak = others[:K], others[K:]
         e1, e0 = np.exp(gains[strong] + b[strong]), np.exp(b[strong])
         Ds = pat @ (e1 - e0) + e0.sum()
+        if len(weak) == 0:
+            return np.log(Ds)[:, None] + 0.0 * t
         ew1, ew0 = np.exp(gains[weak] + b[weak]), np.exp(b[weak])
         mw = (ew0 + p * (ew1 - ew0)).sum()
-        if len(weak) == 0:
-            x = a - np.log(Ds)[:, None] + 0 * t
-        else:
-            vw = (p * (1 - p) * (ew1 - ew0) ** 2).sum()
-            s2 = np.log1p(vw / mw ** 2)
-            Dt = np.exp(np.log(mw) - 0.5 * s2 + np.sqrt(s2) * t)
-            x = a - np.log(Ds[:, None] + Dt[None, :])
-        return float(pw @ (1.0 / (1.0 + np.exp(-np.clip(x, -60, 60)))) @ w)
+        vw = (p * (1 - p) * (ew1 - ew0) ** 2).sum()
+        s2 = np.log1p(vw / mw ** 2)
+        Dt = np.exp(np.log(mw) - 0.5 * s2 + np.sqrt(s2) * t)
+        return np.log(Ds[:, None] + Dt[None, :])
 
-    def cond_means(gains, b):
-        mu1 = np.array([emean(gains[i] + b[i], gains, b, i) for i in range(m)])
-        mu0 = np.array([emean(b[i], gains, b, i) for i in range(m)])
-        return mu1, mu0
+    def emean(a, logD):
+        return float(pw @ (1.0 / (1.0 + np.exp(-np.clip(a - logD, -60, 60)))) @ w)
 
-    def project(x):
-        lo, hi = x.min() - 1.0, x.max()
-        for _ in range(100):
-            nu = 0.5 * (lo + hi)
-            lo, hi = (lo, nu) if np.clip(x - nu, 0, 1).sum() < d else (nu, hi)
-        return np.clip(x - 0.5 * (lo + hi), 0, 1)
+    def solve_feature(i, nu, m1_i, target_i, logD):
+        def cal_b(h):
+            lo, hi = -20.0, 20.0
+            for _ in range(60):
+                b = 0.5 * (lo + hi)
+                cur = p * emean(h * alpha[i] + b, logD) + (1 - p) * emean(b, logD)
+                lo, hi = (b, hi) if cur < target_i else (lo, b)
+            return 0.5 * (lo + hi)
+        def g(h):
+            b = cal_b(h)
+            return alpha[i] * p * (m1_i - emean(h * alpha[i] + b, logD)), b
+        g0, b0 = g(0.0)
+        if g0 <= nu:
+            return 0.0, b0
+        g1, b1 = g(1.0)
+        if g1 >= nu:
+            return 1.0, b1
+        lo, hi = 0.0, 1.0
+        bh = b1
+        for _ in range(40):
+            h = 0.5 * (lo + hi)
+            gh, bh = g(h)
+            lo, hi = (h, hi) if gh > nu else (lo, h)
+        return 0.5 * (lo + hi), bh
 
-    m1, m0 = cond_means(alpha, np.zeros(m))
+    m1 = np.zeros(m); m0 = np.zeros(m)
+    for i in range(m):
+        logD = field(alpha, np.zeros(m), i)
+        m1[i] = emean(alpha[i], logD)
+        m0[i] = emean(0.0, logD)
     target = p * m1 + (1 - p) * m0
     h = np.full(m, d / m)
     b = np.zeros(m)
+    hn = h; nu = 0.0
     for _ in range(outer):
-        for _ in range(15):                              # calibrate biases E[q] = E[p*]
-            mu1, mu0 = cond_means(h * alpha, b)
-            b = b + 0.8 * (np.log(target) - np.log(np.maximum(p * mu1 + (1 - p) * mu0,
-                                                              1e-12)))
-            b = b - b.mean()
-        mu1, _ = cond_means(h * alpha, b)
-        g = alpha * p * (m1 - mu1)
-        inner = (h > 1e-3) & (h < 1 - 1e-3)
-        nu = g[inner].mean() if inner.any() else g.mean()
-        h = 0.5 * h + 0.5 * project(h + 2.0 * (g - nu))
-    mu1, _ = cond_means(h * alpha, b)
-    g = alpha * p * (m1 - mu1)
-    rep = h > 1e-3
-    return h, float(g[rep].mean())
+        logDs = [field(h * alpha, b, i) for i in range(m)]
+        lo, hi = 0.0, float(alpha.max())
+        for _ in range(30):
+            nu = 0.5 * (lo + hi)
+            s = sum(solve_feature(i, nu, m1[i], target[i], logDs[i])[0] for i in range(m))
+            lo, hi = (lo, nu) if s < d else (nu, hi)
+        nu = 0.5 * (lo + hi)
+        sol = [solve_feature(i, nu, m1[i], target[i], logDs[i]) for i in range(m)]
+        hn = np.array([s[0] for s in sol])
+        bn = np.array([s[1] for s in sol])
+        h = (1 - damp) * h + damp * hn
+        b = (1 - damp) * b + damp * (bn - bn.mean())
+    return hn, float(nu)

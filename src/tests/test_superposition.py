@@ -254,6 +254,36 @@ def test_waterfill_formula_reproduces_the_fantope_allocation():
     h, nu = geometry.waterfill_h(alpha, 0.3, 4)
     assert abs(h.sum() - 4) < 1e-6 and nu > 0
     h_ref = geometry.fantope_leverage(alpha, 0.3, 4, n_samples=8192, iters=800)[0]
-    assert np.corrcoef(h, h_ref)[0, 1] > 0.95
+    assert np.corrcoef(h, h_ref)[0, 1] > 0.99
     h_eq, _ = geometry.waterfill_h(np.full(8, 3.0), 0.3, 3)
     assert h_eq.max() - h_eq.min() < 0.02              # exchangeable features, equal h
+
+
+@pytest.mark.slow
+def test_waterfill_fixed_point_passes_an_independent_kkt_audit():
+    # regression for the water-level dilution bug: a solver that estimates nu from its
+    # own iterate lets sub-threshold stragglers stabilize at small h (interior pressures
+    # ~17% off the level). Audit the returned (h, nu) with an evaluator independent of
+    # the solver: exact-MC pressures at recalibrated biases must equalize at nu on the
+    # interior and stay below it on the dropped set. Clean margin is ~0.5%.
+    from scipy.special import logsumexp as lse
+    m, d, p = 16, 4, 0.3
+    alpha = 6.0 * (1.0 + np.arange(m)) ** -0.5
+    h, nu = geometry.waterfill_h(alpha, p, d)
+    assert abs(h.sum() - d) < 1e-6
+    rng = np.random.default_rng(0)
+    Zb = (rng.random((32768, m)) < p).astype(float)
+    G = Zb * alpha
+    P = np.exp(G - lse(G, axis=1, keepdims=True))
+    b = np.zeros(m)
+    L0 = Zb * (h * alpha)
+    for _ in range(1000):
+        q = np.exp(L0 + b - lse(L0 + b, axis=1, keepdims=True))
+        b = b - 0.5 * (q - P).mean(0)
+        b = b - b.mean()
+    g = alpha * ((P - q) * Zb).mean(0)
+    interior = (h > 0.02) & (h < 0.98)
+    dropped = h <= 0.02
+    assert interior.any() and dropped.any()
+    assert np.abs(g[interior] - nu).max() < 0.05 * nu
+    assert g[dropped].max() < 1.05 * nu

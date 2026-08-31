@@ -58,12 +58,16 @@ feature $i$ is represented iff $\alpha_i p(1-p)(\mathbb E[p_{\star i}|1] -
 
 Structure, verified at machine precision at the optimum of the certified evaluator: one
 common pressure level (interior spread 0.0000), dropped directions below it, and **no
-direction saturates at $h = 1$** — dedication is fractional up to the head. Accuracy:
-corr 1.0000/0.9983/0.9691 against the Fantope, head exact at every budget (0.83/0.93/
-0.98 vs trained 0.84/0.94/0.99), $\nu$ = 0.0448/0.0150/0.0047 vs measured
-0.0442/0.0150/0.0052. First-order conditions suffice; the eigenbasis is feature-aligned
-for iid features and a non-degenerate ladder (with correlated features, the same
-construction applies in the target-covariance eigenbasis).
+direction saturates at $h = 1$** — dedication is fractional up to the head. Solved
+faithfully (bisect $\nu$ for the budget with per-feature monotone solves), the formula
+is equivalent to the certified program: corr 1.0000/0.9999/0.9999, counts 6/10/20 vs
+6/11/20, $\nu$ = 0.0448/0.0150/0.0052 vs 0.0442/0.0150/0.0052, heads within 0.02.
+In the sub-threshold regime the pressure obeys the harmonic-mean law
+$g_i(0) = \alpha_i (e^{\alpha_i} - 1)\, p(1-p)\, \mathbb E[1/D_{-i}]$ (verified:
+constant ratio to $6.3 \times 10^{-4}$ across the tail), giving the representation
+threshold in elementary form. First-order conditions suffice; the eigenbasis is
+feature-aligned for iid features and a non-degenerate ladder (with correlated features,
+the same construction applies in the target-covariance eigenbasis).
 
 **3. The mechanical map.** Given the predicted map, everything measured — the
 three-regime size curve including the amplified head and its S-shaped rise, spectra,
@@ -110,22 +114,33 @@ Hard-rank benignity is not universal in this family — the dense-cell truncatio
 a documented spurious minimum — so certification per step (DC) is the strongest
 available guarantee.
 
-## Method lesson: hybrid fields
+## Method lessons
 
-Every smooth-field approximation in this problem failed the same way, and the same cure
-fixed all three instances (cavity couplings, block objectives, allocation pressure):
-the few strong competitors are spiky and discrete, and flattening them into a Gaussian
-or lognormal is the error. Enumerate the top-$K$ strong features' $2^K$ patterns
-exactly; smooth only the weak tail.
+**Hybrid fields.** Every smooth-field approximation in this problem failed the same way,
+and the same cure fixed all three instances (cavity couplings, block objectives,
+allocation pressure): the few strong competitors are spiky and discrete, and flattening
+them into a Gaussian or lognormal is the error. Enumerate the top-$K$ strong features'
+$2^K$ patterns exactly; smooth only the weak tail.
+
+**Solve for shared quantities; don't poll the iterate for them.** A fixed-point scheme
+that estimates a global quantity (here: the water level $\nu$) from its own current
+state and then uses the estimate to update that state lets marginal cases stabilize
+their own misclassification — sub-threshold features held small $h$ by diluting the
+level they were judged against, and the artifact impersonated an approximation limit.
+The cure is structural: make the shared quantity the unknown of an outer solve
+(bisection on $\nu$), so the iterate cannot vote on it. Guard: the solution must pass a
+KKT audit by an evaluator independent of the solver (exact-MC pressures at the returned
+$(h, \nu)$; `test_waterfill_fixed_point_passes_an_independent_kkt_audit`).
 
 ## Limits and open directions
 
-- The one quantitative residual: the $d = 12$ representation threshold over-spreads
-  (formula counts 36 vs 20). Localized and bounded: threshold features live at
-  probabilities $\sim 10^{-3}$, where the moment-matched field has additive but not
-  multiplicative accuracy in $m_1 - m_0$ at the $\nu = 0.005$ scale. Ruled out by direct
-  test: enumeration width, centering variance, centering covariance (the exact pressure
-  identity holds at the optimum with interior spread 0.0007).
+- (Resolved.) An earlier $d = 12$ threshold over-spread was a solver artifact, not a
+  formula limit: projection dynamics let sub-threshold stragglers dilute their own water
+  level. The analytic pressure was exact throughout (quadrature vs exact MC ratio 1.000
+  at every threshold rank); the faithful bisection solver removes the spread entirely.
+  Boundary-layer facts kept from the investigation: size collapses before leverage at
+  the threshold (Fantope $h = 0.30$ where the oracle size is 0.01), and the exact
+  pressure identity holds at the optimum with the kept term carrying everything.
 - The pair sector's magnitude is computed (class optimum), not derived; its allocation
   is degenerate, so no deterministic second-order theory is warranted.
 - Open: the training-dynamics selection principle (where inside the additive/pairs
