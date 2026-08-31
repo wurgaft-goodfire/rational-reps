@@ -388,3 +388,53 @@ def dc_map(alpha, p, d, n_top=18, n_samples=8192, seed=0,
                  options=dict(maxiter=8000, maxfun=16000, ftol=1e-13, gtol=1e-9))
     C = r.x[:Phi.shape[1] * d].reshape(Phi.shape[1], d)
     return C @ Uout.T, r.x[Phi.shape[1] * d:], mu, sd
+
+
+def waterfill_h(alpha, p, d, outer=60, nodes=20):
+    """The allocation formula: water-filling h solving g_i(h_i) = nu, sum h = d, with the
+    pressure g_i = alpha_i p (E[p*_i|z_i=1] - E[q_i|z_i=1]) evaluated in closed form
+    (lognormal moment-matched log-denominator, fixed Gauss-Hermite quadrature of the
+    logistic). No samples, no matrix optimization. Returns (h (m,), nu)."""
+    alpha = np.asarray(alpha, float)
+    m = len(alpha)
+    t, w = np.polynomial.hermite_e.hermegauss(nodes)
+    w = w / w.sum()
+
+    def cond_means(gains, b):
+        e1, e0 = np.exp(gains + b), np.exp(b)
+        mean_t = e0 + p * (e1 - e0)
+        var_t = p * (1 - p) * (e1 - e0) ** 2
+        mu_s = mean_t.sum() - mean_t
+        s2 = np.log1p((var_t.sum() - var_t) / mu_s ** 2)
+        mu = np.log(mu_s) - 0.5 * s2
+        def emean(a):
+            x = (a - mu)[:, None] - np.sqrt(s2)[:, None] * t
+            return (1.0 / (1.0 + np.exp(-np.clip(x, -60, 60)))) @ w
+        return emean(gains + b), emean(b)
+
+    def project(x):
+        lo, hi = x.min() - 1.0, x.max()
+        for _ in range(100):
+            nu = 0.5 * (lo + hi)
+            lo, hi = (lo, nu) if np.clip(x - nu, 0, 1).sum() < d else (nu, hi)
+        return np.clip(x - 0.5 * (lo + hi), 0, 1)
+
+    m1, m0 = cond_means(alpha, np.zeros(m))
+    target = p * m1 + (1 - p) * m0
+    h = np.full(m, d / m)
+    b = np.zeros(m)
+    for _ in range(outer):
+        for _ in range(40):                              # calibrate biases E[q] = E[p*]
+            mu1, mu0 = cond_means(h * alpha, b)
+            b = b + 0.8 * (np.log(target) - np.log(np.maximum(p * mu1 + (1 - p) * mu0,
+                                                              1e-12)))
+            b = b - b.mean()
+        mu1, _ = cond_means(h * alpha, b)
+        g = alpha * p * (m1 - mu1)
+        inner = (h > 1e-3) & (h < 1 - 1e-3)
+        nu = g[inner].mean() if inner.any() else g.mean()
+        h = 0.5 * h + 0.5 * project(h + 2.0 * (g - nu))
+    mu1, _ = cond_means(h * alpha, b)
+    g = alpha * p * (m1 - mu1)
+    rep = h > 1e-3
+    return h, float(g[rep].mean())

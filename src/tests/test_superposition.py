@@ -244,3 +244,16 @@ def test_dc_map_reaches_exact_rank_and_at_least_the_additive_class():
     R2, b2 = geometry.predicted_map(alpha, p, d, n_samples=4096, n_starts=1, maxiter=2000)
     e_dc, e_add = excess(L_dc), excess(Z @ R2 + b2)
     assert e_dc < e_add + 0.01                         # bigger class, certified steps
+
+
+@pytest.mark.slow
+def test_waterfill_formula_reproduces_the_fantope_allocation():
+    # the theory's one formula: scalar water-filling with the closed-form pressure must
+    # match the certified convex program, spend the budget exactly, and respect symmetry.
+    alpha = 6.0 * (1.0 + np.arange(16)) ** -0.5
+    h, nu = geometry.waterfill_h(alpha, 0.3, 4)
+    assert abs(h.sum() - 4) < 1e-6 and nu > 0
+    h_ref = geometry.fantope_leverage(alpha, 0.3, 4, n_samples=8192, iters=800)[0]
+    assert np.corrcoef(h, h_ref)[0, 1] > 0.95
+    h_eq, _ = geometry.waterfill_h(np.full(8, 3.0), 0.3, 3)
+    assert h_eq.max() - h_eq.min() < 0.02              # exchangeable features, equal h

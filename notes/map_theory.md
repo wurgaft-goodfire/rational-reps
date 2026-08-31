@@ -164,10 +164,28 @@ term). Basis caveat: feature-alignment of the eigenbasis rests on iid features a
 non-degenerate ladder; with correlated features the same construction applies in the
 eigenbasis of the target logit covariance.
 
-## Open items
+## The h(alpha) formula (`geometry.waterfill_h`)
 
-- Derive the pressure function $g_i(h)$ analytically: the one remaining formula (the
-  agreed stopping point — couplings and the $\kappa$ ramp stay computed-not-derived).
+The pressure has a closed form. In the diagonal program the logits are
+$h_i \alpha_i z_i + b_i$, so $g_i = \alpha_i\, p\, (\mathbb E[p_{\star i}\mid z_i{=}1]
+- \mathbb E[q_i \mid z_i{=}1])$, and both conditional means are one-vs-rest logistics of
+"own logit minus a random log-denominator". The denominator is a sum of independent
+terms, so its first two moments are elementary sums; a lognormal moment-match and a
+fixed Gauss--Hermite quadrature of the logistic give $g_i$ in closed form (probit as the
+coarse limit). The theory's formula is then the scalar system: calibrate $b$
+($\mathbb E[q_i] = \mathbb E[p_{\star i}]$), equalize pressure ($g_i(h_i) = \nu$ on
+the represented set), spend the budget ($\sum h_i = d$). Corollary in closed form:
+feature $i$ is represented iff $\alpha_i\, p(1-p)\,(\mathbb E[p_{\star i}|1] -
+\mathbb E[p_{\star i}|0]) > \nu$.
+
+Accuracy against the certified Fantope: corr 0.985 / 0.992 / 0.972 at $d$ = 3/6/12,
+counts 7/13/41 vs 6/11/20 (the old $\alpha_\star$ formula: 9/17/33), fractional head
+reproduced. Known limits, accepted per the stopping rule: the head undershoots by
+$\approx 0.1$ and the $d = 12$ tail over-spreads $\sim 2\times$ — residuals of the
+lognormal field approximation and the dropped centering fluctuation; the Fantope remains
+the exact evaluator.
+
+## Open items
 - Optional: benign-landscape audit (Hessian bottom eigenvalues at the found optima;
   classify the d=3 cavity stall as saddle vs local minimum). A universal benign-landscape
   theorem is false in this family (the dense-cell truncation basin is a documented
