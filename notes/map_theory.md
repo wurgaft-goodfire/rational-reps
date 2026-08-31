@@ -152,6 +152,14 @@ $(h, \nu)$; `test_waterfill_fixed_point_passes_an_independent_kkt_audit`).
   Boundary-layer facts kept from the investigation: size collapses before leverage at
   the threshold (Fantope $h = 0.30$ where the oracle size is 0.01), and the exact
   pressure identity holds at the optimum with the kept term carrying everything.
+- Gram matrices: individual off-diagonal entries are seed noise (trained runs disagree
+  with each other at relative distance $\approx 1.4$ on the off-diagonal block), so only
+  statistics are predictable — diagonals, the all-negative sign structure, the
+  concentration on threshold channels, and the haze norm. Of the systematic (seed-mean)
+  off-diagonal haze, the additive theory carries $\approx 55\%$; the remainder is the
+  pair sector, recovered at the class level by the pairs oracle but not entrywise (its
+  allocation is restart-degenerate). Diagonals at the threshold fan out across classes
+  for the same reason — that fan is explained structure, not prediction error.
 - The pair sector's magnitude is computed (class optimum), not derived; its allocation
   is degenerate, so no deterministic second-order theory is warranted.
 - Open: the training-dynamics selection principle (where inside the additive/pairs
