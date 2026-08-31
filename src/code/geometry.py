@@ -324,3 +324,67 @@ def logit_features(L, Z, d):
     H = U[:, :d] * np.sqrt(S[:d])
     scale = np.sqrt(len(Z) * Z.mean() * (1 - Z.mean()))
     return np.sqrt(scale) * feature_vectors(H, Z)[0]
+
+
+def pair_features(Z, n_top=18):
+    """The extended dictionary: [z; z_a z_b for a < b among the first n_top features].
+    Returns the raw (unstandardized) matrix (n, m + n_top(n_top-1)/2)."""
+    Z = np.asarray(Z, float)
+    pairs = [Z[:, a] * Z[:, b] for a in range(n_top) for b in range(a + 1, n_top)]
+    return np.column_stack([Z] + pairs)
+
+
+def dc_map(alpha, p, d, n_top=18, n_samples=8192, seed=0,
+           lam_path=(0.02, 0.05, 0.1, 0.2, 0.5), inner=400, dc_steps=6):
+    """Certified predictor of the extended feature -> output map: truncated-nuclear DC
+    (each step a convex program, monotone, rank collapses to d without shrinking the kept
+    spectrum) followed by a convex coefficient polish in the found output subspace.
+    Returns (R (q, m), b (m,), mu (q,), sd (q,)): logits of words Zw are
+    ((pair_features(Zw, n_top) - mu) / sd) @ R + b."""
+    from scipy.optimize import minimize
+    alpha = np.asarray(alpha, float)
+    m = len(alpha)
+    rng = np.random.default_rng(seed)
+    Z = (rng.random((n_samples, m)) < p).astype(float)
+    raw = pair_features(Z, n_top)
+    mu, sd = raw.mean(0), raw.std(0)
+    Phi = (raw - mu) / sd
+    G = Z * alpha
+    from scipy.special import logsumexp
+    P = np.exp(G - logsumexp(G, axis=1, keepdims=True))
+    lip = np.linalg.norm(Phi, 2) ** 2 / (2 * n_samples)
+    step = 1.0 / lip
+
+    def ce_grad(R, b):
+        L = Phi @ R + b
+        Ls = L - L.max(1, keepdims=True)
+        q = np.exp(Ls); q /= q.sum(1, keepdims=True)
+        ce = float(np.mean(np.log(np.exp(Ls).sum(1)) + L.max(1) - (P * L).sum(1)))
+        return ce, Phi.T @ (q - P) / n_samples, (q - P).mean(0)
+
+    R = np.zeros((Phi.shape[1], m)); b = np.zeros(m)
+    for lam in lam_path:
+        for _ in range(dc_steps):
+            U, s, Vt = np.linalg.svd(R, full_matrices=False)
+            W = U[:, :d] @ Vt[:d]
+            for _ in range(inner):
+                _, gR, gb = ce_grad(R, b)
+                U, s, Vt = np.linalg.svd(R - step * (gR - lam * W), full_matrices=False)
+                R = (U * np.maximum(s - step * lam, 0.0)) @ Vt
+                b = b - step * gb
+    Uout = np.linalg.svd(R, full_matrices=False)[2][:d].T   # (m, d)
+
+    def fg(x):
+        C = x[:Phi.shape[1] * d].reshape(Phi.shape[1], d); bb = x[Phi.shape[1] * d:]
+        L = (Phi @ C) @ Uout.T + bb
+        Ls = L - L.max(1, keepdims=True)
+        q = np.exp(Ls); q /= q.sum(1, keepdims=True)
+        J = float(np.mean(np.log(np.exp(Ls).sum(1)) + L.max(1) - (P * L).sum(1)))
+        return J, np.concatenate([(Phi.T @ ((q - P) @ Uout) / n_samples).ravel(),
+                                  (q - P).mean(0)])
+
+    x0 = np.concatenate([(R @ Uout).ravel(), b])
+    r = minimize(fg, x0, jac=True, method="L-BFGS-B",
+                 options=dict(maxiter=8000, maxfun=16000, ftol=1e-13, gtol=1e-9))
+    C = r.x[:Phi.shape[1] * d].reshape(Phi.shape[1], d)
+    return C @ Uout.T, r.x[Phi.shape[1] * d:], mu, sd

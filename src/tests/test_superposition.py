@@ -220,3 +220,27 @@ def test_logit_features_recovers_planted_balanced_sizes():
     sizes = (geometry.logit_features(L, Z, d) ** 2).sum(1)
     assert np.allclose(sizes[:3], [4.0, 2.25, 1.0], rtol=0.05)
     assert sizes[3:].max() < 0.05
+
+
+@pytest.mark.slow
+def test_dc_map_reaches_exact_rank_and_at_least_the_additive_class():
+    # certified solver: rank exactly d with an unshrunk kept spectrum, and because its
+    # class contains the additive one, its CE must not lose to predicted_map's.
+    m, d, p = 10, 3, 0.3
+    alpha = 6.0 * (1.0 + np.arange(m)) ** -0.5
+    R, b, mu, sd = geometry.dc_map(alpha, p, d, n_top=6, n_samples=4096,
+                                   inner=200, dc_steps=4)
+    s = np.linalg.svd(R, compute_uv=False)
+    assert s[d:].max() < 1e-9                          # rank collapsed, not truncated
+    rng = np.random.default_rng(11)
+    Z = (rng.random((16384, m)) < p).astype(float)
+    from scipy.special import logsumexp as lse
+    G = Z * alpha
+    P = np.exp(G - lse(G, axis=1, keepdims=True))
+    def excess(L):
+        bayes = -np.mean((P * (G - lse(G, axis=1, keepdims=True))).sum(1))
+        return np.mean(lse(L, axis=1) - (P * L).sum(1)) - bayes
+    L_dc = (geometry.pair_features(Z, 6) - mu) / sd @ R + b
+    R2, b2 = geometry.predicted_map(alpha, p, d, n_samples=4096, n_starts=1, maxiter=2000)
+    e_dc, e_add = excess(L_dc), excess(Z @ R2 + b2)
+    assert e_dc < e_add + 0.01                         # bigger class, certified steps
