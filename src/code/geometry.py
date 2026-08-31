@@ -390,27 +390,40 @@ def dc_map(alpha, p, d, n_top=18, n_samples=8192, seed=0,
     return C @ Uout.T, r.x[Phi.shape[1] * d:], mu, sd
 
 
-def waterfill_h(alpha, p, d, outer=60, nodes=20):
+def waterfill_h(alpha, p, d, outer=60, n_strong=6, nodes=20):
     """The allocation formula: water-filling h solving g_i(h_i) = nu, sum h = d, with the
-    pressure g_i = alpha_i p (E[p*_i|z_i=1] - E[q_i|z_i=1]) evaluated in closed form
-    (lognormal moment-matched log-denominator, fixed Gauss-Hermite quadrature of the
-    logistic). No samples, no matrix optimization. Returns (h (m,), nu)."""
+    pressure g_i = alpha_i p (E[p*_i|z_i=1] - E[q_i|z_i=1]) in closed form: the top
+    n_strong competitors' on/off patterns enumerated exactly, the weak tail lognormal
+    moment-matched, the 1-d logistic integral by fixed quadrature. Returns (h (m,), nu)."""
+    import itertools
     alpha = np.asarray(alpha, float)
     m = len(alpha)
+    K = min(n_strong, m - 1)
+    pat = np.array(list(itertools.product([0, 1], repeat=K)), float)
+    pw = (p ** pat.sum(1)) * ((1 - p) ** (K - pat.sum(1)))
     t, w = np.polynomial.hermite_e.hermegauss(nodes)
     w = w / w.sum()
 
+    def emean(a, gains, b, i):
+        others = [j for j in range(m) if j != i]
+        strong, weak = others[:K], others[K:]
+        e1, e0 = np.exp(gains[strong] + b[strong]), np.exp(b[strong])
+        Ds = pat @ (e1 - e0) + e0.sum()
+        ew1, ew0 = np.exp(gains[weak] + b[weak]), np.exp(b[weak])
+        mw = (ew0 + p * (ew1 - ew0)).sum()
+        if len(weak) == 0:
+            x = a - np.log(Ds)[:, None] + 0 * t
+        else:
+            vw = (p * (1 - p) * (ew1 - ew0) ** 2).sum()
+            s2 = np.log1p(vw / mw ** 2)
+            Dt = np.exp(np.log(mw) - 0.5 * s2 + np.sqrt(s2) * t)
+            x = a - np.log(Ds[:, None] + Dt[None, :])
+        return float(pw @ (1.0 / (1.0 + np.exp(-np.clip(x, -60, 60)))) @ w)
+
     def cond_means(gains, b):
-        e1, e0 = np.exp(gains + b), np.exp(b)
-        mean_t = e0 + p * (e1 - e0)
-        var_t = p * (1 - p) * (e1 - e0) ** 2
-        mu_s = mean_t.sum() - mean_t
-        s2 = np.log1p((var_t.sum() - var_t) / mu_s ** 2)
-        mu = np.log(mu_s) - 0.5 * s2
-        def emean(a):
-            x = (a - mu)[:, None] - np.sqrt(s2)[:, None] * t
-            return (1.0 / (1.0 + np.exp(-np.clip(x, -60, 60)))) @ w
-        return emean(gains + b), emean(b)
+        mu1 = np.array([emean(gains[i] + b[i], gains, b, i) for i in range(m)])
+        mu0 = np.array([emean(b[i], gains, b, i) for i in range(m)])
+        return mu1, mu0
 
     def project(x):
         lo, hi = x.min() - 1.0, x.max()
@@ -424,7 +437,7 @@ def waterfill_h(alpha, p, d, outer=60, nodes=20):
     h = np.full(m, d / m)
     b = np.zeros(m)
     for _ in range(outer):
-        for _ in range(40):                              # calibrate biases E[q] = E[p*]
+        for _ in range(15):                              # calibrate biases E[q] = E[p*]
             mu1, mu0 = cond_means(h * alpha, b)
             b = b + 0.8 * (np.log(target) - np.log(np.maximum(p * mu1 + (1 - p) * mu0,
                                                               1e-12)))

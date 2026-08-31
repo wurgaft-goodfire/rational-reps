@@ -178,12 +178,20 @@ the represented set), spend the budget ($\sum h_i = d$). Corollary in closed for
 feature $i$ is represented iff $\alpha_i\, p(1-p)\,(\mathbb E[p_{\star i}|1] -
 \mathbb E[p_{\star i}|0]) > \nu$.
 
-Accuracy against the certified Fantope: corr 0.985 / 0.992 / 0.972 at $d$ = 3/6/12,
-counts 7/13/41 vs 6/11/20 (the old $\alpha_\star$ formula: 9/17/33), fractional head
-reproduced. Known limits, accepted per the stopping rule: the head undershoots by
-$\approx 0.1$ and the $d = 12$ tail over-spreads $\sim 2\times$ — residuals of the
-lognormal field approximation and the dropped centering fluctuation; the Fantope remains
-the exact evaluator.
+The pressure's field is hybrid, as everywhere in this theory: the top-$K \approx 6$
+competitors' on/off patterns enumerated exactly, the weak tail lognormal moment-matched,
+the 1-d logistic integral by fixed quadrature. Accuracy against the certified Fantope:
+corr 1.0000 / 0.9983 / 0.9691 at $d$ = 3/6/12, max $|\Delta h|$ = 0.014 / 0.064 / 0.204,
+and the fractional head exact at every budget (0.83/0.93/0.98 vs trained 0.84/0.94/0.99).
+Counts 6/12/36 vs 6/11/20 (the old $\alpha_\star$ formula: 9/17/33). The one residual —
+the $d = 12$ threshold over-spread — is localized and bounded: threshold features live at
+probabilities $\sim 10^{-3}$ where the moment-matched field has additive but not
+multiplicative accuracy in $m_1 - m_0$, at exactly the $\nu = 0.005$ scale. Ruled out by
+direct test: enumeration width ($K = 10$ identical to $K = 6$), the centering variance,
+and the centering covariance (the exact pressure identity was verified at the optimum:
+the kept term $\alpha_i \mathbb E[(p_\star - q)_i z_i]$ carries the entire pressure,
+interior spread 0.0007, and decays cleanly past the threshold). The Fantope remains the
+exact evaluator.
 
 ## Open items
 - Optional: benign-landscape audit (Hessian bottom eigenvalues at the found optima;
