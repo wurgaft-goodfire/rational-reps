@@ -14,22 +14,29 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Superposition: the map, the gauge, and the measured geometry
+    # Superposition: the theory in four sentences
 
     $m$ binary features $z_i \sim \mathrm{Bernoulli}(p)$, target
-    $p_\star(x{=}i \mid z) \propto \exp(\alpha_i z_i)$ with $\alpha_i = 8\,(i{+}1)^{-1/2}$,
-    rank-$d$ additive model. The theory (`notes/map_theory.md`) predicts in layers:
+    $p_\star(x{=}i \mid z) \propto \exp(\alpha_i z_i)$, rank-$d$ model. The theory
+    (`notes/map_theory.md`):
 
-    1. **The map** $R$ (feature $\to$ output, gauge-invariant): diagonal pinned at the
-       centred target, $R_{ii} = \alpha_i(1 - 1/m)$, off-diagonals negative and
-       asymmetric (reader $= \kappa_i \times$ writer, directions tied).
-    2. **Allocation**: dimensional capacity $h_i$ from the convex Fantope program.
-    3. **Measured geometry**: the balanced-SVD factorization of $R$ — this, not the map,
-       is where the "amplified" head norms come from.
+    1. **The anchor law.** The feature $\to$ output map's diagonal is pinned exactly at the
+       centred target, $R_{ii} = \alpha_i(1 - 1/m)$; interference is carried in negative
+       couplings that cancel out of the response ($G_{ii} + pS_i = \alpha_i$ is this law's
+       measurable shadow).
+    2. **The allocation formula.** Capacity shares $h_i$ solve water-filling: calibrate,
+       equalize the closed-form hybrid-field pressure $g_i(h_i)$ at one level $\nu$, spend
+       $\sum h_i = d$ (`geometry.waterfill_h`; the convex Fantope program is its certified
+       evaluator).
+    3. **The mechanical map.** Everything measured — sizes, "amplified" head, spectra,
+       Grams — is the balanced-SVD factorization of the predicted map; the certified
+       realization is `geometry.dc_map` (truncated-nuclear difference-of-convex, every step
+       a convex program).
+    4. **The boundary.** Trained networks live between the additive and the additive+pairs
+       class optima; the gap is training dynamics, out of scope by design.
 
-    The predicted map is `geometry.predicted_map` (task-only, no training data); measured
-    feature vectors of any logit matrix come from `geometry.logit_features`, applied
-    identically to trained models and to the prediction.
+    Degenerate directions (orientations, threshold ties, pair allocation) are unpredictable
+    in principle; the theory predicts their statistics.
     """)
     return
 
@@ -155,6 +162,7 @@ def _(
     COL,
     CONFIG,
     D_GRID,
+    E_DC,
     E_PAIR_ALL,
     E_PRED,
     RUNS,
@@ -174,6 +182,9 @@ def _(
                  label="additive theory")
         _ax.plot(ALPHA[_o], _spp[_o], color=COL["green"], lw=2.2, ls="--", zorder=5,
                  label="additive + pairs oracle (15-restart mean)")
+        _sdc = (E_DC[_d] ** 2).sum(1)
+        _ax.plot(ALPHA[_o], _sdc[_o], color="0.2", lw=1.8, ls=":", zorder=6,
+                 label="certified theory (DC)")
         _ax.set_title(f"$d = {_d}$", fontsize=15)
         _ax.set_xlabel(r"$\alpha_i$")
         plot_utils.FIG.style_axes(_ax)
@@ -181,7 +192,6 @@ def _(
     _axes[0].legend(frameon=False, fontsize=10, loc="upper left")
     _fig.tight_layout()
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig2_three_regimes"))
-
     return
 
 
@@ -192,7 +202,7 @@ def _(mo):
 
     Gauge-free capacity shares $h_i = P_{ii}$ (hat matrix of the measured vectors,
     invariant to any invertible transform of the code) against the Fantope prediction —
-    a certified convex program on the task alone.
+    a certified convex program on the task alone — with the closed-form water-filling formula (`waterfill_h`, dotted) on top of it.
 
     **Criterion**: the Fantope curve tracks the trained ramp including the sub-1
     shoulder (fractional dedication) and the transition locations; the represented
@@ -223,7 +233,11 @@ def _(
                         label="trained (5 seeds)" if _k == 0 else None)
         _o = np.argsort(ALPHA)
         _ax.plot(ALPHA[_o], H_FANT[_d][_o], color=COL["orange"], lw=2.4, zorder=4,
-                 label="Fantope")
+                 label="Fantope (certified program)")
+        import pathlib as _pl4
+        _fc = np.load(_pl4.Path(plot_utils.figure_path(CONFIG, f"formula_d{_d}", ext="npz")))
+        _ax.plot(ALPHA[_o], _fc["h"][_o], color="0.2", lw=1.8, ls=":", zorder=6,
+                 label="water-filling formula")
         _H = np.array([leverage(_E)[0] for _E in E_PAIR_ALL[_d]])
         _hp, _hs = _H.mean(0), _H.std(0)
         _ax.plot(ALPHA[_o], _hp[_o], color=COL["green"], lw=2.0, ls="--", zorder=5,
@@ -238,7 +252,6 @@ def _(
     _axes[0].legend(frameon=False, fontsize=9, loc="center right")
     _fig.tight_layout()
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig2b_leverage"))
-
     return
 
 
@@ -260,14 +273,17 @@ def _(mo):
 
 
 @app.cell
-def _(COL, CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt):
+def _(COL, CONFIG, D_GRID, E_DC, E_PRED, RUNS, np, plot_utils, plt):
     _fig, _axes = plt.subplots(2, len(D_GRID), figsize=(4.4 * len(D_GRID), 7.4))
     for _j, _d in enumerate(D_GRID):
         _Ep = E_PRED[_d]
         _ax = _axes[0, _j]
         _ev_pred = np.sort(np.linalg.eigvalsh(_Ep.T @ _Ep))[::-1]
         _ax.plot(np.arange(1, _d + 1), _ev_pred, "o-", color=COL["orange"], lw=2.2, ms=7,
-                 zorder=4, label="theory pipeline")
+                 zorder=4, label="additive theory")
+        _ev_dc = np.sort(np.linalg.eigvalsh(E_DC[_d].T @ E_DC[_d]))[::-1]
+        _ax.plot(np.arange(1, _d + 1), _ev_dc, "x:", color="0.2", lw=1.6, ms=7,
+                 zorder=5, label="certified theory (DC)")
         for _k, (_E, _s) in enumerate(RUNS[_d]):
             _ev = np.sort(np.linalg.eigvalsh(_E.T @ _E))[::-1]
             _ax.scatter(np.arange(1, _d + 1), _ev, s=30, color=COL["blue"], alpha=0.6,
@@ -282,7 +298,11 @@ def _(COL, CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt):
         _sp = np.diag(_Gp)
         _lp = (_Gp ** 2).sum(1) - _sp ** 2
         _ax.scatter(_sp, _lp, s=55, facecolor="none", edgecolor=COL["orange"], lw=1.8,
-                    zorder=4, label="theory pipeline")
+                    zorder=4, label="additive theory")
+        _Gdc = E_DC[_d] @ E_DC[_d].T
+        _sdc = np.diag(_Gdc)
+        _ax.scatter(_sdc, (_Gdc ** 2).sum(1) - _sdc ** 2, s=50, marker="x", color="0.2",
+                    zorder=5, label="certified theory (DC)")
         for _k, (_E, _s) in enumerate(RUNS[_d]):
             _G = _E @ _E.T
             _load = (_G ** 2).sum(1) - np.diag(_G) ** 2
@@ -316,15 +336,14 @@ def _(mo):
     while the additive column under-populates the plane. Trained's off-L points are the
     partial pair sector that training finds.
     """)
-
     return
 
 
 @app.cell
-def _(ALPHA, CONFIG, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
+def _(ALPHA, CONFIG, E_DC, E_PRED, RUNS, np, plot_utils, plt):
     _E = RUNS[3][0][0]                                     # trained, seed 0
     _Ep = E_PRED[3]
-    _Epair = E_PAIR_ALL[3][0]                              # one restart: directions are not averageable
+    _Edc = E_DC[3]                              # one restart: directions are not averageable
     _fig, _axes = plt.subplots(2, 3, figsize=(13.5, 8.6))
     _cmap = plt.cm.viridis
     _norm = plt.Normalize(0, ALPHA[0])
@@ -337,7 +356,7 @@ def _(ALPHA, CONFIG, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
         _Q = np.linalg.svd(_resid, full_matrices=False)[2][:2]
         return _para, _resid @ _Q.T
 
-    _cols = [(_E, "trained (seed 0)"), (_Epair, "additive + pairs oracle"),
+    _cols = [(_E, "trained (seed 0)"), (_Edc, "certified theory (DC)"),
              (_Ep, "additive theory")]
     for _c, (_Emat, _title) in enumerate(_cols):
         _ax = _axes[0, _c]
@@ -363,7 +382,6 @@ def _(ALPHA, CONFIG, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
     _axes[1, 0].set_ylabel("magnitude of the rest")
     _fig.colorbar(_sc, ax=_axes[:, 2], label=r"$\alpha_i$", shrink=0.8)
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3c_vectors_d3"))
-
     return
 
 
@@ -386,17 +404,17 @@ def _(mo):
 
 
 @app.cell
-def _(CONFIG, D_GRID, E_ORC, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
+def _(CONFIG, D_GRID, E_DC, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
     _k = 16
     _fig, _axes = plt.subplots(len(D_GRID), 4, figsize=(16.4, 4.0 * len(D_GRID)))
     for _j, _d in enumerate(D_GRID):
         _Gm = np.mean([_E[:_k] @ _E[:_k].T for _E, _s in RUNS[_d]], axis=0)
         _Gpair = np.mean([_E[:_k] @ _E[:_k].T for _E in E_PAIR_ALL[_d]], axis=0)
-        _Go = E_ORC[_d][:_k] @ E_ORC[_d][:_k].T
+        _Gdc = E_DC[_d][:_k] @ E_DC[_d][:_k].T
         _Gp = E_PRED[_d][:_k] @ E_PRED[_d][:_k].T
         _panels = [(_Gm, "trained (5-seed mean)"),
-                   (_Gpair, "additive + pairs (5-restart mean)"),
-                   (_Go, "additive oracle (train words)"), (_Gp, "theory pipeline")]
+                   (_Gpair, "additive + pairs (15-restart mean)"),
+                   (_Gdc, "certified theory (DC)"), (_Gp, "additive theory")]
         _lim = max(np.abs(_G).max() for _G, _t in _panels)
         for _i, (_G, _title) in enumerate(_panels):
             _ax = _axes[_j, _i]
@@ -405,7 +423,6 @@ def _(CONFIG, D_GRID, E_ORC, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
             _ax.set_xticks([]); _ax.set_yticks([])
         _fig.colorbar(_im, ax=_axes[_j, :], shrink=0.8, label=r"$\langle E_i, E_j\rangle$")
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3d_grams"))
-
     return
 
 
@@ -454,8 +471,7 @@ def _(ALPHA, CONFIG, D_GRID, Z, logit_features, np, plot_utils):
             _b = _best.x[_m * _d + _m:]
             np.savez(_f, R=_R, b=_b)
         E_ORC[_d] = logit_features(Z @ _R + _b, Z, _d)
-
-    return (E_ORC,)
+    return
 
 
 @app.cell
@@ -514,8 +530,20 @@ def _(ALPHA, CONFIG, D_GRID, Z, logit_features, np, plot_utils):
         _S = np.array([( _E ** 2).sum(1) for _E in _sols])
         print(f"d={_d}: size-curve restart spread (mean over features of std) = "
               f"{_S.std(0).mean():.3f}")
-
     return (E_PAIR_ALL,)
+
+
+@app.cell
+def _(CONFIG, D_GRID, Z, logit_features, np, plot_utils):
+    # the certified theory predictor (dc_map, truncated-nuclear DC + convex polish),
+    # loaded from the figure cache; measured through the same pipeline as everything else.
+    import pathlib as _pl5
+    E_DC = {}
+    for _d in D_GRID:
+        _L = np.load(_pl5.Path(plot_utils.figure_path(CONFIG, f"dc_d{_d}", ext="npz")))["L"]
+        E_DC[_d] = logit_features(_L, Z, _d)
+
+    return (E_DC,)
 
 
 if __name__ == "__main__":
