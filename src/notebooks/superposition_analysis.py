@@ -53,7 +53,6 @@ def _(mo):
     SEEDS = range(5)
     R = np.sqrt(N * P * (1 - P))                       # the one global activation scale
     ALPHA = SCALE * (1.0 + np.arange(M)) ** -BETA
-    ALPHA_C = ALPHA * (1 - 1.0 / M)                    # centred target diagonal
     Z = feature_cube(N, M, P, scale=SCALE, seed=0, spectrum="power", beta=BETA)[1]["Z"]
 
     TASK = ["setting=feature_cube", f"structure_kwargs.N={N}", f"structure_kwargs.m={M}",
@@ -76,11 +75,9 @@ def _(mo):
 
     return (
         ALPHA,
-        ALPHA_C,
         COL,
         CONFIG,
         D_GRID,
-        M,
         P,
         SEEDS,
         Z,
@@ -96,64 +93,37 @@ def _(mo):
 
 
 @app.cell
-def _(ALPHA, D_GRID, P, Z, fantope_leverage, logit_features, np, predicted_map):
+def _(
+    ALPHA,
+    CONFIG,
+    D_GRID,
+    P,
+    Z,
+    fantope_leverage,
+    logit_features,
+    np,
+    plot_utils,
+    predicted_map,
+):
     # the theory pipeline, task-only: predicted map -> measured-style predicted vectors,
-    # and the Fantope allocation. (A few minutes of deterministic optimization per budget.)
-    PRED_MAP = {}
+    # and the Fantope allocation. Solves take ~15 min; cached in the gitignored figure
+    # cache — delete the npz files to recompute.
+    import pathlib as _pl
+
     E_PRED = {}
     H_FANT = {}
     for _d in D_GRID:
-        _R, _b = predicted_map(ALPHA, P, _d, n_samples=16384, n_starts=3)
-        PRED_MAP[_d] = (_R, _b)
+        _f = _pl.Path(plot_utils.figure_path(CONFIG, f"predictions_d{_d}", ext="npz"))
+        if _f.exists():
+            _c = np.load(_f)
+            _R, _b, _h = _c["R"], _c["b"], _c["h"]
+        else:
+            _R, _b = predicted_map(ALPHA, P, _d, n_samples=16384, n_starts=3)
+            _h = fantope_leverage(ALPHA, P, _d, n_samples=16384, iters=1200)[0]
+            np.savez(_f, R=_R, b=_b, h=_h)
         E_PRED[_d] = logit_features(Z @ _R + _b, Z, _d)
-        H_FANT[_d] = fantope_leverage(ALPHA, P, _d, n_samples=16384, iters=1200)[0]
-    return E_PRED, H_FANT, PRED_MAP
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Figure 1 — the map anchor (no training)
-
-    Top: diagonal of the predicted centred map against $\alpha_i(1 - 1/m)$; the identity
-    line is the theory's exact anchor. Bottom: each represented feature's off-diagonal
-    row sum $S_i = \sum_{j \ne i} R_{ij}$.
-
-    **Criterion**: represented diagonals on the identity line (sub-percent away from the
-    representation threshold); every represented row sum strictly negative. A diagonal
-    far above the line would mean the map itself amplifies — the old misreading.
-    """)
-    return
-
-
-@app.cell
-def _(ALPHA, ALPHA_C, COL, CONFIG, D_GRID, PRED_MAP, np, plot_utils, plt):
-    _fig, _axes = plt.subplots(2, len(D_GRID), figsize=(4.4 * len(D_GRID), 7.2))
-    for _j, _d in enumerate(D_GRID):
-        _R = PRED_MAP[_d][0]
-        _Rc = _R - _R.mean(1, keepdims=True)
-        _dg = np.diag(_Rc)
-        _rep = _dg > 0.15
-
-        _ax = _axes[0, _j]
-        _ax.plot([0, ALPHA_C[0]], [0, ALPHA_C[0]], color="0.55", lw=1.2, ls="--", zorder=2)
-        _ax.scatter(ALPHA_C, _dg, s=30, color=COL["blue"], zorder=3, edgecolors="none")
-        _ax.set_title(f"$d = {_d}$", fontsize=15)
-        _ax.set_xlabel(r"$\alpha_i (1 - 1/m)$")
-        plot_utils.FIG.style_axes(_ax)
-
-        _ax = _axes[1, _j]
-        _S = (_Rc - np.diag(_dg)).sum(1)
-        _ax.axhline(0, color="0.75", lw=1)
-        _ax.scatter(ALPHA[_rep], _S[_rep], s=30, color=COL["blue"], zorder=3,
-                    edgecolors="none")
-        _ax.set_xlabel(r"$\alpha_i$ (represented)")
-        plot_utils.FIG.style_axes(_ax)
-    _axes[0, 0].set_ylabel(r"predicted $R_{ii}$")
-    _axes[1, 0].set_ylabel(r"row sum $S_i$")
-    _fig.tight_layout()
-    plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig1_theory_check"))
-    return
+        H_FANT[_d] = _h
+    return E_PRED, H_FANT
 
 
 @app.cell(hide_code=True)
@@ -180,23 +150,38 @@ def _(D_GRID, SEEDS, trained_sizes):
 
 
 @app.cell
-def _(ALPHA, COL, CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt):
+def _(
+    ALPHA,
+    COL,
+    CONFIG,
+    D_GRID,
+    E_PAIR_ALL,
+    E_PRED,
+    RUNS,
+    np,
+    plot_utils,
+    plt,
+):
     _fig, _axes = plt.subplots(1, len(D_GRID), figsize=(4.6 * len(D_GRID), 4.4), sharex=True)
     for _ax, _d in zip(_axes, D_GRID):
         for _k, (_E, _s) in enumerate(RUNS[_d]):
             _ax.scatter(ALPHA, _s, s=26, color=COL["blue"], alpha=0.5, edgecolors="none",
                         zorder=3, label="trained (5 seeds)" if _k == 0 else None)
         _sp = (E_PRED[_d] ** 2).sum(1)
+        _spp = np.mean([( _E ** 2).sum(1) for _E in E_PAIR_ALL[_d]], axis=0)
         _o = np.argsort(ALPHA)
         _ax.plot(ALPHA[_o], _sp[_o], color=COL["orange"], lw=2.6, zorder=4,
-                 label="theory pipeline")
+                 label="additive theory")
+        _ax.plot(ALPHA[_o], _spp[_o], color=COL["green"], lw=2.2, ls="--", zorder=5,
+                 label="additive + pairs oracle (15-restart mean)")
         _ax.set_title(f"$d = {_d}$", fontsize=15)
         _ax.set_xlabel(r"$\alpha_i$")
         plot_utils.FIG.style_axes(_ax)
     _axes[0].set_ylabel(r"$\|E_i\|^2$")
-    _axes[0].legend(frameon=False, fontsize=12, loc="upper left")
+    _axes[0].legend(frameon=False, fontsize=10, loc="upper left")
     _fig.tight_layout()
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig2_three_regimes"))
+
     return
 
 
@@ -217,7 +202,19 @@ def _(mo):
 
 
 @app.cell
-def _(ALPHA, COL, CONFIG, D_GRID, H_FANT, RUNS, leverage, np, plot_utils, plt):
+def _(
+    ALPHA,
+    COL,
+    CONFIG,
+    D_GRID,
+    E_PAIR_ALL,
+    H_FANT,
+    RUNS,
+    leverage,
+    np,
+    plot_utils,
+    plt,
+):
     _fig, _axes = plt.subplots(1, len(D_GRID), figsize=(4.6 * len(D_GRID), 4.2))
     for _ax, _d in zip(_axes, D_GRID):
         for _k, (_E, _s) in enumerate(RUNS[_d]):
@@ -227,14 +224,21 @@ def _(ALPHA, COL, CONFIG, D_GRID, H_FANT, RUNS, leverage, np, plot_utils, plt):
         _o = np.argsort(ALPHA)
         _ax.plot(ALPHA[_o], H_FANT[_d][_o], color=COL["orange"], lw=2.4, zorder=4,
                  label="Fantope")
+        _H = np.array([leverage(_E)[0] for _E in E_PAIR_ALL[_d]])
+        _hp, _hs = _H.mean(0), _H.std(0)
+        _ax.plot(ALPHA[_o], _hp[_o], color=COL["green"], lw=2.0, ls="--", zorder=5,
+                 label="additive + pairs oracle (15-restart mean $\pm$ sd)")
+        _ax.fill_between(ALPHA[_o], (_hp - _hs)[_o], (_hp + _hs)[_o], color=COL["green"],
+                         alpha=0.2, lw=0, zorder=2)
         _ax.set_ylim(-0.05, 1.1)
         _ax.set_title(f"$d = {_d}$", fontsize=15)
         _ax.set_xlabel(r"$\alpha_i$")
         plot_utils.FIG.style_axes(_ax)
     _axes[0].set_ylabel(r"leverage $h_i$")
-    _axes[0].legend(frameon=False, fontsize=11, loc="center right")
+    _axes[0].legend(frameon=False, fontsize=9, loc="center right")
     _fig.tight_layout()
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig2b_leverage"))
+
     return
 
 
@@ -256,7 +260,7 @@ def _(mo):
 
 
 @app.cell
-def _(CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt, COL):
+def _(COL, CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt):
     _fig, _axes = plt.subplots(2, len(D_GRID), figsize=(4.4 * len(D_GRID), 7.4))
     for _j, _d in enumerate(D_GRID):
         _Ep = E_PRED[_d]
@@ -301,22 +305,27 @@ def _(mo):
     ## Figure 3c — the vectors themselves ($d = 3$)
 
     Basis from each model itself: the top feature's unit vector, and its orthogonal
-    complement as the shared plane. Top row: shared-plane arrows, trained (seed 0) beside
-    the theory pipeline, colored by $\alpha_i$. Bottom row: component along the top
-    feature's direction ($x$) against the magnitude of the rest ($y$).
+    complement as the shared plane. Columns: trained (seed 0), the additive + pairs oracle
+    (one restart — directions are the degenerate coordinate, so they cannot be averaged),
+    and the additive theory. Top row: shared-plane arrows colored by $\alpha_i$. Bottom
+    row: component along the top feature's direction ($x$) against the magnitude of the
+    rest ($y$).
 
-    **Criterion**: arrow lengths match left-right (angles are the free orientation); in
-    the bottom row both panels show the same shape — including the head's *nonzero*
-    in-plane component (the anti-aligned interference budget).
+    **Criterion**: arrow count and lengths match trained best in the pairs column (angles
+    are the free orientation); the L-shape in the bottom row is shared by trained and pairs,
+    while the additive column under-populates the plane. Trained's off-L points are the
+    partial pair sector that training finds.
     """)
+
     return
 
 
 @app.cell
-def _(ALPHA, CONFIG, E_PRED, RUNS, np, plot_utils, plt):
+def _(ALPHA, CONFIG, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
     _E = RUNS[3][0][0]                                     # trained, seed 0
     _Ep = E_PRED[3]
-    _fig, _axes = plt.subplots(2, 2, figsize=(9.2, 8.6))
+    _Epair = E_PAIR_ALL[3][0]                              # one restart: directions are not averageable
+    _fig, _axes = plt.subplots(2, 3, figsize=(13.5, 8.6))
     _cmap = plt.cm.viridis
     _norm = plt.Normalize(0, ALPHA[0])
 
@@ -328,8 +337,10 @@ def _(ALPHA, CONFIG, E_PRED, RUNS, np, plot_utils, plt):
         _Q = np.linalg.svd(_resid, full_matrices=False)[2][:2]
         return _para, _resid @ _Q.T
 
-    for _ax, _Emat, _title in [(_axes[0, 0], _E, "trained (seed 0)"),
-                               (_axes[0, 1], _Ep, "theory pipeline")]:
+    _cols = [(_E, "trained (seed 0)"), (_Epair, "additive + pairs oracle"),
+             (_Ep, "additive theory")]
+    for _c, (_Emat, _title) in enumerate(_cols):
+        _ax = _axes[0, _c]
         _, _xy = _split(_Emat)
         _rep = np.flatnonzero((_Emat ** 2).sum(1) > 0.05)[1:]   # shared, visibly represented
         for _i in _rep:
@@ -341,8 +352,7 @@ def _(ALPHA, CONFIG, E_PRED, RUNS, np, plot_utils, plt):
         _ax.set_title(f"shared plane — {_title}", fontsize=13)
         plot_utils.FIG.clean(_ax)
 
-    for _ax, _Emat, _title in [(_axes[1, 0], _E, "trained (seed 0)"),
-                               (_axes[1, 1], _Ep, "theory pipeline")]:
+        _ax = _axes[1, _c]
         _para, _xy = _split(_Emat)
         _sc = _ax.scatter(np.abs(_para), np.linalg.norm(_xy, axis=1), s=55,
                           c=ALPHA, cmap=_cmap, norm=_norm, zorder=3, edgecolors="none")
@@ -351,8 +361,9 @@ def _(ALPHA, CONFIG, E_PRED, RUNS, np, plot_utils, plt):
         _ax.set_title(_title, fontsize=13)
         plot_utils.FIG.style_axes(_ax)
     _axes[1, 0].set_ylabel("magnitude of the rest")
-    _fig.colorbar(_sc, ax=_axes[:, 1], label=r"$\alpha_i$", shrink=0.8)
+    _fig.colorbar(_sc, ax=_axes[:, 2], label=r"$\alpha_i$", shrink=0.8)
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3c_vectors_d3"))
+
     return
 
 
@@ -361,32 +372,150 @@ def _(mo):
     mo.md(r"""
     ## Figure 3d — Gram fingerprint at every budget
 
-    $\langle E_i, E_j\rangle$ over the top 16 features, trained (seed 0) beside the
-    theory pipeline, per budget.
+    $\langle E_i, E_j\rangle$ over the top 16 features: the 5-seed mean of the trained
+    Grams beside the additive-class optimum (the theory pipeline), per budget.
 
-    **Criterion**: matching diagonals (including the amplified head), negative haze in
-    the represented block on both sides. Individual off-diagonals need not match — only
-    the structure.
+    **Criterion**: individual off-diagonals are seed noise (seed-to-seed relative
+    distance $\approx 1.4$), so only statistics are testable: matching diagonals
+    (amplified head included), all-negative haze in the represented block, and the
+    haze concentrated toward the threshold features. Known residual: the seed-mean haze
+    is $\approx 2\times$ stronger than the additive optimum's — the non-additive
+    (strong-pair) class component, `notes/map_theory.md`.
     """)
     return
 
 
 @app.cell
-def _(CONFIG, D_GRID, E_PRED, RUNS, np, plot_utils, plt):
+def _(CONFIG, D_GRID, E_ORC, E_PAIR_ALL, E_PRED, RUNS, np, plot_utils, plt):
     _k = 16
-    _fig, _axes = plt.subplots(len(D_GRID), 2, figsize=(8.4, 4.0 * len(D_GRID)))
+    _fig, _axes = plt.subplots(len(D_GRID), 4, figsize=(16.4, 4.0 * len(D_GRID)))
     for _j, _d in enumerate(D_GRID):
-        _pairs = [(RUNS[_d][0][0], "trained (seed 0)"), (E_PRED[_d], "theory pipeline")]
-        _lim = max(np.abs(_E[:_k] @ _E[:_k].T).max() for _E, _ in _pairs)
-        for _i, (_E, _title) in enumerate(_pairs):
+        _Gm = np.mean([_E[:_k] @ _E[:_k].T for _E, _s in RUNS[_d]], axis=0)
+        _Gpair = np.mean([_E[:_k] @ _E[:_k].T for _E in E_PAIR_ALL[_d]], axis=0)
+        _Go = E_ORC[_d][:_k] @ E_ORC[_d][:_k].T
+        _Gp = E_PRED[_d][:_k] @ E_PRED[_d][:_k].T
+        _panels = [(_Gm, "trained (5-seed mean)"),
+                   (_Gpair, "additive + pairs (5-restart mean)"),
+                   (_Go, "additive oracle (train words)"), (_Gp, "theory pipeline")]
+        _lim = max(np.abs(_G).max() for _G, _t in _panels)
+        for _i, (_G, _title) in enumerate(_panels):
             _ax = _axes[_j, _i]
-            _im = _ax.imshow(_E[:_k] @ _E[:_k].T, cmap=plot_utils.FIG.diverging_cmap,
-                             vmin=-_lim, vmax=_lim)
-            _ax.set_title(f"$d = {_d}$ — {_title}", fontsize=12)
+            _im = _ax.imshow(_G, cmap=plot_utils.FIG.diverging_cmap, vmin=-_lim, vmax=_lim)
+            _ax.set_title(f"$d = {_d}$ — {_title}", fontsize=11)
             _ax.set_xticks([]); _ax.set_yticks([])
         _fig.colorbar(_im, ax=_axes[_j, :], shrink=0.8, label=r"$\langle E_i, E_j\rangle$")
     plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3d_grams"))
+
     return
+
+
+@app.cell
+def _(ALPHA, CONFIG, D_GRID, Z, logit_features, np, plot_utils):
+    # additive-class oracle on the training words (the exact 2048-word sample the
+    # networks see), tied-direction + kappa class; cached beside the predictions.
+    import pathlib as _pl2
+    import torch as _torch
+    from scipy.optimize import minimize as _minimize
+
+    _torch.set_default_dtype(_torch.float64)
+    _torch.set_num_threads(1)
+    E_ORC = {}
+    for _d in D_GRID:
+        _f = _pl2.Path(plot_utils.figure_path(CONFIG, f"train_oracle_d{_d}", ext="npz"))
+        if _f.exists():
+            _c = np.load(_f)
+            _R, _b = _c["R"], _c["b"]
+        else:
+            _Zt = _torch.tensor(Z)
+            _Pt = _torch.softmax(_Zt * _torch.tensor(ALPHA), 1)
+            _m = len(ALPHA)
+
+            def _fg(_x, _d=_d, _Zt=_Zt, _Pt=_Pt, _m=_m):
+                _t = _torch.tensor(_x, requires_grad=True)
+                _W = _t[:_m * _d].reshape(_m, _d)
+                _k = _t[_m * _d:_m * _d + _m]
+                _bb = _t[_m * _d + _m:]
+                _L = (_Zt @ _W) @ (_k[:, None] * _W).T + _bb
+                _J = (_torch.logsumexp(_L, 1) - (_Pt * _L).sum(1)).mean()
+                _J.backward()
+                return float(_J.detach()), _t.grad.numpy()
+
+            _rng = np.random.default_rng(0)
+            _best = None
+            for _s in range(2):
+                _x0 = np.concatenate([0.3 * _rng.normal(size=_m * _d), np.ones(_m), np.zeros(_m)])
+                _r = _minimize(_fg, _x0, jac=True, method="L-BFGS-B",
+                               options=dict(maxiter=6000, maxfun=12000, ftol=1e-13, gtol=1e-9))
+                if _best is None or _r.fun < _best.fun:
+                    _best = _r
+            _W = _best.x[:_m * _d].reshape(_m, _d)
+            _kap = _best.x[_m * _d:_m * _d + _m]
+            _R = _W @ (_kap[:, None] * _W).T
+            _b = _best.x[_m * _d + _m:]
+            np.savez(_f, R=_R, b=_b)
+        E_ORC[_d] = logit_features(Z @ _R + _b, Z, _d)
+
+    return (E_ORC,)
+
+
+@app.cell
+def _(ALPHA, CONFIG, D_GRID, Z, logit_features, np, plot_utils):
+    # additive + strong-pair oracle on the training words (top-18 pair interactions,
+    # code stays d-dimensional): the class that contains the trained nets. Five restarts;
+    # the pair allocation is tie-degenerate at the threshold; figures show the
+    # 15-restart mean with a std band.
+    import pathlib as _pl3
+    import torch as _torch2
+    from scipy.optimize import minimize as _minimize2
+
+    _torch2.set_default_dtype(_torch2.float64)
+    _torch2.set_num_threads(1)
+    _PIDX = [(_a, _b) for _a in range(18) for _b in range(_a + 1, 18)]
+    _U = np.column_stack([Z[:, _a] * Z[:, _b] for _a, _b in _PIDX])
+    _U = (_U - _U.mean(0)) / _U.std(0)
+    E_PAIR_ALL = {}
+    for _d in D_GRID:
+        _sols = []
+        for _seed in range(15):
+            _f = _pl3.Path(plot_utils.figure_path(CONFIG, f"pairs_oracle_d{_d}_s{_seed}", ext="npz"))
+            if _f.exists():
+                _L = np.load(_f)["L"]
+            else:
+                _Zt = _torch2.tensor(Z)
+                _Ut = _torch2.tensor(_U)
+                _Pt = _torch2.softmax(_Zt * _torch2.tensor(ALPHA), 1)
+                _m, _np_ = len(ALPHA), len(_PIDX)
+
+                def _fg(_x, _d=_d, _Zt=_Zt, _Ut=_Ut, _Pt=_Pt, _m=_m, _np_=_np_):
+                    _t = _torch2.tensor(_x, requires_grad=True)
+                    _A = _t[:_m * _d].reshape(_m, _d)
+                    _Cp = _t[_m * _d:_m * _d + _np_ * _d].reshape(_np_, _d)
+                    _B = _t[_m * _d + _np_ * _d:_m * _d + _np_ * _d + _m * _d].reshape(_m, _d)
+                    _bb = _t[_m * _d + _np_ * _d + _m * _d:]
+                    _Lg = (_Zt @ _A + _Ut @ _Cp) @ _B.T + _bb
+                    _J = (_torch2.logsumexp(_Lg, 1) - (_Pt * _Lg).sum(1)).mean()
+                    _J.backward()
+                    return float(_J.detach()), _t.grad.numpy()
+
+                _rng = np.random.default_rng(_seed)
+                _x0 = np.concatenate([0.3 * _rng.normal(size=_m * _d),
+                                      0.05 * _rng.normal(size=_np_ * _d),
+                                      0.3 * _rng.normal(size=_m * _d), np.zeros(_m)])
+                _r = _minimize2(_fg, _x0, jac=True, method="L-BFGS-B",
+                                options=dict(maxiter=6000, maxfun=12000, ftol=1e-13, gtol=1e-9))
+                _t = _r.x
+                _A = _t[:_m * _d].reshape(_m, _d)
+                _Cp = _t[_m * _d:_m * _d + _np_ * _d].reshape(_np_, _d)
+                _B = _t[_m * _d + _np_ * _d:_m * _d + _np_ * _d + _m * _d].reshape(_m, _d)
+                _L = (Z @ _A + _U @ _Cp) @ _B.T + _t[_m * _d + _np_ * _d + _m * _d:]
+                np.savez(_f, L=_L)
+            _sols.append(logit_features(_L, Z, _d))
+        E_PAIR_ALL[_d] = _sols
+        _S = np.array([( _E ** 2).sum(1) for _E in _sols])
+        print(f"d={_d}: size-curve restart spread (mean over features of std) = "
+              f"{_S.std(0).mean():.3f}")
+
+    return (E_PAIR_ALL,)
 
 
 if __name__ == "__main__":
