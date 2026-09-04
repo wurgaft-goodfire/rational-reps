@@ -2,9 +2,15 @@
 """Publication plotting: `FigureGenerator` carries the house style (large Avenir fonts, twilight/vlag
 colormaps, borderless manifold panels) and the geometry-analysis helpers render through it."""
 import itertools
+import logging
 from pathlib import Path
 
 import numpy as np
+
+# PDF saving triggers fontTools' font subsetting, which logs every glyph at INFO (and warns
+# about the house font's timestamps) once any library configures the root logger; keep it
+# quiet everywhere figures are made
+logging.getLogger("fontTools").setLevel(logging.ERROR)
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.collections import LineCollection

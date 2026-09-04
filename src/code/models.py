@@ -57,7 +57,8 @@ class ModelConfig(transformers.PretrainedConfig):
     model_type = "ladder"
 
     def __init__(self, vocab_size=2, num_classes=2, embed_dim=16, arity=1,
-                 hidden_size=64, num_layers=2, init_scale=0.02, l1=0.0, loss="ce", **kwargs):
+                 hidden_size=64, num_layers=2, init_scale=0.02, l1=0.0, loss="ce",
+                 n_features=2, feature_order=1, n_top=18, **kwargs):
         super().__init__(**kwargs)
         self.vocab_size = vocab_size
         self.num_classes = num_classes
@@ -68,6 +69,9 @@ class ModelConfig(transformers.PretrainedConfig):
         self.init_scale = init_scale
         self.l1 = l1                                     # SAE sparsity penalty
         self.loss = loss                                 # "ce" or "reverse_kl"
+        self.n_features = n_features                     # feature-dictionary models: z width
+        self.feature_order = feature_order               # 1 = additive, 2 = + centered pairs
+        self.n_top = n_top                               # pair dictionary: first n_top features
 
 
 class _ModelBase(transformers.PreTrainedModel):
@@ -211,10 +215,50 @@ class SAEModel(_ModelBase):
         return self._code(input_ids)                        # the bottleneck code
 
 
+class FeatureModel(_ModelBase):
+    """Bias-free rank-d model over the item's fixed feature dictionary: code
+    h = e0 + phi E, logits = h readout^T. feature_order=1: phi = z - mean(z) (the
+    additive class); feature_order=2: adds standardized centered pairs among the first
+    n_top features (the interaction class). ``load_features`` installs phi."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.embedding.weight.requires_grad_(False)     # ids resolve through the feature table
+        t = min(config.n_top, config.n_features)
+        K = config.n_features + (t * (t - 1) // 2 if config.feature_order == 2 else 0)
+        self.register_buffer("phi", torch.zeros(config.vocab_size, K))
+        self.E = nn.Parameter(torch.randn(K, config.embed_dim) * config.init_scale)
+        self.e0 = nn.Parameter(torch.zeros(config.embed_dim))
+        self.readout = nn.Parameter(torch.randn(config.num_classes, config.embed_dim)
+                                    * config.init_scale)
+
+    def load_features(self, features):
+        """Center the per-item features, append the pair block if ordered, install."""
+        Z = torch.as_tensor(features, dtype=self.phi.dtype).to(self.phi.device)
+        Zc = Z - Z.mean(0)
+        cols = [Zc]
+        if self.config.feature_order == 2:
+            t = min(self.config.n_top, Z.shape[1])
+            pairs = torch.stack([Zc[:, a] * Zc[:, b]
+                                 for a in range(t) for b in range(a + 1, t)], dim=1)
+            cols.append(pairs / pairs.std(0))
+        table = torch.cat(cols, dim=1)                  # (n_items, K); outcome-name rows stay zero
+        with torch.no_grad():
+            self.phi[:len(table)] = table
+
+    def forward(self, input_ids, distribution_labels=None, **kwargs):
+        return self._finish(self.input_reps(input_ids[:, :1]) @ self.readout.T,
+                            distribution_labels)
+
+    def input_reps(self, input_ids):
+        return self.e0 + self.phi[input_ids.reshape(-1)] @ self.E
+
+
 class TransformerModel(_CausalLMBase, transformers.GPTNeoXForCausalLM):
     """GPT-NeoX causal LM in the ladder interface: shifted next-token CE, plus item probing."""
     output_key = "logits"
 
 
 MODEL_CLASSES = {"linear": LinearModel, "mlp": MLPModel, "rnn": RNNModel,
-                   "sae": SAEModel, "transformer": TransformerModel}
+                   "sae": SAEModel, "transformer": TransformerModel,
+                   "features": FeatureModel}

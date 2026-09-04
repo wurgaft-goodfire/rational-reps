@@ -66,6 +66,8 @@ def train(config, dataset):
         mc.max_position_embeddings = dataset.seq_len    # unused by the readout configs
         if config.cfg.model_kwargs.model_type == "sae":
             mc.embed_dim = dataset.features.shape[1]    # the SAE reads feature codes, not ids
+        if config.cfg.model_kwargs.model_type == "features":
+            mc.n_features = dataset.features.shape[1]   # width of the fixed feature dictionary
     print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
           f"num_classes={dataset.num_dims}, arity={dataset.arity}, seq_len={dataset.seq_len}")
 

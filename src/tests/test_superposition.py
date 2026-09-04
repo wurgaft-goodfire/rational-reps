@@ -1,111 +1,211 @@
-"""The superposition oracle (geometry.py): closed-form geometry of a rank-limited softmax
-on Bernoulli features, from notes/superposition.tex. Every test pins an analytic answer."""
+"""The first-order geometry pipeline (geometry.py), from notes/superposition.tex:
+convex allocation -> tight-frame realization -> convex decoder -> balanced SVD.
+Every test pins an analytic answer or an independent audit."""
 import numpy as np
 import pytest
 
 from src.code import geometry
-from src.code.geometry import (balanced_code, feature_directions, feature_objective,
-                               feature_sizes, feature_vectors, fitted_features,
-                               predicted_features)
+from src.code.geometry import allocate_d, decoder_map, feature_vectors, tight_frame
 
 LADDER = 8.0 * (1.0 + np.arange(64)) ** -0.5          # the standard power-law importance ladder
 
-
-def test_objective_scores_strength_error_and_overlap_by_hand():
-    # orthogonal at target strength: J = 0. Two identical unit vectors at target strength:
-    # only the overlap term survives, <w1,w2>^2 = 1 counted for both orderings -> J = p.
-    W = np.array([[2.0, 0.0], [0.0, 3.0]])            # exact in binary: J = 0 exactly
-    assert feature_objective(W, np.array([4.0, 9.0]), 0.3) == 0.0
-    W = np.array([[1.0, 0.0], [1.0, 0.0]])
-    assert np.isclose(feature_objective(W, np.array([1.0, 1.0]), 0.3), 0.3)
+# trained 5-seed mean leverage at d = 3 (features 0..7), the reference the allocation
+# must reproduce (measured 2026-09-01; the deep-tail cutoff residual lives at d = 12)
+TRAINED_H3 = np.array([0.839, 0.710, 0.686, 0.293, 0.234, 0.137, 0.041, 0.014])
 
 
-def test_sizes_equal_importance_closed_form_and_exact_at_full_budget():
-    # all alpha equal: everything is shared, s = alpha / (1 - p + p m/d); at d = m
-    # orthogonality is free and s = alpha exactly.
-    alpha = np.full(8, 2.0)
-    s, _ = feature_sizes(alpha, 0.3, d=4)
-    assert np.allclose(s, 2.0 / (1 - 0.3 + 0.3 * 8 / 4))
-    s, _ = feature_sizes(alpha, 0.3, d=8)
-    assert np.allclose(s, 2.0)
+def _bernoulli(m, n=16384, p=0.3, seed=0):
+    return (np.random.default_rng(seed).random((n, m)) < p).astype(float)
 
 
-def test_a_dominant_feature_takes_its_own_dimension_at_exact_strength():
-    # alpha = [10, 1 x7], p = 0.3, d = 2. Budget with the top feature dedicated:
-    # alpha_star = 7 / (0.7 + 0.3 * 7) = 2.5, so 10 > alpha_star is dedicated at s = 10
-    # and the seven others share one dimension at s = (1 - 0.75)/0.7 = 5/14.
-    alpha = np.array([10.0] + [1.0] * 7)
-    s, astar = feature_sizes(alpha, 0.3, d=2)
-    assert np.isclose(astar, 2.5)
-    assert s[0] == 10.0
-    assert np.allclose(s[1:], 5.0 / 14.0)
+def test_allocate_d_splits_evenly_under_equal_importance():
+    # exchangeable features: the convex optimum is symmetric, a_i = d/m
+    a, delta = allocate_d(np.full(16, 3.0), _bernoulli(16), 4)
+    assert abs(a.sum() - 4) < 1e-9
+    assert np.abs(a - 0.25).max() < 0.03
+    assert delta > 0
 
 
-def test_capacity_level_satisfies_the_dimension_budget_exactly():
-    # the one scalar alpha_star must spend exactly d dimensions: dedicated features count 1,
-    # shared features their fraction, dropped features 0.
-    for d in (3, 6, 12):
-        _, astar = feature_sizes(LADDER, 0.3, d)
-        frac = np.clip((LADDER / astar - 0.3) / 0.7, 0.0, 1.0)
-        assert np.isclose(frac.sum(), d, atol=1e-9)
+def test_allocate_d_orders_allocation_by_importance():
+    a, _ = allocate_d(LADDER[:8], _bernoulli(8), 3)
+    assert np.all(np.diff(a) < 0.02)                  # decreasing along the ladder
+    assert a[0] > a[-1] + 0.2
 
 
-def test_shared_features_sit_at_a_common_threshold():
-    # in the shared regime alpha_i - (1-p) s_i = p alpha_star, the same for every feature
-    sizes, astar = feature_sizes(LADDER, 0.3, d=6)
-    own = LADDER > astar
-    shared = ~own & (sizes > 0)
-    assert np.allclose(LADDER[shared] - 0.7 * sizes[shared], 0.3 * astar, atol=1e-9)
-    assert own.sum() >= 1                             # the ladder head forces a dedicated axis
-    assert shared.sum() > 6                           # superposition: more features than dims
+@pytest.mark.slow
+def test_allocate_d_passes_an_independent_kkt_audit():
+    # audit the returned allocation with an evaluator independent of the solver:
+    # utilities on a large fresh dataset must equalize at delta on the interior and
+    # stay below it on the dropped set (guards the water-level dilution bug class).
+    from scipy.special import logsumexp
+    a, delta = allocate_d(LADDER, _bernoulli(64), 6)
+    Z = _bernoulli(64, n=262144, seed=99)
+    G = Z * LADDER
+    P = np.exp(G - logsumexp(G, axis=1, keepdims=True))
+    L = Z * (LADDER * a)
+    q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
+    u = -LADDER * (Z * (q - P)).mean(0)
+    interior = (a > 1e-3) & (a < 1 - 1e-3)
+    dropped = a <= 1e-3
+    assert interior.any() and dropped.any()
+    assert np.abs(u[interior] - delta).max() < 0.06 * delta
+    assert u[dropped].max() < 1.02 * delta
 
 
-def test_directions_hit_the_analytic_minimum_overlap():
-    # row norms exact, dedicated rows exactly orthogonal to everything, and the shared
-    # block's total overlap equals (sum s)^2/k - sum s^2 -- the tight-frame minimum.
+@pytest.mark.slow
+def test_allocate_d_reproduces_trained_leverage():
+    a, _ = allocate_d(LADDER, _bernoulli(64), 3)
+    ref = np.zeros(64)
+    ref[:len(TRAINED_H3)] = TRAINED_H3
+    assert np.corrcoef(a, ref)[0, 1] > 0.95
+
+
+def test_tight_frame_satisfies_the_frame_identities():
+    # Parseval: E1^T E1 = I; prescribed row norms; forced-overlap identity
     rng = np.random.default_rng(0)
-    for _ in range(5):
-        k = 5
-        s_shared = rng.uniform(0.5, 1.5, 12)          # max < sum/k: an even spread exists
-        sizes = np.concatenate([[4.0, 3.0], s_shared])
-        own = np.array([True, True] + [False] * 12)
-        W = feature_directions(sizes, own, d=k + 2)
-        assert np.allclose((W ** 2).sum(1), sizes, atol=1e-9)
-        G = W @ W.T
-        assert np.allclose(G[0, 1:], 0.0, atol=1e-12) and np.allclose(G[1, 2:], 0.0, atol=1e-12)
-        off = G.copy()
-        np.fill_diagonal(off, 0.0)
-        target = s_shared.sum() ** 2 / k - (s_shared ** 2).sum()
-        assert np.isclose((off ** 2).sum(), target, atol=1e-8)
+    raw = rng.uniform(0, 1, 12)
+    a = raw * 4.0 / raw.sum()
+    E1 = tight_frame(a, seed=1)
+    assert np.allclose(E1.T @ E1, np.eye(4), atol=1e-7)
+    assert np.allclose((E1 ** 2).sum(1), a, atol=1e-6)
+    G = E1 @ E1.T
+    off = (G ** 2).sum(1) - np.diag(G) ** 2
+    assert np.allclose(off, a * (1 - a), atol=1e-6)
 
 
-def test_spectrum_is_dedicated_spikes_over_a_flat_frame():
-    # spec+(W^T W) = {alpha_i : dedicated} plus alpha_star repeated on the shared block
-    W, sizes, own, astar = predicted_features(LADDER, 0.3, d=6)
-    ev = np.sort(np.linalg.eigvalsh(W.T @ W))[::-1]
-    expected = np.sort(np.concatenate([LADDER[own], np.full(6 - own.sum(), astar)]))[::-1]
-    assert np.allclose(ev, expected, atol=1e-9)
+def test_decoder_map_recovers_the_target_when_the_frame_contains_it():
+    # analytic oracle: give the frame the target map's own column space; the convex
+    # decoder solve must return L1 = diag(alpha) J exactly (row-centred gauge).
+    m = 8
+    alpha = 3.0 * (1.0 + np.arange(m)) ** -0.5
+    T = np.diag(alpha) @ (np.eye(m) - 1.0 / m)
+    E1 = np.linalg.qr(T)[0][:, :m - 1]
+    L1, o = decoder_map(alpha, _bernoulli(m, n=8192), E1)
+    assert np.abs(L1 - T).max() < 0.05
+    assert np.abs(o - o.mean()).max() < 0.05          # the offset is pure softmax gauge
 
 
-def test_closed_form_matches_direct_minimization_of_the_objective():
-    # the oracle: L-BFGS on the objective itself, from random starts, must land on the
-    # closed form's sizes and value.
+def test_decoder_map_satisfies_the_joint_stationarity_conditions():
+    # KKT of the joint (D, e0) solve, in returned observables (see the derivation in
+    # the tex): frame moments are rank one along the mean residual, and L1 dbar = 0.
+    from scipy.special import logsumexp
+    m, d = 12, 3
+    alpha = 6.0 * (1.0 + np.arange(m)) ** -0.5
+    Z = _bernoulli(m, n=8192)
+    a, _ = allocate_d(alpha, Z, d)
+    E1 = tight_frame(a, seed=2)
+    L1, o = decoder_map(alpha, Z, E1)
+    G = Z * alpha
+    P = np.exp(G - logsumexp(G, axis=1, keepdims=True))
+    L = Z @ L1 + o
+    q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
+    dbar = (q - P).mean(0)
+    M = E1.T @ (Z.T @ (q - P)) / len(Z)
+    M_perp = M - np.outer(M @ dbar, dbar) / (dbar @ dbar)
+    assert np.abs(M_perp).max() < 2e-4
+    assert np.abs(L1 @ dbar).max() < 2e-4
+
+
+@pytest.mark.slow
+def test_predicted_map_uses_exactly_the_allocated_subspace():
+    # leverage of the predicted first-order map equals the allocation
+    Z = _bernoulli(64)
+    a, _ = allocate_d(LADDER, Z, 6)
+    E1 = tight_frame(a, seed=3)
+    L1, _ = decoder_map(LADDER, Z, E1)
+    h = geometry.leverage(L1)[0]
+    assert np.corrcoef(h, a)[0, 1] > 0.999
+
+
+def test_signed_pressure_is_the_covariance_form_and_points_head_against_tail():
+    # a_ij = alpha_j Cov(z_i, q_j - p*_j) + alpha_i Cov(z_j, q_i - p*_i) at the fractional
+    # predictor (independent covariance evaluation); the head presses every weaker
+    # represented feature toward negative overlap (a_0j > 0), while the two head
+    # features press each other the other way (a_01 < 0).
+    from scipy.special import logsumexp
     alpha = LADDER[:16]
-    p, d = 0.3, 3
-    W_pred, s_pred, own, _ = predicted_features(alpha, p, d)
-    W_fit = fitted_features(alpha, p, d, n_starts=4)
-    assert np.allclose((W_fit ** 2).sum(1), s_pred, atol=2e-3)
-    J_pred = feature_objective(W_pred, alpha, p)
-    J_fit = feature_objective(W_fit, alpha, p)
-    assert J_pred <= J_fit * (1 + 1e-6)               # the formula is at least as good
+    Z = _bernoulli(16, n=8192)
+    di, _ = allocate_d(alpha, Z, 3)
+    a = geometry.signed_pressure(alpha, Z, di)
+    G = Z * alpha
+    P = np.exp(G - logsumexp(G, axis=1, keepdims=True))
+    L = Z * (alpha * di)
+    q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
+    r = q - P
+    ref = np.array([[alpha[j] * np.cov(Z[:, i], r[:, j], bias=True)[0, 1]
+                     + alpha[i] * np.cov(Z[:, j], r[:, i], bias=True)[0, 1]
+                     for j in range(16)] for i in range(16)])
+    np.fill_diagonal(ref, 0.0)
+    assert np.allclose(a, ref, atol=1e-10)
+    rep = np.flatnonzero(di > 0.05)
+    assert (a[0, rep[3:]] > 0).all() and (a[1, rep[3:]] > 0).all()
+    assert a[0, 1] < 0
 
 
-def test_full_budget_represents_everything_orthogonally():
-    # m <= d: capacity does not bind, every feature gets its own axis at s = alpha
-    alpha = np.array([3.0, 2.0, 1.0])
-    W, sizes, own, astar = predicted_features(alpha, 0.3, d=5)
-    assert np.allclose(sizes, alpha) and own.all()
-    assert np.allclose(W @ W.T, np.diag(alpha), atol=1e-12)
+@pytest.mark.slow
+def test_predict_geometry_reports_frame_ensemble_statistics():
+    # one realized CE per frame, the mean Gram's diagonal is the mean sizes, and
+    # the spectrum has exactly d modes (the rank cutoff is not a mode)
+    out = geometry.predict_geometry(LADDER[:16], _bernoulli(16, n=4096), 3, n_frames=6, n_top=8)
+    ce = out["frame_ce"]
+    assert ce.shape == (6,) and ce.min() > 0
+    assert np.allclose(np.diag(out["gram_mean"]), out["sizes_mean"])
+    assert out["spectra_mean"].shape == (3,) and out["spectra_sd"].shape == (3,)
+    assert np.allclose((out["E_star"] ** 2).sum(1), out["d_star"], atol=1e-5)
+    assert abs(out["d_star"].sum() - 3) < 1e-6 and 0 <= out["eta"] < 3
+    assert out["ce_rep"] < out["ce_add"] <= out["ce_star"] + 1e-9   # completion lowers the CE at E*
+    # the completion's logit map over its dictionary [z; phi(z); 1], and the dictionary in
+    # balanced coordinates: the rank-d factorization is exact with equal scale in both factors
+    M = np.vstack([out["E_star"], out["E2_rep"], out["e0_rep"]]) @ out["C_rep"]
+    assert out["map_rep"].shape == (16 + 28 + 1, 16) and np.allclose(out["map_rep"], M)
+    Mc, B, D, S = geometry.factor_logcond(M, rank=3)
+    assert B.shape == (45, 3) and D.shape == (3, 16) and S.shape == (3,)
+    assert np.allclose(B @ D, Mc, atol=1e-8)
+    assert np.allclose(np.linalg.norm(B, axis=0), np.linalg.norm(D, axis=1), atol=1e-6)
+    assert np.allclose(geometry.predicted_geometry(M, rank=3), B)
+
+
+@pytest.mark.slow
+def test_repair_lowers_the_ce_monotonically_and_keeps_the_frame():
+    # stage two is block-coordinate descent on the additive-plus-pairs class: every
+    # round lowers the excess CE, and the first-order map keeps the frame's leverage
+    # (pairs are population-orthogonal to features, so E1 is untouched)
+    alpha = LADDER[:16]
+    Z = _bernoulli(16, n=4096)
+    di, _ = allocate_d(alpha, Z, 3)
+    P, _ = geometry.fantope_geometry(alpha, Z, 3, geometry.signed_pressure(alpha, Z, di))
+    E1 = tight_frame(np.diag(P), init=P)
+    out = geometry.repair(alpha, Z, E1, n_top=10, rounds=4)
+    assert (np.diff(out["ce"]) < 1e-9).all()
+    assert out["ce"][-1] < 0.8 * out["ce_additive"]
+    assert np.corrcoef(geometry.leverage(out["L1"])[0], np.diag(P))[0, 1] > 0.999
+    assert out["E2"].shape == (45, 3)
+
+
+def test_feature_model_builds_the_centered_dictionary_and_is_bias_free():
+    # the reference-class runners: phi's first block is the centered features, the pair
+    # block is standardized and population-orthogonal to it, the code is e0 + phi E,
+    # and no per-output bias exists anywhere.
+    import torch
+    from src.code.models import FeatureModel, ModelConfig
+    rng = np.random.default_rng(0)
+    Z = (rng.random((512, 6)) < 0.3).astype(float)
+    cfg = ModelConfig(vocab_size=520, num_classes=6, embed_dim=3,
+                      n_features=6, feature_order=2, n_top=6)
+    model = FeatureModel(cfg)
+    model.load_features(Z)
+    phi = model.phi.numpy()
+    Zc = Z - Z.mean(0)
+    assert np.allclose(phi[:512, :6], Zc, atol=1e-6)
+    pairs = phi[:512, 6:]
+    assert np.allclose(pairs.std(0, ddof=1), 1.0, atol=1e-3)   # torch std is Bessel-corrected
+    assert np.abs(Zc.T @ pairs / 512).max() < 0.1     # centered blocks nearly orthogonal
+    ids = torch.arange(8).reshape(8, 1)
+    L = model(ids)["logits"].detach().numpy()
+    h = model.input_reps(ids).detach().numpy()
+    W = model.readout.detach().numpy()
+    assert np.allclose(L, h @ W.T, atol=1e-6)
+    assert not any("bias" in n for n, _ in model.named_parameters())
 
 
 def test_feature_vectors_recover_an_additive_code_exactly():
@@ -115,18 +215,6 @@ def test_feature_vectors_recover_an_additive_code_exactly():
     V_true, v0_true = rng.normal(size=(5, 3)), rng.normal(size=3)
     V, v0 = feature_vectors(Z @ V_true + v0_true, Z)
     assert np.allclose(V, V_true, atol=1e-9) and np.allclose(v0, v0_true, atol=1e-9)
-
-
-def test_balanced_code_factors_the_row_centred_logits_evenly():
-    # the gauge every comparison uses: H @ D^T reproduces the centred logits and the two
-    # factors carry equal scale in every direction
-    rng = np.random.default_rng(1)
-    E, readout = rng.normal(size=(30, 3)), rng.normal(size=(7, 3))
-    H, D = balanced_code(E, readout)
-    G = E @ readout.T
-    assert np.allclose(H @ D.T, G - G.mean(1, keepdims=True), atol=1e-9)
-    assert np.allclose(np.linalg.norm(H, axis=0), np.linalg.norm(D, axis=0), atol=1e-9)
-    assert H.shape == (30, 3) and D.shape == (7, 3)
 
 
 def test_leverage_gives_full_scores_to_an_orthogonal_frame_and_satisfies_the_packing_identity():
@@ -165,51 +253,6 @@ def test_logit_map_recovers_a_planted_additive_map_exactly():
     assert abs(r2 - 1.0) < 1e-12
 
 
-def test_fantope_projection_returns_a_feasible_point_and_fixes_feasible_inputs():
-    rng = np.random.default_rng(3)
-    A = rng.normal(size=(7, 7)); A = 0.5 * (A + A.T)
-    H = geometry._fantope_project(A, 3)
-    lam = np.linalg.eigvalsh(H)
-    assert abs(np.trace(H) - 3) < 1e-8
-    assert lam.min() > -1e-10 and lam.max() < 1 + 1e-10
-    P = np.zeros((7, 7)); P[:3, :3] = np.eye(3)       # a rank-3 projector is a fixed point
-    assert np.allclose(geometry._fantope_project(P, 3), P, atol=1e-8)
-
-
-def test_fantope_leverage_is_symmetric_under_equal_importance():
-    h, H = geometry.fantope_leverage(np.full(8, 3.0), 0.3, 3,
-                                     n_samples=16384, iters=400)
-    assert abs(h.sum() - 3) < 1e-6
-    assert h.max() - h.min() < 0.03                   # exchangeable features, equal shares
-    lam = np.linalg.eigvalsh(H)
-    assert lam.min() > -1e-8 and lam.max() < 1 + 1e-8
-
-
-def test_fantope_leverage_orders_allocation_by_importance():
-    alpha = 8.0 * (1.0 + np.arange(8)) ** -0.5
-    h, _ = geometry.fantope_leverage(alpha, 0.3, 3, n_samples=16384, iters=400)
-    assert np.all(np.diff(h) < 0.02)                  # decreasing along the ladder
-    assert h[0] > h[-1] + 0.2
-
-
-@pytest.mark.slow
-def test_predicted_map_pins_the_diagonal_and_makes_all_row_sums_negative():
-    # the theory's exact anchor: centred diag(R) = alpha_i (1 - 1/m) on the represented
-    # set, and every represented feature carries net-negative couplings.
-    m, d, p = 10, 3, 0.3
-    alpha = 6.0 * (1.0 + np.arange(m)) ** -0.5
-    R, b = geometry.predicted_map(alpha, p, d, n_samples=4096, n_starts=1, maxiter=2000)
-    Rc = R - R.mean(1, keepdims=True)
-    dg = np.diag(Rc)
-    rep = dg > 0.15
-    target = alpha * (1 - 1.0 / m)
-    assert rep[:2].all()
-    # pinning is sub-1% at m = 64; at this toy scale the variance-mismatch term allows ~10%
-    assert np.abs(dg[rep][:3] / target[rep][:3] - 1).max() < 0.15
-    Sr = (Rc - np.diag(dg)).sum(1)
-    assert (Sr[rep] < 0).all()
-
-
 def test_logit_features_recovers_planted_balanced_sizes():
     rng = np.random.default_rng(4)
     m, d, p, n = 32, 3, 0.3, 8192
@@ -222,68 +265,114 @@ def test_logit_features_recovers_planted_balanced_sizes():
     assert sizes[3:].max() < 0.05
 
 
-@pytest.mark.slow
-def test_dc_map_reaches_exact_rank_and_at_least_the_additive_class():
-    # certified solver: rank exactly d with an unshrunk kept spectrum, and because its
-    # class contains the additive one, its CE must not lose to predicted_map's.
-    m, d, p = 10, 3, 0.3
-    alpha = 6.0 * (1.0 + np.arange(m)) ** -0.5
-    R, b, mu, sd = geometry.dc_map(alpha, p, d, n_top=6, n_samples=4096,
-                                   inner=200, dc_steps=4)
-    s = np.linalg.svd(R, compute_uv=False)
-    assert s[d:].max() < 1e-9                          # rank collapsed, not truncated
-    rng = np.random.default_rng(11)
-    Z = (rng.random((16384, m)) < p).astype(float)
-    from scipy.special import logsumexp as lse
-    G = Z * alpha
-    P = np.exp(G - lse(G, axis=1, keepdims=True))
-    def excess(L):
-        bayes = -np.mean((P * (G - lse(G, axis=1, keepdims=True))).sum(1))
-        return np.mean(lse(L, axis=1) - (P * L).sum(1)) - bayes
-    L_dc = (geometry.pair_features(Z, 6) - mu) / sd @ R + b
-    R2, b2 = geometry.predicted_map(alpha, p, d, n_samples=4096, n_starts=1, maxiter=2000)
-    e_dc, e_add = excess(L_dc), excess(Z @ R2 + b2)
-    assert e_dc < e_add + 0.01                         # bigger class, certified steps
+def _tied_ce(alpha, Z, di, G_off):
+    # exact CE of the tied map: own logits alpha_k d_k z_k plus interference
+    # alpha_k sum_{i != k} (z_i - zbar_i) G_ik; the object the local expansion approximates
+    from scipy.special import logsumexp
+    G, P, _ = geometry._softmax_stats(alpha, Z)
+    X = Z - Z.mean(0)
+    L = Z * (alpha * di) + (X @ G_off) * alpha
+    return float((logsumexp(L, axis=1) - (P * L).sum(1)).mean())
 
 
-@pytest.mark.slow
-def test_waterfill_formula_reproduces_the_fantope_allocation():
-    # the theory's one formula: scalar water-filling with the closed-form pressure must
-    # match the certified convex program, spend the budget exactly, and respect symmetry.
-    alpha = 6.0 * (1.0 + np.arange(16)) ** -0.5
-    h, nu = geometry.waterfill_h(alpha, 0.3, 4)
-    assert abs(h.sum() - 4) < 1e-6 and nu > 0
-    h_ref = geometry.fantope_leverage(alpha, 0.3, 4, n_samples=8192, iters=800)[0]
-    assert np.corrcoef(h, h_ref)[0, 1] > 0.99
-    h_eq, _ = geometry.waterfill_h(np.full(8, 3.0), 0.3, 3)
-    assert h_eq.max() - h_eq.min() < 0.02              # exchangeable features, equal h
+def test_pressure_and_curvature_are_the_derivatives_of_the_tied_map_ce():
+    # a_g = first derivative, H_gg = second derivative of the tied-map CE in the
+    # off-diagonal coordinates at the diagonal background, by central differences
+    alpha = LADDER[:10]
+    Z = _bernoulli(10, n=4096)
+    di, _ = allocate_d(alpha, Z, 3)
+    a = geometry.signed_pressure(alpha, Z, di)
+    pairs = np.triu_indices(10, 1)
+    H = geometry.interference_curvature(alpha, Z, di)
+    h = 1e-3
+    def ce(deltas):
+        G = np.zeros((10, 10))
+        for (i, j), v in deltas:
+            G[i, j] = G[j, i] = v
+        return _tied_ce(alpha, Z, di, G)
+    for p in (0, 5, 20):
+        i, j = pairs[0][p], pairs[1][p]
+        fd = (ce([((i, j), h)]) - ce([((i, j), -h)])) / (2 * h)
+        assert abs(fd - a[i, j]) < 1e-6 * max(1.0, abs(a[i, j])) + 1e-7
+        fdd = (ce([((i, j), h)]) - 2 * ce([]) + ce([((i, j), -h)])) / h ** 2
+        assert abs(fdd - H[p, p]) < 2e-3 * abs(H[p, p])
+    p, q = 0, 5                                        # pairs (0,1) and (0,6) share feature 0
+    i, j = pairs[0][p], pairs[1][p]; k, l = pairs[0][q], pairs[1][q]
+    fdd = (ce([((i, j), h), ((k, l), h)]) - ce([((i, j), h), ((k, l), -h)])
+           - ce([((i, j), -h), ((k, l), h)]) + ce([((i, j), -h), ((k, l), -h)])) / (4 * h ** 2)
+    assert abs(fdd - H[p, q]) < 2e-3 * abs(H[p, q]) + 1e-9
+    assert np.allclose(H, H.T) and np.all(np.linalg.eigvalsh(H) > -1e-9)
 
 
-@pytest.mark.slow
-def test_waterfill_fixed_point_passes_an_independent_kkt_audit():
-    # regression for the water-level dilution bug: a solver that estimates nu from its
-    # own iterate lets sub-threshold stragglers stabilize at small h (interior pressures
-    # ~17% off the level). Audit the returned (h, nu) with an evaluator independent of
-    # the solver: exact-MC pressures at recalibrated biases must equalize at nu on the
-    # interior and stay below it on the dropped set. Clean margin is ~0.5%.
-    from scipy.special import logsumexp as lse
-    m, d, p = 16, 4, 0.3
-    alpha = 6.0 * (1.0 + np.arange(m)) ** -0.5
-    h, nu = geometry.waterfill_h(alpha, p, d)
-    assert abs(h.sum() - d) < 1e-6
+def test_fantope_geometry_reduces_to_water_filling_without_pressure():
+    # a = 0, H = 0: the objective is C(diag P) alone, so the Fantope optimum's diagonal
+    # is the water-filling allocation (its off-diagonal is undetermined)
+    alpha = LADDER[:12]
+    Z = _bernoulli(12, n=4096)
+    di, _ = allocate_d(alpha, Z, 3)
+    P, eta = geometry.fantope_geometry(alpha, Z, 3, np.zeros((12, 12)))
+    assert np.abs(np.diag(P) - di).max() < 0.02
+    assert abs(np.trace(P) - 3) < 1e-8
+    lam = np.linalg.eigvalsh(P)
+    assert lam.min() > -1e-8 and lam.max() < 1 + 1e-8 and 0 <= eta <= 3
+
+
+def test_fantope_geometry_with_pressure_grows_a_soft_tail_with_the_pressure_signs():
+    # the linear program: every feature water filling drops gets a positive share
+    # (the soft tail), the off-diagonals follow the pressure on net and in most large
+    # entries (PSD coupling forces a few the other way), and the objective sits below
+    # the water-filling point's
+    alpha = LADDER[:12]
+    Z = _bernoulli(12, n=4096)
+    di, _ = allocate_d(alpha, Z, 3)
+    a = geometry.signed_pressure(alpha, Z, di)
+    P, eta = geometry.fantope_geometry(alpha, Z, 3, a)
+    dropped = di < 1e-3
+    assert dropped.any() and (np.diag(P)[dropped] > 1e-4).all()
+    iu = np.triu_indices(12, 1)
+    assert float(a[iu] @ P[iu]) < 0                          # net: follows the pressure
+    big = np.abs(P[iu]) > 0.1                                 # the large overlaps mostly do
+    assert big.sum() >= 5 and np.mean(np.sign(P[iu][big]) == -np.sign(a[iu][big])) >= 0.75
+    assert 0 <= eta < 0.1 * 3                                 # close to a rank-d projector
+    obj = lambda Q: geometry._fantope_objective(alpha, Z, Q, a, None)
+    assert obj(P) < obj(np.diag(di)) - 1e-6
+
+
+def test_fixed_diagonal_realization_keeps_the_diagonal_and_is_parseval():
+    # realization B: alternating projections from a Fantope point onto rank-d
+    # projectors with that point's diagonal
     rng = np.random.default_rng(0)
-    Zb = (rng.random((32768, m)) < p).astype(float)
-    G = Zb * alpha
-    P = np.exp(G - lse(G, axis=1, keepdims=True))
-    b = np.zeros(m)
-    L0 = Zb * (h * alpha)
-    for _ in range(1000):
-        q = np.exp(L0 + b - lse(L0 + b, axis=1, keepdims=True))
-        b = b - 0.5 * (q - P).mean(0)
-        b = b - b.mean()
-    g = alpha * ((P - q) * Zb).mean(0)
-    interior = (h > 0.02) & (h < 0.98)
-    dropped = h <= 0.02
-    assert interior.any() and dropped.any()
-    assert np.abs(g[interior] - nu).max() < 0.05 * nu
-    assert g[dropped].max() < 1.05 * nu
+    V = np.linalg.qr(rng.normal(size=(12, 3)))[0]
+    P = 0.7 * V @ V.T + 0.3 * np.diag(np.full(12, 0.25))      # inside the Fantope, not a projector
+    E = tight_frame(np.diag(P), init=P)
+    assert np.allclose(E.T @ E, np.eye(3), atol=1e-7)
+    assert np.allclose((E ** 2).sum(1), np.diag(P), atol=1e-6)
+    Ud = geometry.top_eigenspace(P, 3)
+    assert np.allclose(Ud.T @ Ud, np.eye(3), atol=1e-10)
+
+
+@pytest.mark.slow
+def test_biconvex_pairs_never_increases_the_objective_and_beats_the_additive_class():
+    # Part II benchmark: exact CE of the additive-plus-pairs class by alternating convex
+    # block solves; the objective trace is nonincreasing and ends below the additive
+    # class realized at a compatible frame
+    alpha = LADDER[:16]
+    Z = _bernoulli(16, n=4096)
+    out = geometry.biconvex_pairs(alpha, Z, 3, n_top=10, rounds=4, seed=0)
+    assert (np.diff(out["ce_trace"]) < 1e-9).all()
+    di, _ = allocate_d(alpha, Z, 3)
+    G, P, _ = geometry._softmax_stats(alpha, Z)
+    L1, o = decoder_map(alpha, Z, tight_frame(di, seed=1))
+    assert out["ce"] < geometry._excess_ce(Z @ L1 + o, G, P)
+    assert out["B"].shape == (1 + 16 + 45, 3) and out["D"].shape == (3, 16)
+
+
+
+
+def test_sweep_grid_enumerates_unique_cells_with_unique_run_names_and_paths():
+    from src.code import sweep_superposition as sw
+    cs = sw.cells()
+    assert len(cs) == 4 * 3 * 3 * 5 and len(set(cs)) == len(cs)
+    assert len({sw.run_name(*c) for c in cs}) == len(cs)
+    assert len({sw.cell_path(*c) for c in cs}) == len(cs)
+    assert (0.3, 0.5, 6, 0) in cs and sw.run_name(0.3, 0.5, 6, 0) == "sp_p0.3_b0.5_d6_s0"

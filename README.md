@@ -22,8 +22,8 @@ Run everything as `uv run python -m ...` so it uses the project venv.
 ## Tests
 
 ```bash
-uv run python -m pytest -m "not slow"   # fast suite
-uv run python -m pytest                 # full suite (trains small models end-to-end)
+uv run python -m pytest -m "not slow"          # fast suite
+uv run python -m pytest                        # full suite (trains small models end-to-end)
 ```
 
 ## Usage
@@ -150,7 +150,7 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 - `conf/config.yaml` — base defaults (setting + model + train + runner), wandb toggle, run-dir layout.
 - `src/code/config.py` — `Config` wraps the resolved `DictConfig`; seeds all RNGs; turns `save_steps_method` into a concrete checkpoint schedule.
 - `src/code/data.py` — `init_dataset` + three dataset classes (co-occurrence, relational, HMM), plus the structure gallery (graphs and co-occurrence kernels). Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
-- `src/code/geometry.py` — the rational-code oracles: the spectral factorization `factor_logcond` (row-centred, balanced split, exposed as `predicted_geometry`), floored logs, gauge fixing against a target basis (`canonical_gauge`, `fourier_basis`), `class_means`, and the superposition oracle (`predicted_features` and friends, from `notes/superposition.tex`).
+- `src/code/geometry.py` — the rational-code oracles: the spectral factorization `factor_logcond` (row-centred, balanced split, exposed as `predicted_geometry`), floored logs, gauge fixing against a target basis (`canonical_gauge`, `fourier_basis`), `class_means`, and the superposition pipeline (`allocate_d`, `tight_frame`, `decoder_map`, `predict_geometry`, from `notes/superposition.tex`).
 - `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
 - `src/code/train.py` — Hydra entry point + `train_inline` for notebooks. Sizes the model from the dataset, runs the HF `Trainer` with custom callbacks.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.

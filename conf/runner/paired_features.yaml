@@ -1,0 +1,16 @@
+# @package _global_
+# Interaction-class reference: the additive dictionary plus centered pairs among the
+# first n_top features, through the same bias-free rank-d bottleneck.
+#   python -m src.code.train runner=paired_features setting=feature_cube
+defaults:
+  - override /model: features
+  - override /train: default
+  - _self_
+
+name: paired_features
+output_dir: ${run_dir}/checkpoints
+sample_mode: pointwise
+
+model_kwargs:
+  model_config:
+    feature_order: 2

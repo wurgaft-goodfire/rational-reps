@@ -58,7 +58,8 @@ def test_rnn_exposes_per_position_hidden_states():
 
 
 def test_registry_covers_the_ladder():
-    assert set(MODEL_CLASSES) == {"linear", "mlp", "rnn", "sae", "transformer"}
+    assert set(MODEL_CLASSES) == {"linear", "mlp", "rnn", "sae", "transformer",
+                                  "features"}
 
 
 def test_readout_heads_are_bias_free():

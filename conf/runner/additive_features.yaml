@@ -1,0 +1,11 @@
+# @package _global_
+# Additive-class reference: bias-free rank-d model over centered features only.
+#   python -m src.code.train runner=additive_features setting=feature_cube
+defaults:
+  - override /model: features
+  - override /train: default
+  - _self_
+
+name: additive_features
+output_dir: ${run_dir}/checkpoints
+sample_mode: pointwise

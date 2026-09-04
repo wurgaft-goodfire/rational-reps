@@ -36,7 +36,7 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.data import graph_conditional
+    from src.code.data import graph_conditional, cube_codes
     from src.code.geometry import factor_logcond, predicted_geometry
     from src.code.eval import cka
     from src.code.train import train_inline, graph_overrides
@@ -58,6 +58,7 @@ def _(mo):
     XSTAR = int(np.argmax(np.minimum(D[0], D[1])))                     # highlighted column: a concept
                                                                        # at a generic angle
     return (
+        D,
         E,
         FIGURES,
         KDIMS,
@@ -65,6 +66,8 @@ def _(mo):
         N,
         SPEC,
         cka,
+        cube_codes,
+        factor_logcond,
         graph_conditional,
         graph_overrides,
         hue,
@@ -92,14 +95,13 @@ def _(mo):
 
 
 @app.cell
-def _(E, FIGURES, L, SPEC, plot_utils):
-    _fig = plot_utils.plot_predicted_geometry(SPEC, L, E)
-    plot_utils.save_figure(_fig, FIGURES / "concepts_ring_predicted.png")
-    return
+def _(E, FIGURES, KDIMS, L, N, SPEC, hue, np, plot_utils, plt):
+    # the whole 1 story in one image: predicted geometry, the factorization, the dual reading
+    _figA = plot_utils.plot_predicted_geometry(SPEC, L, E)
+    plot_utils.save_figure(_figA, FIGURES / "concepts_ring_predicted.png")
+    _figB, _ = plot_utils.plot_factorization(L, k=KDIMS)
+    plot_utils.save_figure(_figB, FIGURES / "concepts_factorization.png")
 
-
-@app.cell
-def _(E, FIGURES, N, hue, np, plot_utils, plt):
     # fix the rotation gauge so the two columns are literally cos(theta), sin(theta):
     # item 0 on the +x axis, theta increasing counterclockwise
     _E2 = E[:, :2].copy()
@@ -107,7 +109,7 @@ def _(E, FIGURES, N, hue, np, plot_utils, plt):
     _E2 = _E2 @ np.array([[np.cos(-_a0), np.sin(-_a0)], [-np.sin(-_a0), np.cos(-_a0)]]).T
     if _E2[1, 1] < 0:
         _E2[:, 1] *= -1
-    XSTAR2 = 20                                        # theta ~ 120°: cos and sin differ in sign
+    _XSTAR2 = 20                                       # theta ~ 120°: cos and sin differ in sign
     _lim = np.abs(_E2).max()
 
     def _strip(ax, M, edge):
@@ -116,15 +118,15 @@ def _(E, FIGURES, N, hue, np, plot_utils, plt):
         for _sp in ax.spines.values():
             _sp.set_visible(True); _sp.set_color(edge); _sp.set_linewidth(2.2)
 
-    fig_dual = plt.figure(figsize=(11.5, 3.8))
-    _gs = fig_dual.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.3)
+    _figC = plt.figure(figsize=(11.5, 3.8))
+    _gs = _figC.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.3)
 
     # the intrinsic angle -> the two linear dimensions (the columns of E over inputs z)
-    _axc = fig_dual.add_subplot(_gs[0, 0])
+    _axc = _figC.add_subplot(_gs[0, 0])
     _axc.plot(_E2[:, 0], color="0.15", lw=1.5, label=r"$\propto \cos\theta$")
     _axc.plot(_E2[:, 1], color="0.15", lw=1.5, ls="--", label=r"$\propto \sin\theta$")
-    _axc.axvline(XSTAR2, ls=":", color="0.6", lw=1.0)
-    _axc.scatter([XSTAR2, XSTAR2], _E2[XSTAR2], c="0.15", s=42, zorder=4)
+    _axc.axvline(_XSTAR2, ls=":", color="0.6", lw=1.0)
+    _axc.scatter([_XSTAR2, _XSTAR2], _E2[_XSTAR2], c="0.15", s=42, zorder=4)
     _axc.set_xlim(-0.5, N - 0.5)
     _axc.set_xlabel(r"input $z$  (angle $\theta$)")
     _axc.legend(frameon=False)
@@ -133,14 +135,14 @@ def _(E, FIGURES, N, hue, np, plot_utils, plt):
 
     # e(z): the 2-vector, and its point on the circle in activation space
     _gsB = _gs[0, 1].subgridspec(1, 2, width_ratios=[0.09, 1], wspace=0.12)
-    _axv = fig_dual.add_subplot(_gsB[0]); _strip(_axv, _E2[XSTAR2][:, None], "black")
+    _axv = _figC.add_subplot(_gsB[0]); _strip(_axv, _E2[_XSTAR2][:, None], "black")
     _axv.set_xlabel(r"$e(z)$", fontsize=13)
-    _axp = fig_dual.add_subplot(_gsB[1])
+    _axp = _figC.add_subplot(_gsB[1])
     _r = _lim * 1.35
     _axp.annotate("", (_r, 0), (-_r, 0), arrowprops=dict(arrowstyle="->", color="0.45", lw=1.6))
     _axp.annotate("", (0, _r), (0, -_r), arrowprops=dict(arrowstyle="->", color="0.7", lw=1.6))
     _axp.scatter(_E2[:, 0], _E2[:, 1], c=hue, s=16, zorder=3)
-    _px, _py = _E2[XSTAR2]
+    _px, _py = _E2[_XSTAR2]
     _axp.scatter(_px, _py, s=190, facecolor="none", edgecolor="black", lw=2.4, zorder=4)
     _axp.plot([_px, _px], [0, _py], ls="--", color="0.15", lw=1.1, zorder=2)
     _axp.plot([0, _px], [_py, _py], ls="--", color="0.15", lw=1.1, zorder=2)
@@ -148,7 +150,23 @@ def _(E, FIGURES, N, hue, np, plot_utils, plt):
     _axp.set_aspect("equal")
     _axp.set_xlabel("activation space", fontsize=11, color="0.5")
     plot_utils.FIG.clean(_axp)
-    plot_utils.save_figure(fig_dual, FIGURES / "concepts_dual_reading.png")
+    plot_utils.save_figure(_figC, FIGURES / "concepts_dual_reading.png")
+    for _f in (_figA, _figB, _figC):
+        plt.close(_f)
+
+    from PIL import Image
+
+    _names = ["concepts_ring_predicted", "concepts_factorization", "concepts_dual_reading"]
+    _imgs = [Image.open(FIGURES / "png" / f"{_n}.png") for _n in _names]
+    _w = min(_i.width for _i in _imgs)
+    _scaled = [_i.resize((_w, round(_i.height * _w / _i.width))) for _i in _imgs]
+    _gap = 60
+    story = Image.new("RGB", (_w, sum(_i.height for _i in _scaled) + _gap * 2), "white")
+    _y = 0
+    for _i in _scaled:
+        story.paste(_i, (0, _y)); _y += _i.height + _gap
+    story.save(FIGURES / "concepts_embedding_story.png")
+    story
     return
 
 
@@ -179,8 +197,8 @@ def _(mpatches, np, plot_utils, plt):
         """Arrow from the origin to ``v``."""
         ax.annotate("", xy=v, xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=lw, color=color))
 
-    def frame(ax, title, xlim, ylim, pad=14):
-        ax.set_title(title, fontsize=13, pad=pad)
+    def frame(ax, title, xlim, ylim, pad=14, fontsize=13):
+        ax.set_title(title, fontsize=fontsize, pad=pad)
         ax.set_xlim(*xlim); ax.set_ylim(*ylim)
         ax.set_aspect("equal"); plot_utils.FIG.clean(ax)
 
@@ -262,7 +280,7 @@ def _(
     u,
     vec,
 ):
-    fig_worlds, _ax = plt.subplots(1, 3, figsize=(19.5, 6))
+    fig_worlds, _ax = plt.subplots(1, 3, figsize=(24, 7.4))
 
     # binary property: the yes/no prototypes astride their contrast, one embedding
     _a = _ax[0]
@@ -279,7 +297,7 @@ def _(
         _a.annotate(f"{_lab}\n{ei @ _d:+.2f}", _d, _d + np.array(_off), fontsize=11,
                     ha="center", va="top", color="0.3")
     angle_arcs(_a, 62, np.degrees(np.arctan2([d_yes[1], d_no[1]], [d_yes[0], d_no[0]])), 0.3, 0.15)
-    frame(_a, "binary property: log-odds = projection", (-1.75, 1.75), (-1.15, 1.7))
+    frame(_a, "", (-1.75, 1.75), (-1.15, 1.7))
 
     # temperature on a line: e straight (offset), curvature lives in the decoder parabola
     _a = _ax[1]
@@ -300,8 +318,7 @@ def _(
                     ha=_ha, va=_va, color="0.3")
     angle_arcs(_a, np.degrees(np.arctan2(_e[1], _e[0])),
                np.degrees(np.arctan2(Dv[:, 1], Dv[:, 0])), 0.2, 0.08)
-    frame(_a, "continuous latent: embeddings stay a line, the decoder curves",
-          (-1.9, 1.9), (-0.95, 1.85), pad=18)
+    frame(_a, "", (-1.9, 1.9), (-0.95, 1.85))
 
     # circular latent (weektime): the symmetric case, e = d up to scale
     _a = _ax[2]
@@ -318,9 +335,11 @@ def _(
         _a.annotate(f"{_lab}\n{_e @ _dv:+.2f}", _dv, _dv / 0.85 * 1.3, fontsize=11,
                     ha="center", va="center", color="0.3")
     angle_arcs(_a, _phi, day_angs, 0.16, 0.06)
-    frame(_a, "circular latent: the symmetric case, $e = d$ up to scale",
-          (-2.25, 2.25), (-1.85, 2.1), pad=18)
+    frame(_a, "", (-2.25, 2.25), (-1.85, 2.1))
     fig_worlds.tight_layout()
+    for _aa, _eq in zip(_ax, [r"$\log\frac{p(\mathrm{yes}\,\mid\, i)}{p(\mathrm{no}\,\mid\, i)} = \langle e_i,\, u\rangle$", r"$\log p(x \mid \theta) = -\frac{1}{2}(\theta - \mu_x)^2 + \mathrm{const}(\theta)$", r"$\log p(x \mid \varphi) = r\cos(\varphi - \theta_x)$"]):
+        _p = _aa.get_position()   # one shared height for the three kernel equations
+        fig_worlds.text((_p.x0 + _p.x1) / 2, 0.97, _eq, ha="center", va="top", fontsize=17)
     plot_utils.save_figure(fig_worlds, FIGURES / "concepts_worlds.png")
     return
 
@@ -440,135 +459,14 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 3. Inference: examples of $x$ walk the code space
+    ## 2c. The same three worlds, from trained networks
 
-    $z$ is hidden and the model sees examples $x_{1:t} \sim p(x \mid z)$. The posterior factors
-    through an **additive** state, $\phi(x_{1:t}) = \phi(\varnothing) + \sum_i D(x_i)$, so a
-    history is a trajectory over the regions of §2b.
-
-    - **Binary.** The belief point (the posterior-weighted concept) travels the chord between
-      $e_A$ and $e_B$ at position $\sigma(\Lambda_t)$ of the cumulative log-odds.
-    - **Line.** The evidence needs the count: $D(x) = (1, \mu_x)$, $E(\theta) = (-A(\theta),
-      \theta)$ — a target-adapted embedding, not the next-token decoder. Cones in the
-      (count, evidence) plane; the trajectory's slope is the running mean evidence.
-    - **Circle.** Homogeneity makes $A$ constant, so the raw sum $\sum_i d(x_i)$ is the whole
-      state: it spirals into the true day's sector — angle converges (content), radius grows
-      (confidence).
-    """)
-    return
-
-
-@app.cell
-def _(
-    Dw,
-    FIGURES,
-    adjs,
-    argmax_regions,
-    cols5,
-    d_no,
-    d_yes,
-    day_angs,
-    days,
-    frame,
-    hue7,
-    mAB,
-    mus,
-    np,
-    plot_utils,
-    plt,
-    region_bg,
-    vec,
-    yes_no,
-):
-    T = 40
-    fig_infer, _ax = plt.subplots(1, 3, figsize=(15.5, 4.8))
-
-    # binary z: the belief point travels the chord between the two concepts
-    _a = _ax[0]
-    _eA, _eB = d_yes, d_no                               # symmetric world: concepts = the prototypes
-    _xr, _yr = (-1.65, 1.65), (-0.55, 1.45)
-    region_bg(_a, *argmax_regions(np.stack([_eA, _eB], 1), _xr, _yr), yes_no, fade=0.16)
-    _a.plot(*zip(2.6 * mAB, -1.0 * mAB), ls="--", color="0.4", lw=1.3, zorder=2)   # boundary ⟂ e_A - e_B
-    for _ez, _lab, _off in [(_eA, r"$e_A$", (0.14, 0.06)), (_eB, r"$e_B$", (-0.14, 0.06))]:
-        vec(_a, _ez, lw=2.0)
-        _a.annotate(_lab, _ez, _ez + np.array(_off), fontsize=13, ha="center", va="bottom", color="0.2")
-    _a.plot(*zip(_eA, _eB), color="0.75", lw=1.0, zorder=1)
-    _p1 = 0.65                                                         # p(x says "yes" | z = A)
-    _llr = np.log(_p1 / (1 - _p1))
-    _lam = np.concatenate([[0.0], np.cumsum(np.where(np.random.default_rng(0).random(T) < _p1,
-                                                     _llr, -_llr))])
-    _b = 1 / (1 + np.exp(-_lam))                                       # posterior p(A | x_{1:t})
-    _pts = _eB + np.outer(_b, _eA - _eB)
-    _a.plot(*_pts.T, color="0.6", lw=0.8, zorder=3)
-    _a.scatter(*_pts.T, c=range(T + 1), cmap="viridis", s=30, zorder=4)
-    _a.annotate("$t=0$", mAB, mAB + np.array([-0.1, -0.3]), fontsize=11, color="0.3",
-                arrowprops=dict(arrowstyle="->", color="0.5", lw=0.9))
-    _a.text(1.25, -0.42, r"$\hat z = A$", fontsize=12.5, color="0.35", ha="center")
-    _a.text(-1.25, -0.42, r"$\hat z = B$", fontsize=12.5, color="0.35", ha="center")
-    frame(_a, "binary: the belief travels the chord", _xr, _yr, pad=6)
-
-    # day-type from adjective mentions: cones in the (count, evidence) plane
-    _a = _ax[1]
-    _A_th = np.log(np.exp(mus[:, None] * mus[None, :] - mus[None, :] ** 2 / 2).sum(1))   # A(theta_k)
-    _Slim = 0.45 * T
-    _tg, _Sg = np.meshgrid(np.linspace(0, T, 400), np.linspace(-_Slim, _Slim, 400))
-    _win = (mus * _Sg[..., None] - _A_th * _tg[..., None]).argmax(-1)  # argmax_k theta_k S - t A(theta_k)
-    _a.imshow(1 - 0.55 * (1 - cols5[_win][..., :3]), origin="lower",
-              extent=(0, T, -_Slim, _Slim), aspect="auto", zorder=0)
-    _theta_star = 0.55                                                 # the warm day of fig 2
-    _p_star = np.exp(_theta_star * mus - mus ** 2 / 2); _p_star /= _p_star.sum()
-    _xs = np.random.default_rng(26).choice(5, T, p=_p_star)
-    _S = np.concatenate([[0.0], np.cumsum(mus[_xs])])
-    _a.plot([0, T], [0, T * (_p_star @ mus)], ls="--", color="0.15", lw=1.1, zorder=2)
-    _a.plot(range(T + 1), _S, color="0.35", lw=1.0, zorder=3)
-    _a.scatter(range(T + 1), _S, c=range(T + 1), cmap="viridis", s=22, zorder=4)
-    _bounds = np.diff(_A_th) / np.diff(mus)                            # region slopes S/t
-    _mid = np.concatenate([[_bounds[0] - 0.14], (_bounds[:-1] + _bounds[1:]) / 2, [_bounds[-1] + 0.14]])
-    for _slope, _lab in zip(_mid, adjs):
-        _a.text(0.985 * T, np.clip(_slope * T, -0.93 * _Slim, 0.93 * _Slim), _lab,
-                fontsize=10.5, ha="right", va="center", color="0.25",
-                bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1.5))
-    _a.set(xlim=(0, T), ylim=(-_Slim, _Slim), xlabel="examples  $t$",
-           ylabel=r"evidence  $S_t = \sum_i \mu(x_i)$")
-    _a.set_title("continuous: cones in (count, evidence)", fontsize=13)
-    plot_utils.FIG.style_axes(_a)
-
-    # day of the week: additive evidence spirals into the true day's sector
-    _a = _ax[2]
-    _zday = 2                                                          # true day: Wednesday
-    _ang = np.deg2rad(day_angs)
-    _pw = np.exp(1.5 * np.cos(_ang - _ang[_zday])); _pw /= _pw.sum()   # von Mises day mentions
-    _xs = np.random.default_rng(2).choice(7, T, p=_pw)
-    _traj = np.vstack([np.zeros(2), np.cumsum(Dw[_xs], axis=0)])
-    _rr = np.abs(_traj).max() * 1.35
-    region_bg(_a, *argmax_regions(Dw.T, (-_rr, _rr), (-_rr, _rr)), hue7, fade=0.45)
-    for _dv, _lab in zip(Dw, days):
-        _a.text(*(_dv / 0.85 * 0.88 * _rr), _lab, fontsize=11, ha="center", va="center",
-                color="0.1" if _lab == days[_zday] else "0.35")
-    _udir = Dw[_zday] / np.linalg.norm(Dw[_zday])
-    _a.plot([0, _udir[0] * 0.78 * _rr], [0, _udir[1] * 0.78 * _rr], ls="--", color="0.15", lw=1.2, zorder=2)
-    _a.plot(*_traj.T, color="0.35", lw=1.0, zorder=3)
-    _a.scatter(*_traj.T, c=range(T + 1), cmap="viridis", s=26, zorder=4)
-    _a.scatter(*(_udir * 0.78 * _rr), marker="*", s=260, facecolor="gold", edgecolor="k", lw=0.8, zorder=5)
-    _a.annotate("$t=0$", _traj[0], _traj[0] + _rr * np.array([-0.22, -0.06]), fontsize=11, color="0.3")
-    _a.set_title("week: evidence spirals into the true day", fontsize=13)
-    _a.set_aspect("equal"); plot_utils.FIG.clean(_a)
-    fig_infer.tight_layout()
-    plot_utils.save_figure(fig_infer, FIGURES / "concepts_inference.png")
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 4. The same three worlds, from trained models
-
-    Each world as a **Gaussian kernel in its canonical coordinates**
-    ($\log p(x \mid i) = -\tfrac{\gamma}{2}\lVert p_i - p_x \rVert^2 + \mathrm{const}_i$):
-    the chain gives the drawn quadratic tuning, the ring exact von Mises, the 2-item world the
-    binary property. All are rank 2 after centering, so a model with ``embed_dim=2`` is exact —
-    its embedding rows and readout rows are $e(i)$ and $d(x)$ with no projection, and the
-    decision regions are the model's true regions.
+    The centered kernels are rank $\le 2$ (binary is rank 1: two outcomes leave only the
+    contrast), so a linear net with a 2-D code is exact. Each panel draws the trained network's
+    own embedding rows and readout rows over its argmax regions, rotated/reflected into the
+    canonical position of §2 (the isometries the loss leaves free). The binary decoder pair
+    trains to $\pm u$ — the shared offset drawn in §2 is gauge, and weight decay removes it —
+    and the plane's second coordinate is loss-flat.
     """)
     return
 
@@ -590,10 +488,10 @@ def _(
     }
     learned = {}
     for _name, _sp in WORLDS.items():
-        # the kernels are exactly rank 2 (centered), so a 2-D code loses nothing
+        # the centered kernels are rank <= 2, so a 2-D code loses nothing
         _model, _ds, _ev, _, _ = train_inline(graph_overrides(_sp) +
                                               ["runner=linear", "model_kwargs.model_config.embed_dim=2"])
-        _E = _ev.input_code(_model)
+        _E = _ev.input_code(_model, project=False)     # the raw 2-D plane: D is drawn in it too
         _D = _model.readout.detach().cpu().numpy()
         print(f"{_name:8s} CKA={cka(_E, predicted_geometry(graph_conditional(_sp))):.3f}")
         learned[_name] = {"E": _E, "D": _D}
@@ -603,9 +501,14 @@ def _(
 @app.cell
 def _(
     FIGURES,
+    adjs,
     argmax_regions,
+    c_red,
     code_axes,
+    cols5,
+    days,
     frame,
+    hue7,
     learned,
     np,
     plot_utils,
@@ -614,139 +517,331 @@ def _(
     vec,
     yes_no,
 ):
+    def _rot(a):
+        _c, _s = np.cos(a), np.sin(a)
+        return np.array([[_c, -_s], [_s, _c]])
+
+    def _gauge(E, D, world):
+        """Rotate/reflect the learned plane into canonical position (the isometries the loss leaves)."""
+        if world == "binary":                          # the contrast d_f1 - d_f2 on +x
+            _u = D[0] - D[1]
+            R = _rot(-np.arctan2(_u[1], _u[0]))
+        elif world == "line":                          # the embedding line horizontal
+            _v = np.linalg.svd(E - E.mean(0), full_matrices=False)[2][0]
+            R = _rot(-np.arctan2(_v[1], _v[0]))
+        else:                                          # week: Monday's decoder at the top
+            R = _rot(np.pi / 2 - np.arctan2(D[0, 1], D[0, 0]))
+        E, D = E @ R.T, D @ R.T
+        if world == "line":
+            if E[-1, 0] < E[0, 0]:                     # cold -> hot rightward
+                E, D = E * [-1, 1], D * [-1, 1]
+            if E[:, 1].mean() < 0:                     # the line above the origin
+                E, D = E * [1, -1], D * [1, -1]
+        if world == "week" and D[0, 0] * D[1, 1] - D[0, 1] * D[1, 0] > 0:
+            E, D = E * [-1, 1], D * [-1, 1]            # days clockwise, as on a clock face
+        return E, D
+
     fig_learned, _ax = plt.subplots(1, 3, figsize=(19.5, 6))
-    _days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    _adjs = ["freezing", "cold", "moderate", "warm", "hot"]
-    _panels = [("binary", "learned words: feature log-odds axis", yes_no, [r"$f_1$", r"$f_2$"]),
-               ("line", "learned line: latent temperatures, adjective decoders",
-                plt.get_cmap(plot_utils.FIG.diverging_cmap)(np.linspace(0.06, 0.94, 5)), _adjs),
-               ("week", "learned week: latent times, day decoders",
-                plt.cm.twilight(np.arange(7) / 7), _days)]
-    for _a, (_name, _title, _cols, _labs) in zip(_ax, _panels):
-        _E2, _D2 = learned[_name]["E"], learned[_name]["D"]        # the code IS the plane: exact
-        _r = 1.3 * max(np.abs(_E2).max(), np.abs(_D2).max())
-        region_bg(_a, *argmax_regions(_D2.T, (-_r, _r), (-_r, _r)), _cols,
-                  fade=0.2 if _name == "binary" else 0.45)
-        code_axes(_a, 0.95 * _r, -0.95 * _r, 0.95 * _r)
-        for _j, _dv in enumerate(_D2):
-            vec(_a, _dv)
-            if _labs is not None:
-                _a.annotate(_labs[_j], _dv * 1.25, fontsize=11, ha="center", va="center", color="0.25")
-        _a.scatter(*_E2.T, c=np.arange(len(_E2)), cmap=plot_utils.FIG.item_cmap,
-                   s=45, zorder=4, edgecolor="white", lw=0.7)
-        frame(_a, _title, (-_r, _r), (-_r, _r))
+
+    # binary: words on the log-odds axis; the second coordinate is loss-flat
+    _a = _ax[0]
+    _E, _D = _gauge(learned["binary"]["E"], learned["binary"]["D"], "binary")
+    _r = 1.3 * max(np.abs(_E).max(), np.abs(_D).max())
+    region_bg(_a, *argmax_regions(_D.T, (-_r, _r), (-_r, _r)), yes_no, fade=0.16)
+    code_axes(_a, 0.95 * _r, -0.95 * _r, 0.95 * _r)
+    for _d, _lab, _dy in [(_D[0], r"$d_{f_1}$", 0.1), (_D[1], r"$d_{f_2}$", -0.1)]:
+        vec(_a, _d)
+        _a.annotate(_lab, _d * 1.2 + [0, _dy * _r], fontsize=12.5, ha="center", va="center", color="0.3")
+    _a.scatter(*_E.T, c=np.arange(len(_E)), cmap=plot_utils.FIG.item_cmap,
+               s=48, zorder=4, edgecolor="white", lw=0.7)
+    _a.text(0, -0.85 * _r, r"log-odds $f_1\!:\!f_2$ = x coordinate", fontsize=11.5,
+            ha="center", color="0.35")
+    frame(_a, "binary: trained words on the log-odds axis", (-_r, _r), (-_r, _r))
+
+    # line: embeddings on an affine line crossing the five cones in order
+    _a = _ax[1]
+    _E, _D = _gauge(learned["line"]["E"], learned["line"]["D"], "line")
+    _r = 1.3 * max(np.abs(_E).max(), np.abs(_D).max())
+    region_bg(_a, *argmax_regions(_D.T, (-_r, _r), (-_r, _r), res=600), cols5, fade=0.55)
+    code_axes(_a, 0.55 * _r, -0.55 * _r, 0.55 * _r)
+    for _d, _lab in zip(_D, adjs):
+        vec(_a, _d)
+        _a.annotate(_lab, _d / np.linalg.norm(_d) * 0.85 * _r, fontsize=11,
+                    ha="center", va="center", color="0.25")
+    _a.plot(*_E.T, color="0.3", lw=1.2, ls=":", zorder=3)
+    _a.scatter(*_E.T, c=np.linspace(0, 1, len(_E)), cmap="coolwarm", s=34, zorder=4,
+               edgecolor="white", lw=0.6)
+    _t = np.linspace(0, 1, 4000)                       # boundary crossings along the embedding line
+    _path = (1 - _t)[:, None] * _E[0] + _t[:, None] * _E[-1]
+    _wins = (_path @ _D.T).argmax(1)
+    _a.scatter(*_path[np.flatnonzero(np.diff(_wins)) + 1].T, marker="|", s=130, color="0.1", zorder=5)
+    vec(_a, _E[14], color=c_red, lw=2.4)               # one warm day
+    frame(_a, "line: trained latents cross the cones in order", (-_r, _r), (-_r, _r))
+
+    # week: one circle of times inside the day decoders' sectors
+    _a = _ax[2]
+    _E, _D = _gauge(learned["week"]["E"], learned["week"]["D"], "week")
+    _r = 1.35 * max(np.abs(_E).max(), np.abs(_D).max())
+    region_bg(_a, *argmax_regions(_D.T, (-_r, _r), (-_r, _r)), hue7, fade=0.45)
+    code_axes(_a, 0.55 * _r, -0.55 * _r, 0.55 * _r)
+    for _d, _lab in zip(_D, days):
+        vec(_a, _d)
+        _a.annotate(_lab, _d / np.linalg.norm(_d) * 0.88 * _r, fontsize=11,
+                    ha="center", va="center", color="0.25")
+    _a.scatter(*_E.T, c=np.arange(len(_E)), cmap="twilight", s=34, zorder=4,
+               edgecolor="white", lw=0.6)
+    vec(_a, _E[10], color=c_red, lw=2.4)               # Wednesday night
+    _a.annotate(r"$e$ (Wed night)", _E[10] * 1.45, fontsize=11.5, ha="center",
+                va="center", color=c_red)
+    frame(_a, "circle: trained times inside the day sectors", (-_r, _r), (-_r, _r))
     fig_learned.tight_layout()
     plot_utils.save_figure(fig_learned, FIGURES / "concepts_worlds_learned.png")
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 5. Inference from a trained model
+    ## 3. Many binary features: LRH is the additive special case
 
-    The latent-inference case of §3, real: the day $z$ is hidden, a transformer reads mention
-    streams $x_{1:t} \sim \mathrm{vonMises}(z)$ (the week world's Gaussian kernel) and predicts
-    $z$ at every position (``infer_latent`` with ``distinct_outcomes``). Bayes is additive in the
-    evidence, so the hidden state should walk the code plane like §3's spiral. Left: one stream's
-    hidden-state trajectory over the argmax regions of the model's $z$-readout (its top-2 plane —
-    the kernel is rank 2). Right: the model's posterior on the true day against exact Bayes.
+    The hypercube with the **heat** kernel makes the log-conditional additive over bits,
+    $L(z, x) = \sum_k a_k z_k x_k$, so the optimal code is one direction per feature:
+    flipping bit $k$ adds the same vector $2\sqrt{a_k}\,e_k$ *whatever the other bits are*.
+    That is the linear representation hypothesis — parallel analogy edges — recovered as the
+    special case of an additive kernel. The oracle's twelve edges come in three exactly
+    parallel quadruples; a trained model's should be near-parallel within a bit and
+    near-orthogonal across bits.
     """)
     return
 
 
 @app.cell
-def _(graph_overrides, train_inline):
-    import torch
+def _(
+    cka,
+    cube_codes,
+    factor_logcond,
+    graph_conditional,
+    graph_overrides,
+    np,
+    train_inline,
+):
+    CUBE = {"structure": "hypercube", "cooccurrence": "heat", "n": 3, "gamma": 0.8}
+    NBITS = CUBE["n"]
+    L_cube = graph_conditional(CUBE)
+    _, _Ec, _Dc, _ = factor_logcond(L_cube)              # additive kernel: centered rank = n bits
+    E_cube, D_cube = _Ec[:, :NBITS], _Dc[:NBITS]
+    Z_cube = cube_codes(NBITS)                           # (2^n, n) bit codes, node order
 
-    # a fine latent circle (28 times of week) emitting the 7 coarse day mentions: bipartite by
-    # construction, so the input is genuinely hidden
-    INFER = {"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 1.5}
-    model_inf, ds_inf, ev_inf, _, _ = train_inline(graph_overrides(INFER) + [
-        "runner=transformer", "sample_mode=sequence", "++infer_latent=true",
-        "training_kwargs.context_length=40", "training_kwargs.batch_size=256"])
-    return ds_inf, model_inf, torch
+    _model, _ds, _ev, _, _ = train_inline(graph_overrides(CUBE) +
+                                          ["runner=linear", f"model_kwargs.model_config.embed_dim={NBITS}"])
+    E_cube_hat = _ev.input_code(_model)
+    print(f"hypercube CKA(learned, oracle) = {cka(E_cube_hat, E_cube):.3f}")
+
+    def analogy_vectors(E, k):
+        """Edge vectors of bit k: E[z with bit k flipped to 1] - E[z with bit k = 0], (2^(n-1), d)."""
+        lo = np.flatnonzero(Z_cube[:, k] == 0)
+        return E[lo + 2 ** k] - E[lo]
+
+    def cosine_stats(E):
+        """(mean within-bit cosine, mean |across-bit| cosine) over the analogy edges."""
+        V = [analogy_vectors(E, k) for k in range(NBITS)]
+        U = [v / np.linalg.norm(v, axis=1, keepdims=True) for v in V]
+        within = np.mean([(u @ u.T)[np.triu_indices(len(u), 1)].mean() for u in U])
+        across = np.mean([np.abs(U[i] @ U[j].T).mean()
+                          for i in range(NBITS) for j in range(i + 1, NBITS)])
+        return within, across
+
+    for _name, _e in [("oracle", E_cube), ("learned", E_cube_hat)]:
+        _w, _x = cosine_stats(_e)
+        print(f"{_name:8s} analogy edges: within-bit cos = {_w:.3f}   across-bit |cos| = {_x:.3f}")
+    return D_cube, E_cube, E_cube_hat, NBITS, Z_cube, analogy_vectors
 
 
 @app.cell
 def _(
+    E_cube,
+    E_cube_hat,
     FIGURES,
-    argmax_regions,
-    c_red,
-    ds_inf,
+    NBITS,
+    Z_cube,
+    analogy_vectors,
     frame,
-    model_inf,
     np,
     plot_utils,
     plt,
-    region_bg,
-    torch,
 ):
-    _T, _Z = 40, 9                                                     # true time: Wednesday night
-    _g = torch.Generator(device=ds_inf.device).manual_seed(7)
-    _xs = torch.multinomial(ds_inf.P[_Z], _T, replacement=True, generator=_g)
-    _ids = torch.cat([torch.tensor([ds_inf.start_token], device=ds_inf.device), _xs])[None]
-    with torch.no_grad():
-        _out = model_inf(_ids, output_hidden_states=True)
-    _H = _out["hidden_states"][-1][0].float().cpu().numpy()            # h_t after t mentions
-    _W = model_inf.get_output_embeddings().weight[ds_inf.item_tokens.cpu()].detach().float().cpu().numpy()
-    _B = np.linalg.svd(_W, full_matrices=False)[2][:2]                 # the z-readout's top-2 plane
-    _H2, _W2 = _H @ _B.T, _W @ _B.T
+    # projection built from the oracle's own bit directions: u0, u1 in the plane, u2 as the
+    # axonometric offset. Linear, so parallel edges stay parallel in the drawing.
+    _U = np.stack([analogy_vectors(E_cube, _k).mean(0) for _k in range(NBITS)])
+    _U /= np.linalg.norm(_U, axis=1, keepdims=True)
+    P_cube = np.stack([_U[0] + 0.42 * _U[2], _U[1] + 0.28 * _U[2]]).T   # (d, 2)
 
-    _days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    fig_inf, _axs = plt.subplots(1, 2, figsize=(13.5, 5.4))
-    _a = _axs[0]
-    _rr = 1.25 * max(np.abs(_H2).max(), np.abs(_W2).max())
-    _n_z = len(_W2)
-    region_bg(_a, *argmax_regions(_W2.T, (-_rr, _rr), (-_rr, _rr)),
-              plt.cm.twilight(np.arange(_n_z) / _n_z), fade=0.45)
-    for _j, _lab in enumerate(_days):                                  # day labels at their latent angle
-        _w = _W2[_j * _n_z // 7]
-        _a.text(*(_w / np.linalg.norm(_w) * 0.9 * _rr), _lab, fontsize=11, ha="center", va="center",
-                color="0.1" if _lab == "Wed" else "0.35")
-    _a.plot(*_H2.T, color="0.35", lw=1.0, zorder=3)
-    _a.scatter(*_H2.T, c=np.arange(_T + 1), cmap="viridis", s=26, zorder=4)
-    _a.annotate("$t=0$", _H2[0], _H2[0] + _rr * np.array([-0.2, -0.06]), fontsize=11, color="0.3")
-    frame(_a, "hidden state walks to the true time of week", (-_rr, _rr), (-_rr, _rr))
+    from src.code.analysis_utils import align_representations
+    E_hat_al, _r2 = align_representations(E_cube_hat, E_cube, method="linear")
 
-    _a = _axs[1]
-    _bel = ds_inf.optimal_predictions(_ids)[0].cpu().numpy()           # Bayes over z, row t = t mentions
-    _lg = _out["logits"][0][:-1][:, ds_inf.item_tokens.cpu()].float().cpu().numpy()
-    _pm = np.exp(_lg - _lg.max(-1, keepdims=True)); _pm /= _pm.sum(-1, keepdims=True)
-    _a.plot(range(_T), _bel[:, _Z], color="0.15", lw=2.0, label="Bayes")
-    _a.plot(range(_T), _pm[:, _Z], color=c_red, lw=1.6, label="model")
-    _a.set(xlabel="mentions  $t$", ylabel=r"p(z = Wed night $\mid x_{1:t}$)", ylim=(0, 1.02))
-    _a.legend(frameon=False)
-    _a.set_title("the posterior tracks Bayes", fontsize=13)
+    _bitcols = [plot_utils.FIG.colors[_c] for _c in ("blue", "orange", "green")]
+    fig_cube, _ax = plt.subplots(1, 2, figsize=(12.5, 5.6))
+    for _a, _E, _title in [(_ax[0], E_cube, "oracle: one direction per feature"),
+                           (_ax[1], E_hat_al, "learned (aligned): the same parallel edges")]:
+        _XY = _E @ P_cube
+        for _k in range(NBITS):
+            _lo = np.flatnonzero(Z_cube[:, _k] == 0)
+            for _i in _lo:
+                _a.plot(*np.stack([_XY[_i], _XY[_i + 2 ** _k]]).T, color=_bitcols[_k],
+                        lw=2.0, alpha=0.85, zorder=2,
+                        label=f"flip bit {_k}" if _i == _lo[0] else None)
+        _a.scatter(*_XY.T, c="0.15", s=40, zorder=3)
+        for _i, _z in enumerate(Z_cube):
+            _a.annotate("".join(str(int(_b)) for _b in _z), _XY[_i], _XY[_i] + 0.055 * np.array([1, 1]),
+                        fontsize=10, color="0.4")
+        _m = 1.25 * np.abs(_XY).max()
+        _a.legend(frameon=False, fontsize=10, loc="upper left")
+        frame(_a, _title, (-_m, _m), (-_m, _m))
+    fig_cube.tight_layout()
+    plot_utils.save_figure(fig_cube, FIGURES / "concepts_hypercube_analogies.png")
+    return (P_cube,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 4. Uncertainty is location in the space
+
+    Mixing codes is exact log-linear pooling: for $e_w = \sum_z w_z\, e(z)$,
+    $$ e_w \cdot d_x = \sum_z w_z \log \tilde p(x \mid z)
+       \;\;\Longrightarrow\;\; \hat p_w(x) \propto \prod_z p(x \mid z)^{w_z}. $$
+    The code plane is the natural-parameter space of the outcome family; the item embeddings sit
+    on a fixed-confidence shell inside it, and a belief lives at its pooled code.
+
+    - **Cube.** Belief over one feature slides the code along that feature's analogy edge — a
+      chord far from the origin, offset by the other features' coordinates; the midpoint is
+      maximal feature uncertainty. Because the code is linear in $z$, it carries only the
+      per-feature marginals: feature correlations are invisible.
+    - **Line.** The embedding is affine in $\theta$, so pooling collapses to the mean: every
+      belief with the same mean lands on the same on-shell point. The confidence axis still
+      exists — the second coordinate scales the quadratic term, the predictive's precision —
+      and the Bayes predictive sits below the shell at $s = 1 - \gamma\,\mathrm{Var}(\theta)$
+      (variance of the belief, tilted by the outcome normalizer; the tilt vanishes on
+      homogeneous worlds). Mixing embeddings never reaches it; only evidence does — the
+      inference notebook's (count, evidence) plane is exactly this axis.
+    - **Circle.** The shell is curved, so pooling leaves it automatically: spread shortens the
+      resultant, radius = von Mises concentration, the center = uniform.
+    """)
+    return
+
+
+@app.cell
+def _(
+    D,
+    D_cube,
+    E,
+    E_cube,
+    FIGURES,
+    L,
+    NBITS,
+    P_cube,
+    Z_cube,
+    cols5,
+    frame,
+    np,
+    plot_utils,
+    plt,
+):
+    # the pooling law, verified on the ring: e_w . d_x = sum_z w_z log p~(x|z)
+    _w = np.random.default_rng(0).dirichlet(np.ones(len(E)))
+    _err = np.abs((_w @ E) @ D - _w @ (L - L.mean(1, keepdims=True))).max()
+    print(f"pooling identity  max |e_w · d_x - Σ w log p̃|  =  {_err:.2e}")
+
+    fig_unc, _ax = plt.subplots(1, 3, figsize=(17, 5.4))
+
+    # cube: belief over bit 2 walks the analogy edge 000 -> 001, far from the origin
+    _a = _ax[0]
+    _XY = E_cube @ P_cube
+    for _k in range(NBITS):
+        for _i in np.flatnonzero(Z_cube[:, _k] == 0):
+            _a.plot(*np.stack([_XY[_i], _XY[_i + 2 ** _k]]).T, color="0.85", lw=1.4, zorder=1)
+    _a.scatter(*_XY.T, c="0.4", s=28, zorder=3)
+    for _i, _z in enumerate(Z_cube):                   # vertex labels pushed outward, off the edges
+        _o = _XY[_i] - _XY.mean(0)
+        _a.annotate("".join(str(int(_b)) for _b in _z), _XY[_i] + 0.16 * _o / np.linalg.norm(_o),
+                    fontsize=9.5, color="0.55", ha="center", va="center")
+    _bs = np.linspace(0, 1, 11)
+    _chord = np.outer(1 - _bs, E_cube[0]) + np.outer(_bs, E_cube[4])
+    _a.scatter(*(_chord @ P_cube).T, c=_bs, cmap="viridis", s=46, zorder=4)
+    _a.scatter([0], [0], c="0.3", marker="+", s=90, zorder=4)
+    _a.annotate("origin", (0, 0), (0.07, -0.16), fontsize=10, color="0.45")
+    _a.annotate(r"$p(f_3{=}1)$: 0 $\to$ 1", (_chord[5] @ P_cube), (_chord[5] @ P_cube) + [0.2, -0.14],
+                fontsize=10.5, color="0.3", va="top")
+    # the chord's readout is the exact geometric pool of the two vertex conditionals
+    _p0, _p1 = (np.exp(_l) / np.exp(_l).sum() for _l in (E_cube[0] @ D_cube, E_cube[4] @ D_cube))
+    _pool = _p0[None] ** (1 - _bs[:, None]) * _p1[None] ** _bs[:, None]
+    _pool /= _pool.sum(1, keepdims=True)
+    _lc = _chord @ D_cube
+    _pc = np.exp(_lc - _lc.max(1, keepdims=True)); _pc /= _pc.sum(1, keepdims=True)
+    print(f"cube: max |softmax(chord) - geometric pool| = {np.abs(_pc - _pool).max():.2e}")
+    _m = 1.3 * np.abs(_XY).max()
+    frame(_a, "cube: belief over one feature = its analogy edge", (-_m, _m), (-_m, _m))
+
+    # line: the (mean, precision) plane; items on the unit-precision shell s = 1
+    _a = _ax[1]
+    _gam, _n, _m5 = 0.05, 21, 5
+    _th = np.arange(_n, dtype=float)
+    _mu = np.linspace(0, _n - 1, _m5)
+    _tt = np.linspace(-1.5, _n + 0.5, 420)
+    _ss = np.linspace(-0.03, 1.3, 320)
+    _lg = _gam * (_tt[None, :, None] * _mu - _ss[:, None, None] * _mu ** 2 / 2)
+    _a.imshow(1 - 0.55 * (1 - cols5[_lg.argmax(-1)][..., :3]), origin="lower",
+              extent=(_tt[0], _tt[-1], _ss[0], _ss[-1]), aspect="auto", zorder=0)
+    _a.axhline(1.0, color="0.5", lw=0.8, ls=":", zorder=3)
+    _a.scatter(_th, np.ones(_n), c=np.linspace(0, 1, _n), cmap="coolwarm", s=26,
+               zorder=4, edgecolor="white", lw=0.5)
+    # same-mean beliefs: the pool stays at (mean, 1); the Bayes predictive drops below the shell
+    # by the belief's variance: s = 1 - gamma Var(theta), with the belief tilted by the outcome
+    # normalizer Z(theta) (the tilt vanishes on homogeneous worlds like the ring)
+    _tstar, _taus = 10.0, np.array([0.0, 1.5, 2.0, 3.0])
+    _K = np.exp(_gam * np.outer(_th, _mu) - _gam * _mu ** 2 / 2)       # exp-family form of the kernel
+    _Z = _K.sum(1); _P = _K / _Z[:, None]                              # (theta's own factor cancels in P)
+    _A = np.c_[np.ones(_m5), _gam * _mu, -_gam * _mu ** 2 / 2]         # logit basis: const, mean, precision
+    _fit, _s_pred = [], []
+    for _tau in _taus:
+        _wb = (_th == _tstar).astype(float) if _tau == 0 else np.exp(-(_th - _tstar) ** 2 / (2 * _tau ** 2))
+        _wb = _wb / _wb.sum()
+        _fit.append(np.linalg.lstsq(_A, np.log(_wb @ _P), rcond=None)[0][1:])
+        _wt = _wb / _Z; _wt = _wt / _wt.sum()
+        _s_pred.append(1 - _gam * (_wt @ _th ** 2 - (_wt @ _th) ** 2))
+    _fit = np.array(_fit)                                              # columns: mean, s
+    _a.plot(_fit[:, 0], _fit[:, 1], color="0.4", lw=0.8, zorder=4)
+    _a.scatter(_fit[:, 0], _fit[:, 1], c=_taus, cmap="viridis", marker="s", s=56, zorder=5)
+    _a.scatter([_tstar], [1.0], marker="*", s=260, facecolor="gold", edgecolor="k", lw=0.8, zorder=6)
+    _a.annotate("pool of every\nsame-mean belief", (_tstar, 1.0), (_tstar + 2.0, 1.12),
+                fontsize=10.5, color="0.3")
+    _a.annotate(r"Bayes predictive: $s = 1 - \gamma\,\mathrm{Var}(\theta)$", _fit[-1],
+                _fit[-1] + [1.0, -0.04], fontsize=10.5, color="0.3", va="top")
+    print("line: fitted s =", np.round(_fit[:, 1], 4),
+          " vs 1 - gam Var_tilted =", np.round(_s_pred, 4))
+    _a.set(xlabel="mean coordinate", ylabel=r"precision coordinate  $s$")
+    _a.set_title("line: pooling collapses to the mean; confidence is the second axis", fontsize=12.5)
     plot_utils.FIG.style_axes(_a)
-    fig_inf.tight_layout()
-    plot_utils.save_figure(fig_inf, FIGURES / "concepts_inference_learned.png")
-    return
 
-
-@app.cell
-def _(FIGURES, KDIMS, L, plot_utils):
-    _fig2, _ = plot_utils.plot_factorization(L, k=KDIMS)
-    plot_utils.save_figure(_fig2, FIGURES / "concepts_factorization.png")
-    return
-
-
-@app.cell
-def _(FIGURES):
-    from PIL import Image
-
-    _names = ["concepts_ring_predicted", "concepts_factorization", "concepts_dual_reading"]
-    _imgs = [Image.open(FIGURES / f"{_n}.png") for _n in _names]
-    _w = min(_i.width for _i in _imgs)
-    _scaled = [_i.resize((_w, round(_i.height * _w / _i.width))) for _i in _imgs]
-    _gap = 60
-    story = Image.new("RGB", (_w, sum(_i.height for _i in _scaled) + _gap * 2), "white")
-    _y = 0
-    for _i in _scaled:
-        story.paste(_i, (0, _y)); _y += _i.height + _gap
-    story.save(FIGURES / "concepts_embedding_story.png")
-    print(f"Saved figure to {FIGURES / 'concepts_embedding_story.png'}")
-    story
+    # circle: the same construction leaves the shell by itself — radius = concentration
+    _a = _ax[2]
+    _nc = len(E)
+    _thc = 2 * np.pi * np.arange(_nc) / _nc
+    _circ = E[:, :2]
+    _ks = [12, 6, 3, 1.5, 0.7, 0.3, 0.1]
+    _codes = np.array([(lambda _b: _b / _b.sum())(np.exp(_k * np.cos(_thc - _thc[21]))) @ _circ
+                       for _k in _ks])
+    _a.scatter(*_circ.T, c="0.85", s=16, zorder=2)
+    _a.scatter([0], [0], c="0.5", marker="+", s=80, zorder=3)
+    _a.plot(*_codes.T, color="0.6", lw=0.8, zorder=3)
+    _a.scatter(*_codes.T, c=range(len(_ks)), cmap="viridis", marker="s", s=52, zorder=4)
+    _rad = np.linalg.norm(_codes, axis=1)
+    print("circle: pooled-code radius by spread =", np.round(_rad, 2),
+          " monotone:", bool(np.all(np.diff(_rad) < 0)))
+    _mc = 1.15 * np.abs(_circ).max()
+    frame(_a, r"circle: pooling walks rim $\to$ center (radius = confidence)", (-_mc, _mc), (-_mc, _mc))
+    fig_unc.tight_layout()
+    plot_utils.save_figure(fig_unc, FIGURES / "concepts_uncertainty.png")
     return
 
 

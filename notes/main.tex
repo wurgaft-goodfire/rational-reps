@@ -1,0 +1,580 @@
+
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb, amsfonts}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage[colorinlistoftodos]{todonotes}
+\usepackage{graphicx}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{natbib}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\graphicspath{{figures/}{./}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\setlist{leftmargin=1.4em,topsep=2pt,itemsep=2pt}
+\DeclareMathOperator{\Softmax}{Softmax}
+\DeclareMathOperator{\col}{col}
+
+% denser, more readable floats
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf,skip=3pt}
+\usepackage{placeins}
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.8}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{7pt plus 2pt minus 2pt}
+\setlength{\intextsep}{7pt plus 2pt minus 2pt}
+
+\title{\textbf{A Resource Rational Analysis of Representations: \\ Geometry, Inference, Capacity}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-3em}
+
+\section{Introduction}
+
+\cite{}Neural systems process information by forming representations of the world. Studies of representational geometry have revealed remarkably structured representations in biological \citep{kriegeskorte2013representational, behrens2018cognitive, perich2025neural} and artificial \citep{saxe2019mathematical, nanda2023progress, modell2025origins} systems, as well as a surprising  alignment in representations across systems \citep{sucholutsky2023getting, cao2024explanatory, huh2024platonic}. 
+
+Why do representations across systems converge to similar structures, how do these structures encode concepts and uncertainty over them, and how are they shaped by resource constraints? These questions, long studied in cognitive science and neuroscience \citep{olshausen1996emergence, beck2008probabilistic, gardenfors2004conceptual, laakso2000content, edelman1998representation},  have seen a resurgence of interest through work on interpreting neural networks \citep{elhage2022toy, huh2024platonic, park2025geometry, park2023linear, shai2024transformers}. Here, we aim to tackle these questions in neural networks by adopting the approach of \textit{resource rationality} \citep{icard2023resource, lieder2020resource}, which explains cognition as optimally adapted to an environment, given limited computational resources. Specifically, we begin by asking what are \textit{optimal} representations for solving a task, given dimensionality and linear readout constraints. Through that, we aim to explore representations of concepts, inference over conceptual spaces, and interference between representations. Our intended contributions are: \begin{itemize}
+    \item \textbf{Geometry, Convergence, and Concepts:} We build on previous work connecting task and data structure with neural embeddings \citep{levy2014neural, karkada2026symmetry, Korchinski2025LinearAnalogies, karkada2026symmetry, arora2016latent, saxe2019mathematical, nanda2023progress, fu2026convergentevolutiondifferentlanguage, marchetti2024harmonics} to formalize the notion of \textit{optimal} linear representations for solving a task, which encompasses uni-dimensional, curved multi-dimensional, and hierarchical representations. We show these optimal representations emerge in varied architectures and across arity-1 (e.g., skip-gram) and arity-2 (e.g., modular arithmetic) tasks, thereby providing a simple explanation for representational convergence---alignment toward the optimal solution. Based on this shared treatment of representations and their relation to latent structure in the data, we offer a formalization of \textit{conceptual spaces} as a generalization of the uni-dimensional concepts characterized by the linear representation hypothesis (LRH) \citep{park2023linear, elhage2022toy}. 
+    
+    \item \textbf{Uncertainty and Inference:} We observe that for a probabilistic model, the notion of a conceptual space must include \textit{uncertainty}, expressed via the location of an embedding compared with discrete concepts within the space. We characterize uncertainty over a conceptual space by examining how changes in representation alter the represented probability distribution. Then, building on Bayesian accounts of in-context learning \citep{bigelow2026beliefdynamicsrevealdual, wurgaft2025incontextlearningstrategiesemerge, zhang2023doesincontextlearninglearn, xie2022explanationincontextlearningimplicit} and work from neuroscience \citep{sorscher2022neuralgeometry}, we ask how should representations \textit{change} over a context in response to evidence, and extend our normative account to accommodate representation dynamics. 
+    
+    \item \textbf{Capacity and Interference:} Finally, we focus on representations in resource-constrained settings, and aim at extending our account of conceptual spaces to encompass superposition and representational interference between multi-dimensional spaces \textcolor{red}{(least baked part)}.
+\end{itemize} 
+
+% \section{Related Works}
+
+% \paragraph{Understanding representations through co-occurrence statistics and task structure.} \citep{levy2014neural, karkada2026symmetry, Korchinski2025LinearAnalogies, karkada2026symmetry, arora2016latent, saxe2019mathematical, anonymous2026the, nanda2023progress, fu2026convergentevolutiondifferentlanguage}
+
+% \paragraph{Accounts of representation.}
+
+% \paragraph{Representational alignment.}
+
+\section{Setup: What Defines an Optimal Representation?}
+
+We are interested in the general task of next-item prediction $\log p(x| \theta)$ given seen $\theta$, and in representations that can solve this task under log-linear (softmax) decoding, which we will term \textit{linear representations}. We begin with the following simple claim, inspired by \citet{levy2014neural}:  Collect probabilities into a log-conditional matrix $L \in \mathbb{R}^{|\theta|\times|x|}$ with $L[\theta,x] = \mbox{log}\,p(x|\theta)$, and assume a dimensionality $d$ for embeddings. Then, \textbf{the optimal linear representation of $\log p(x| \theta)$ is given by the best rank-$d$ factorization of the log-conditional tensor}.
+
+To break down this claim, start with arity-1, the case in which $\theta$ is a single argument. We can write the SVD of $L$: \begin{align*}
+    L \approx U \Sigma \; V^T = \underbrace{E}_{\text{Embeddding}}  \times \underbrace{D}_{\text{Decoder}}, \;\;\;\text{For } L\in \mathbb{R}^{|\theta|\times |x|}, \;V \in \mathbb{R}^{|x|\times d}, U \in \mathbb{R}^{|\theta| \times d}
+\end{align*}
+By Eckhart-Young, the SVD is the best rank-$d$ factorization of the matrix $L$. We can think of $E=U\Sigma^{1/2}$ as $d$-dimensional embeddings for $\theta$, where $E[\theta] \in \mathbb{R}^d$; and same for the decoder $D = \Sigma^{1/2} \,V^{\top}$, where $D[x] \in\mathbb{R}^d$.\footnote{We choose a balanced division of the singular values between embedding and decoder, since that minimizes the L2 norm (provide citation here for SGD implicit bias going there even without weight decay).} Then: 
+\begin{eqnarray*}
+    \widehat{p}(x|\theta) & \propto & \mbox{exp}(E[\theta]\cdot D[x]).
+\end{eqnarray*} 
+
+
+
+In the case of arity 2 or higher (i.e., $\theta$ has more than one argument), we require a tensor rank decomposition. We can use approximate generalizations of SVD for higher orders (e.g., \textcolor{gray}{CP decomposition}\footnote{I will use \textcolor{gray}{grey} text color throughout the document to demarcate agent-written text or places where I am unsure and need to read up on the math (and current framing was provided by an agent).}) or directly optimize. For example, in the case of arity-2, we directly optimize a bilinear head: \begin{align*}
+    \log p(c |a,b) = L[a, b, c] \approx E_1[a]^T \,D_c \,E_2[b], \;\;\; \text{For} \; E_1[a], E_2[b] \in \mathbb{R}^d, \,D_c\in \mathbb{R}^{d\times d}
+\end{align*}
+By defining the resource-optimal representation for a given task, we first aim to provide a normative answer for why different models converge onto similar representations for a task, and why tasks demand a particular representational geometry.
+
+\section{Representational Convergence and Concept Geometry}
+
+
+\section{Optimal geometry from data}
+
+We define a DGP by its set of inputs
+\[
+z=(z_1,\ldots,z_r)\in \mathcal Z_1\times\cdots\times\mathcal Z_r=\mathcal Z,
+\]
+a set of outputs $x\in\mathcal X$, and the transition kernel connecting them
+\[
+L[z,x]=\log p(x\mid z),
+\qquad
+L\in\mathbb R^{|\mathcal Z|\times|\mathcal X|}.
+\]
+
+We further assume:
+
+\begin{enumerate}
+\item $z$'s induce distinct output distributions, i.e.,
+\[
+p(x\mid z)=p(x\mid z')\quad\text{iff}\quad z=z'.
+\]
+and
+
+\item The transition kernel
+\[
+p(x\mid z)=p(x\mid z_1,\ldots,z_r)
+\]
+is a function of $z_1,\ldots,z_r$.
+\end{enumerate}
+
+We can equivalently think of the DGP as a weighted bipartite graph
+\[
+\mathcal Z\longleftrightarrow\mathcal X
+\]
+with edge weights determined by $L[z,x]$.
+
+Define a linear representation via a non linear embedding $E(z)\in\mathbb R^d$ and a decoder $D(x)\in\mathbb R^d$ such that
+\[
+\hat p(x\mid z)=\Softmax\!\left(E(z)^T D(x)\right).
+\]
+
+Then, for the purpose of reconstructing the DGP defined by $L$, the optimal linear representation is simply given by the SVD factorization:
+\[
+L^*=U\Sigma V^T=ED
+\qquad
+\left(\text{with $L^*$ being row centered $L$,}\right)
+\]
+such that
+\[
+p(x\mid z)=\Softmax\!\left(E(z)^T D(x)\right).
+\]
+
+(Note that we use $L(z,x)=\log\tilde p(x\mid z)$ for unnormalized log probability given that softmax disregards the gauge).
+
+Before examining whether networks learn optimal geometries, we examine how the Singular values $\Sigma$ should be distributed between the embedding $E$ and decoder $D$.
+
+We can answer that via the implicit bias of gradient descent. Looking at the gradient flow, where we examine GD with infinitesimally small learning rate.
+
+Assume an arbitrary loss function $\mathcal L$.
+
+Then:
+\[
+\mathcal L(\hat L)=\mathcal L(ED)\text{ is our loss.}
+\]
+
+Define
+\[
+M:=\nabla_{\hat L}\mathcal L.
+\]
+
+Then by chain rule:
+\[
+\nabla_E\mathcal L=MD^T=-\dot E,
+\qquad
+\nabla_D\mathcal L=E^T M=-\dot D.
+\]
+
+examine how the Gram matrices $E^T E$ and $DD^T$ change over training:
+\begin{align*}
+\frac{d}{dt}\left(E^T E\right)
+&=\dot E^T E+E^T\dot E\\
+&=\left(-MD^T\right)^T E
+  +E^T\left(-MD^T\right)\\
+&=-DM^T E-E^T MD^T,\\[0.75em]
+\frac{d}{dt}\left(DD^T\right)
+&=\dot D D^T+D\dot D^T\\
+&=-E^T MD^T-DM^T E.
+\end{align*}
+\[
+\Longrightarrow\qquad
+\frac{d}{dt}\left(E^T E-DD^T\right)=0.
+\]
+
+Because $E^T E=DD^T$, they must have
+
+Now we know for our optimal $E,D$:
+\[
+L=U\Sigma V^T=ED.
+\]
+
+write $E=UA$ and $D=BV^T$, thus $AB=\Sigma$.
+\begin{align*}
+E^T E
+&=A^T U^T UA=A^T A,\\
+DD^T
+&=BV^T VB^T=BB^T,
+\end{align*}
+and because $E^T E=DD^T$
+\[
+\Longrightarrow\qquad A^T A=BB^T.
+\]
+\begin{align*}
+\Sigma^2
+&=(AB)(AB)^T\\
+&=A(BB^T)A^T\\
+&=A(A^T A)A^T\\
+&=(AA^T)^2.
+\end{align*}
+
+Since $AA^T\succeq 0$, $AA^T=\Sigma$.
+
+Thus,
+\[
+A=\sqrt{\Sigma}\,Q
+\qquad\text{and}\qquad
+B=Q^T\sqrt{\Sigma}.
+\]
+and
+\[
+E=U\sqrt{\Sigma}\,Q,
+\qquad
+D=Q^T\sqrt{\Sigma}\,V^T.
+\]
+so $\Sigma$ is balanced between embedding and decoder up to rotation.
+
+\section{Feature, what art thou?}
+
+Note that optimal representations from the section take on geometries close to the structure of the graphs that generated them. Why is that? We now focus on the semantics of representations.
+
+We begin by noticing that the network and the DGP have a similar function: both take in an input $z$ and output a distribution $p(\cdot\mid z)$. However, crucially, the DGP does so directly via the kernel function:
+\[
+z\xrightarrow[\text{arbitrary}]{L}L(\cdot,z)
+\]
+while the network does this via a vector space $\mathbb R^d$, in which the relation between the embedding and the output is linear:
+\[
+z\xrightarrow[\text{Arbitrary}]{E}E(z)\in\mathbb R^d
+\xrightarrow[\text{Linear}]{D}L(\cdot,z).
+\]
+
+Since $z=(z_1,\ldots,z_d)$ parametrizes the transition kernel $L$, we can think of $\mathcal Z$ as the intrinsic coordinates or feature space of the DGP, and $z_i$ as its features. As in a manifold embedding, $E$ is a nonlinear map from intrinsic coordinate space in $\mathbb R^r$ into the model's ambient space $\mathbb R^d$:
+\[
+E(z)=\bigl(E_1(z),\ldots,E_d(z)\bigr).
+\]
+
+Note that unlike an arbitrary embedding, $E$ must be learned s.t the kernel $L$ admits linear readout:
+\[
+L(z,\cdot)=DE(z)=\sum_{x}^{|\mathcal X|}D(x)^T E(z).
+\]
+
+This conception of features is inherently relational and distributional, since it entails that the notion of a feature is defined by its impact on the transition kernel---its impact on the next state.
+
+We next show how this notion of feature generalizes that provided by LRH:
+
+Consider a setting that captures the classic LRH ``linear analogies'':
+
+\begin{itemize}
+\item Let the inputs $z$ and outputs $x$ come from the same binary hypercube:
+\[
+\mathcal Z=\mathcal X=\{-1,+1\}^d.
+\]
+
+\item Assume the transition kernel acts independently across features:
+\begin{align*}
+L(z,x)
+&=\sum_{k=1}^{d}\ell(z_k,x_k)\\
+&=\sum_{k=1}^{d}a_kz_kx_k,
+\end{align*}
+which is essentially a singular value decomposition of $L$ such that:
+\[
+E(z)=\bigl(\sqrt{a_1}z_1,\ldots,\sqrt{a_d}z_d\bigr),
+\]
+\[
+D(x)=\bigl(\sqrt{a_1}x_1,\ldots,\sqrt{a_d}x_d\bigr).
+\]
+Assuming balanced distribution of Singular vectors.
+
+\item Now suppose a feature $z_k$ flips from $-1$ to $1$. Then we can write:
+\begin{align*}
+E(z')-E(z)
+&=\bigl(0,\ldots,\sqrt{a_k}(1-(-1)),\ldots,0\bigr)\\
+&=2\sqrt{a_k}\,e_k,
+\end{align*}
+which means that changing a feature corresponds to adding a vector, the core property of LRH.
+\end{itemize}
+
+\subsection{Extending beyond classic LRH}
+
+We now consider the simplest extensions beyond the classic LRH: a graded feature, and a circular feature:
+
+\subsubsection{Graded feature}
+
+\begin{itemize}
+\item Consider a graded feature $z\in\mathbb R$ such as temperature, with discrete outputs
+\[
+\mathcal X=\{\text{freezing},\text{cold},\text{moderate},\text{warm},\text{hot}\}.
+\]
+
+\item Associate each $x\in\mathcal X$ with a prototypical temperature $\mu_x\in\mathbb R$, and define a simple kernel:
+\[
+p(x\mid z)\propto\exp\!\left(-(z-\mu_x)^2\right).
+\]
+\[
+\Longrightarrow\qquad L(z,x)=z\mu_x-\mu_x^2.
+\]
+\[
+E(z)=
+\begin{bmatrix}
+z\\
+1
+\end{bmatrix},
+\qquad
+D(x)=
+\begin{bmatrix}
+\mu_x\\
+-\mu_x^2
+\end{bmatrix}.
+\]
+\end{itemize}
+
+Note that despite the embedding only having one varying coordinate, the interaction exists in 2D.
+
+\subsubsection{Circular feature}
+
+\begin{itemize}
+\item Consider a Circular domain for time of the week $\mathcal Z=s^1$, with a single angular feature $z_1\in S^1$. Let the outputs be:
+\[
+\mathcal X=\{\text{Mon},\text{Tues},\ldots,\text{Sun}\}
+\]
+with each day assigned a location $\theta_x$ along the circle. We define a circular kernel:
+\[
+p(x\mid z)\propto\exp\!\left(r\cos(z-\theta_x)\right).
+\]
+\begin{align*}
+L
+&=r\cos(z-\theta_x)\\
+&=r\left(\cos z\cos\theta_x+\sin z\sin\theta_x\right).
+\end{align*}
+
+Given balanced SV realization:
+\[
+\Longrightarrow\qquad
+E(z)=\sqrt r
+\begin{pmatrix}
+\cos z\\
+\sin z
+\end{pmatrix},
+\qquad
+D(x)=\sqrt r
+\begin{pmatrix}
+\cos\theta_x\\
+\sin\theta_x
+\end{pmatrix}.
+\]
+\end{itemize}
+
+Thus we see that even a single feature can take on multiple directions when linearized in a model's activation space. even opt has to dedicate more than 1d.
+
+\subsection{Representations Converge Toward the Optimal Solution}
+
+As stated above, at arity-1, $\theta$ is a single argument, so the log-conditional $L[\theta,x]=\log p(x\mid\theta)$ is a matrix and its optimal rank-$d$ representation is given by SVD: an \emph{embedding} $E$ (each item's coefficients) times a \emph{decoder} $D$ ({the basis functions), $L\approx E\times D$. In the rest of this section, we apply this factorization to examine optimal representations of structured spaces. 
+
+\begin{figure}[h!]\centering
+\includegraphics[width=0.86\linewidth]{graphs_c03}
+\caption{The core picture (arity 1). The log-conditional $L[\theta,x]=\log p(x\mid\theta)$ factorizes as embedding $\times$ decoder, $L\approx E\times D$: the embedding gives each item's coefficients, and the decoder gives the basis functions over outcomes.}
+\end{figure}
+
+We define \textit{latent structures} that impact as the co-occurrence statistics as a graph where each node represents a word/token. To get the co-occurrence matrix from a graph, rather than simply taking the transition matrix, we use \textit{graph diffusion}, which can be seen as an infinite $\gamma$-discounted random walk starting from a given node, and can be computed using the infinite geometric series formula by $\sum_t\gamma^t P^t = (I-\gamma P)^{-1}$. This directly reflects the averaging of representations from different random walks used in the in-context learning of representations setting \citep{park2025iclrincontextlearningrepresentations}, and to some extent is more aligned with co-occurrence patterns from a corpus (where an LLM might see many different skip-gram patterns over different context lengths). 
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\linewidth]{figures/geometry_predictions_main.png}
+\caption{\textcolor{gray}{1-D graphs. \textbf{Ring} (periodic) $\to$ Fourier pair $\to$ a clean circle. \textbf{Chain} (open boundary) $\to$ cosine standing waves $\to$ a horseshoe --- the geometry seen in LLM in-context random walks.}}
+\end{figure}
+
+\clearpage
+
+\section{Inference Under Uncertainty}
+
+So far we have only worked in static cases where $z$ is directly given. What happens when we must infer $z$?
+
+Consider a change from a static DGP
+\[
+\mathcal Z\longrightarrow\mathcal X,
+\qquad
+P(z,x)=p(x\mid z),
+\qquad
+L(z,x)=\log p(x\mid z)
+\]
+To the inference setting:
+\[
+x_{1:t}\longleftarrow z
+\]
+where $z$ is hidden and $x_{1:t}$ provides evidence about it. Recall the factorization of the static DGP:
+\[
+L(z,x)=\log\tilde p(x\mid z)=E(z)^T D(x).
+\]
+
+For the case of inference, we aim to represent a belief $p(z\mid x_{1:t})$ about $z$. i.e.
+
+We consider two histories as equivalent when they induce the same belief about $z$:
+\[
+x_{1:t}\sim x'_{1:t'}
+\quad\Longleftrightarrow\quad
+p(z\mid x_{1:t})=p(z\mid x'_{1:t'})
+\quad\forall z.
+\]
+
+Let $s_t$ denote the equivalence class, or state, which is sufficient for prediction, i.e.,
+\begin{enumerate}[label=(\arabic*)]
+\item
+\[
+p(z\mid s_t)=p(z\mid x_{1:t})
+\]
+
+\item
+\[
+p(z\mid s_t)=p(z\mid s'_t)\quad\text{iff}\quad s_t=s'_t.
+\]
+\end{enumerate}
+
+Denote the operation of getting from $x_{1:t}$ to $s_t$ as
+\[
+s_t=s_0+\Pi[x_{1:t}]
+\qquad
+\text{(with $s_0$ being the prior).}
+\]
+
+Thus, since inference requires providing similar answers for histories that induce similar predictions, the inference target necessarily factors through the state:
+\[
+x_{1:t}\xrightarrow{\Pi}s_t\longrightarrow\log\tilde p(z\mid x_{1:t}).
+\]
+
+Moreover, if the model produces the target through a linear readout applied at every position, then every position must encode the state $s_t$ linearly up to decoder-null directions.
+
+Formally, let $\hat\phi_z:s\to\mathbb R^{|\mathcal Z|}$ be an embedding of the state adapted to predicting $z$ linearly, and
+
+so we define the full function applied to the input history as:
+\[
+\phi_z=\hat\phi_z\circ\Pi.
+\]
+
+We can now write inference as:
+\[
+\log\tilde p(z\mid x_{1:t})
+=\log\tilde p(z)+\log\tilde p(x_{1:t}\mid z).
+\]
+
+Based on our definition of the DGP, We know $\col(E(z))$ spans the space of functions over $z$, thus we can write (up to rotation change in $\phi_z$):
+\begin{align*}
+\log\tilde p(z\mid x_{1:t})
+&=E(z)^T\hat\phi_z(s_0)
+  +E(z)^T\phi_z(x_{1:t})\\
+&=E(z)^T\hat\phi_z(s_t).
+\end{align*}
+
+In the case of conditional independence, $\phi_z(x_{1:t})$ gets a particularly nice form:
+\begin{align*}
+\phi_z(x_{1:t})
+&=\log p(x_{1:t}\mid z)\\
+&=\sum_i\log p(x_i\mid z)\\
+&=\sum_i E(z)^T D(x_i)\\
+&=E(z)^T\left(\sum_iD(x_i)\right).
+\end{align*}
+
+For a more general DGP (e.g., PCFG, HMM), $\phi_z(x_{1:t})$ may be a more complex function of the whole history, yet the final decoding relation remains the same.
+
+\subsection{Next token prediction}
+
+Now consider predicting $x_{t+1}$ instead of $z$, i.e., the DGP:
+\[
+x_{1:t}\longleftarrow z\longrightarrow x_{t+1}.
+\]
+
+Taking the same state $s_t$, and defining $P(x,z)=p(x\mid z)$, we can get the posterior predictive by:
+\begin{align*}
+p(\cdot\mid x_{1:t})
+&=P^T p(z\mid x_{1:t})\\
+&=P^T\Softmax\!\left(E\phi_z(s_t)\right).
+\end{align*}
+
+However, we can define a different embedding so as to approximately allow for linear prediction from the state to log space:
+\[
+\log\tilde p(x_{t+1}\mid x_{1:t})
+=\log (P^T\Softmax (E\; \phi_z(s_t)))\approx\phi_x(x_{1:t})^T D_x(x_{t+1}).
+\]
+
+Which can be seen as the linearization of a predictive kernel $L_x(x, s) = \phi_x(s)^T D_x(x)$
+
+
+
+When items and outcomes coincide and the conditional is symmetric,
+$p(x\mid\theta)=p(\theta\mid x)$ (e.g.\ graph diffusion), With a symmetric matrix (items $=$ outcomes) the embedding is simply equals the decoder basis functions but multiplied by the singular values. We can write: 
+\begin{equation}
+  L \;\approx\; V\Sigma V^\top,
+  \qquad E = V\Sigma = \sum_k \lambda_k v_k,\quad D = V^\top = \sum_k v_k^T,
+\end{equation}
+
+Because the readout is linear in the code, a convex combination of embeddings
+is a linear combination of log-probabilities. For weights $w_\theta$ with
+$e_w=\sum_\theta w_\theta\,E[\theta]$,
+\begin{equation}
+  e_w\cdot D[x] \;=\; \sum_\theta w_\theta\,\log p(x\mid\theta),
+  \qquad\Longrightarrow\qquad
+  \widehat p_w(x)\;\propto\;\prod_\theta p(x\mid\theta)^{\,w_\theta}.
+\end{equation}
+Therefore, interpolating codes is a weighted \emph{geometric} pool of the
+underlying beliefs (log-linear pooling) :
+\begin{equation}
+  \widehat p(x)\;\propto\;p(x\mid\theta_1)^{\,q}\,p(x\mid\theta_2)^{\,1-q}.
+\end{equation}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.97\linewidth]{ls_unc}
+\caption{\textcolor{gray}{Uncertainty over the ring. A belief over nodes is represented by an embedding $E$, so mixing beliefs is averaging their codes. \emph{Top:} the decomposition $L\approx E\times D$ --- $L$ is symmetric, so this is just its eigendecomposition (Fourier harmonics), with a decaying spectrum. \emph{Bottom:} two belief changes read straight off the circle --- \textbf{interpolating} A$\leftrightarrow$B moves the code along the chord through the uncertain interior (the midpoint belief is two-peaked), and \textbf{broadening} one belief drives its code from the rim (sharp) to the center (flat). Confidence $=$ distance from the center.}}
+\end{figure}
+
+\clearpage
+
+\section{Interference and Capacity}
+
+Put several structures into one representation and the outcome is governed by capacity. In the case of distributional families, the codes either \emph{stack} (orthogonal subspaces, rank grows), or \emph{share} a basis (rank saturates), depending on whether the structures share support and whether the basis functions (sufficient statistics) required to represent them align. For example in the case below with smooth families, approximately the same moments (mean, variance, etc.) are required to represent all distributions, so rank saturates.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.86\linewidth]{clean_c31}\\[5pt]
+\includegraphics[width=0.86\linewidth]{clean_c33}
+\caption{\textcolor{gray}{\textbf{Stack --- diverse families.} \emph{Top:} diverse families (periodic, distinct frequencies, shared support) have orthogonal sufficient statistics, so adding them grows the rank --- each keeps its own block ($L\approx E\times D$ at growing family counts). \emph{Bottom:} the decomposition --- in the raw SVD basis the families are mixed, but sparse coding on the code recovers the separate family blocks \emph{blind}, and the recovered atoms are the Fourier sufficient statistics ($\cos kx,\sin kx$).}}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.86\linewidth]{clean_c34}\\[5pt]
+\includegraphics[width=0.86\linewidth]{clean_c35}
+\caption{\textcolor{gray}{\textbf{Share --- smooth families.} \emph{Top:} smooth families (Gaussian, skew-normal, logistic, Laplace) instead saturate --- their sufficient statistics are all low-order, so they reuse one basis as their count grows. \emph{Bottom:} that shared basis is the cumulant (Hermite) tower --- the joint decoder's top modes are the Hermite polynomials $\mathrm{He}_d$ (analytic dashed vs.\ recovered solid), with a fast-decaying spectrum.}}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.97\linewidth]{ls_int_four}
+\caption{\textcolor{gray}{Interference in \textbf{graphs}, collected into the four cases (each row: co-occurrence $\to$ embedding). \textbf{Disjoint supports} (block-diagonal $L$) $\to$ \emph{stack as a union}: each structure in its own orthogonal subspace --- two separate circles, rank adds. \textbf{Same words, independent structures} $\to$ \emph{stack as a product}: every word carries both coordinates --- a torus, rank adds. \textbf{Same words, aligned relations} $\to$ \emph{share} one set of modes --- one circle, rank saturates. \textbf{Over capacity} (more co-occurring features than dimensions) $\to$ \emph{superpose}: non-orthogonal packing, rank no longer adds --- possible only with sparsity and a nonlinear readout.}}
+\end{figure}
+
+\clearpage
+
+\section{Appendix}
+
+\subsection{Arity-2}
+
+At order 2 the conditional is a tensor $L[a,b,c]=\log p(c\mid a,b)$ read out \emph{bilinearly}, $\mathrm{logit}_c(a,b)=E[a]^\top D_c\,E[b]$. In the cases below, we only require a single shared code for the two inputs $a,b$. Unfortunately, this means that the latent structure is now defined by an operation/algebra between $a$ and $b$, which gets into group/representation theory (which I don't know much about). However, thankfully the recipe remains the same --- decompose the conditional tensor and get the optimal rank-$d$ representation from that --- but understanding the reason for the structure becomes somewhat more complex. In the settings below, we use tensor rank decomposition via CP. 
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.86\linewidth]{graphs_c20}
+\caption{One slice of the order-2 log-conditional tensor, deconstructed as the bilinear form $e(a)^\top M_c\,e(b)$.}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.9\linewidth]{ls_o2_modadd}\\[2pt]
+\includegraphics[width=0.9\linewidth]{ls_o2_stdadd}
+\caption{\textcolor{gray}{\textbf{Addition.} \emph{Modular addition} ($a{+}b\bmod n$, a clock) $\to$ a \textbf{circle}; \emph{standard addition} ($a{+}b$, a number line) $\to$ an \textbf{arc}. In the case of modular addition, the factorization is \emph{degenerate} --- every frequency represents the operation equally well --- so it returns the whole family of frequency-components and we display one;} In the case of training a model, competition between the margin coming from the cross-entropy loss (which prefers higher frequencies) and weight decay (which prefers lower frequencies) ends up deciding what frequency is learned.}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.9\linewidth]{ls_o2_modmult}\\[2pt]
+\includegraphics[width=0.9\linewidth]{ls_o2_stdmult}
+\caption{\textcolor{gray}{\textbf{Multiplication is addition in disguise.} \emph{Modular} multiplication mod a prime is cyclic ($\times g$ walks through all the units), so it is a \textbf{circle ordered by discrete log} --- the value labels look scrambled, but their exponents are in order. \emph{Standard} multiplication is addition of \textbf{logs}, so it is the \textbf{log number line} (each $\times 2$ is an equal step), arched like standard addition.}}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.9\linewidth]{ls_o2_prod}
+\caption{\textcolor{gray}{\textbf{Product}: two parallel modular additions (mod 14 and mod 9) $\to$ a \textbf{torus}, one circle per factor.}}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.9\linewidth]{ls_o2_entail}\\[2pt]
+\includegraphics[width=0.9\linewidth]{ls_o2_inter}
+\caption{\textcolor{gray}{\textbf{Lattices.} \textbf{Entailment} --- the \emph{meet} $a\wedge b=\mathrm{LCA}$ (lowest common ancestor), an idempotent semilattice --- $\to$ a \textbf{hierarchy/tree} embedding. \textbf{Set intersection} $a\cap b$ over feature sets, a Boolean lattice, $\to$ the \textbf{hypercube} (one binary coordinate per feature) --- the feature-based counterpart of the tree, the geometry of conceptual combination.}}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.9\linewidth]{ls_o2_max}\\[2pt]
+\includegraphics[width=0.9\linewidth]{ls_o2_avg}
+\caption{\textcolor{gray}{\textbf{Order and mean.} \textbf{Max} $\max(a,b)$ on a total order, a chain semilattice, $\to$ an \textbf{ordered line} (the ordinal/magnitude case --- the same line as addition, but a different algebra and readout). \textbf{Averaging} $\tfrac{a+b}{2}$, a mean algebra, $\to$ a \textbf{flat Euclidean space} (the prototype/blending case; a graded conditional, so its spectrum decays).}}
+\end{figure}
+
+\clearpage
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

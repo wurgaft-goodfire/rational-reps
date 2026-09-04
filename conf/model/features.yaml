@@ -1,0 +1,10 @@
+# @package model_kwargs
+# Bias-free rank-d readout over the item's fixed feature dictionary (z - mean z, plus
+# standardized centered pairs when feature_order=2). n_features is derived from the
+# dataset at train time.
+model_type: features
+model_config:
+  embed_dim: 16
+  init_scale: 0.02
+  feature_order: 1
+  n_top: 18

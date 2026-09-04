@@ -1,1205 +1,1330 @@
-\section{Capacity, Interference, and Superposition}
-\label{sec:superposition}
+\section{Resource-Optimal First-Order Feature Geometry}
+\label{sec:first-order-geometry}
 
-We consider a state with \(m\) independent binary coordinates,
+Consider states
 \[
 z=(z_1,\ldots,z_m),
 \qquad
-z_i\overset{\mathrm{iid}}{\sim}\operatorname{Bernoulli}(p).
+z_i\overset{\mathrm{iid}}{\sim}\operatorname{Bernoulli}(p),
 \]
-
-The output is a feature label
-\[
-x\in\{1,\ldots,m\},
-\]
-and coordinate \(z_i\) raises the target logit of output \(x=i\) by
-\(\alpha_i>0\):
+with target distribution
 \[
 p_\star(x=i\mid z)
 =
 \frac{\exp(\alpha_i z_i)}
-{\sum_j\exp(\alpha_j z_j)}.
+{\sum_{j=1}^m\exp(\alpha_j z_j)}.
 \]
-Equivalently, up to the row-wise softmax gauge,
+A valid target logit vector is therefore
 \[
-L(z,i)=\alpha_i z_i.
+\ell_\star(z)=\alpha\odot z,
 \]
+up to addition of a constant shared across outputs.
 
-
-\subsection{Embedding the state coordinates}
-
-Associate each state coordinate \(z_i\) with an activation vector
+The model assigns each complete state a free embedding
 \[
-E_i\in\mathbb R^d.
+E(z)\in\mathbb R^d
 \]
-Collecting these vectors as
+and each output a shared decoder vector
 \[
-E=[E_1,\ldots,E_m]\in\mathbb R^{d\times m},
+D(i)\in\mathbb R^d,
 \]
-the state is represented by
+with logits
+\[
+\ell_i(z)=E(z)^\top D(i).
+\]
+Because all states use the same \(d\)-dimensional decoder geometry, the full logit
+matrix has rank at most \(d\).
+
+We study the model's first-order dependence on the features. Define
+\[
+E_i
+=
+\mathbb E[E(z)\mid z_i=1]
+-
+\mathbb E[E(z)\mid z_i=0],
+\]
+and collect the vectors \(E_i^\top\) as the rows of
+\[
+E^{(1)}\in\mathbb R^{m\times d}.
+\]
+Writing
+\[
+D=[D(1),\ldots,D(m)]\in\mathbb R^{d\times m},
+\]
+the first-order feature-to-logit map is
 \begin{equation}
 \boxed{
-E(z)=Ez=\sum_{i=1}^m z_iE_i.
+L^{(1)}=E^{(1)}D,
+\qquad
+\operatorname{rank}L^{(1)}\le d.
 }
-\label{eq:state-embedding}
+\label{eq:first-order-map}
 \end{equation}
 
-Thus each coordinate is embedded separately and weighted by its current
-value. Since \(z_i\in\{0,1\}\), coordinate \(i\) contributes either nothing
-or the vector \(E_i\).
+Our goal is to predict \(L^{(1)}\).
 
-The desired map from state coordinates to output logits is the diagonal
-matrix
+\subsection{Whitened first-order coordinates}
+
+The factorization in Equation~\eqref{eq:first-order-map} is invariant under any
+invertible change of hidden coordinates:
 \[
-\operatorname{diag}(\alpha_1,\ldots,\alpha_m).
+E^{(1)}\mapsto E^{(1)}A,
+\qquad
+D\mapsto A^{-1}D.
 \]
-Appendix~\ref{app:superposition-derivation} shows that the optimal balanced
-rank-\(d\) approximation to this map may be chosen positive semidefinite,
-and therefore written as
-\[
-E^\top E.
-\]
-
-The model logit for output \(i\) is consequently
-\[
-\widehat L(z,i)
-=
-\langle E(z),E_i\rangle
-=
-z_i\|E_i\|^2
-+
-\sum_{j\neq i}z_j\langle E_j,E_i\rangle.
-\]
-
-The first term is the intended effect of coordinate \(i\). The remaining
-terms are unintended effects from other coordinates.
-
-\subsection{A local model of capacity}
-
-Near the target, we approximate cross-entropy quadratically.
-
-An error in coordinate \(i\)'s intended effect matters when
-\[
-z_i=1,
-\]
-which occurs with probability \(p\).
-
-An unintended effect of coordinate \(j\) on output \(i\) is present when
-\(z_j=1\), but it matters primarily when output \(i\) is relevant, which in
-this task occurs approximately when \(z_i=1\). Since the coordinates are
-independent, this coactivation event has probability
-\[
-\Pr(z_i=z_j=1)=p^2.
-\]
-
-Cross-coordinate interference therefore has relative cost
-\[
-\frac{p^2}{p}=p.
-\]
-
-This gives the capacity surrogate
+We use this freedom to whiten the first-order feature vectors:
 \begin{equation}
 \boxed{
-\mathcal J(E)
-=
-\frac12\sum_i
-\left(
-\|E_i\|^2-\alpha_i
-\right)^2
-+
-\frac p2
-\sum_{i\neq j}
-\langle E_i,E_j\rangle^2.
+E^{(1)\top}E^{(1)}=I_d.
 }
-\label{eq:superposition-objective}
+\label{eq:whitened-gauge}
 \end{equation}
+This is a choice of coordinates, not an assumption about the model.
 
-The first term rewards representing each coordinate at its desired
-strength. The second penalizes interference between coordinate embeddings
-sharing the same \(d\)-dimensional activation space.
-
-\subsection{Minimum-interference geometry}
-
-For fixed magnitudes \(\|E_i\|\), only the interference term depends on the
-directions of the vectors. Using
-\[
-\sum_{i,j}\langle E_i,E_j\rangle^2
-=
-\left\|
-\sum_iE_iE_i^\top
-\right\|_F^2,
-\]
-we see that interference is minimized by making the eigenvalues of
-\[
-\sum_iE_iE_i^\top
-\]
-as equal as the prescribed magnitudes permit.
-
-The strongest coordinates may be too large to fit into a flat spectrum.
-They therefore receive dedicated mutually orthogonal directions. The
-remaining represented coordinates form a tight frame in the remaining
-subspace.
-
-Let
-\[
-\alpha_\star
-\]
-denote the common energy carried by each shared dimension. The shared
-coordinate embeddings satisfy
+Define
 \begin{equation}
 \boxed{
-\sum_{i\in\mathcal S}E_iE_i^\top
-=
-\alpha_\star I,
+d_i:=\|E_i\|^2.
 }
-\label{eq:shared-frame}
+\label{eq:dimension-allocation}
 \end{equation}
-where \(\mathcal S\) is the set of coordinates represented in superposition
-and the identity acts on the subspace left after assigning the dedicated
-directions.
-
-For a shared coordinate, differentiating
-Equation~\eqref{eq:superposition-objective} with respect to
-\(\|E_i\|^2\) gives
+Because the whitened vectors collectively satisfy
 \[
-0
-=
-\left(
-\|E_i\|^2-\alpha_i
-\right)
-+
-p
-\left(
-\alpha_\star-\|E_i\|^2
-\right).
+\sum_iE_iE_i^\top=I_d,
 \]
-Hence
-\[
-\|E_i\|^2
-=
-\frac{\alpha_i-p\alpha_\star}{1-p}.
-\]
-
-This value is positive only when
-\[
-\alpha_i>p\alpha_\star,
-\]
-and it fits inside the shared frame only when
-\[
-\|E_i\|^2\leq\alpha_\star
-\iff
-\alpha_i\leq\alpha_\star.
-\]
-
-The optimal represented magnitude is therefore
+their squared norms obey
 \begin{equation}
 \boxed{
-\|E_i\|^2
-=
-\begin{cases}
-\alpha_i,
-&
-\alpha_i>\alpha_\star,
-\\[2mm]
-\dfrac{\alpha_i-p\alpha_\star}{1-p},
-&
-p\alpha_\star<\alpha_i\leq\alpha_\star,
-\\[3mm]
-0,
-&
-\alpha_i\leq p\alpha_\star.
-\end{cases}
-}
-\label{eq:superposition-magnitudes}
-\end{equation}
-
-Equivalently,
-\begin{equation}
-\boxed{
-\begin{aligned}
-\alpha_i>\alpha_\star
-&\quad\Longrightarrow\quad
-\text{dedicated orthogonal direction},
-\\
-p\alpha_\star<\alpha_i\leq\alpha_\star
-&\quad\Longrightarrow\quad
-\text{represented in superposition},
-\\
-\alpha_i\leq p\alpha_\star
-&\quad\Longrightarrow\quad
-\text{not represented}.
-\end{aligned}
-}
-\label{eq:superposition-regimes}
-\end{equation}
-
-A dedicated coordinate creates no interference and therefore receives its
-full unconstrained magnitude \(\alpha_i\). A shared coordinate receives the
-strength remaining after paying the common interference cost
-\(p\alpha_\star\). A weaker coordinate has
-\[
-E_i=0.
-\]
-
-\subsection{The dimensional budget}
-
-A dedicated coordinate consumes one complete dimension.
-
-A shared coordinate consumes the fraction
-\[
-\frac{\|E_i\|^2}{\alpha_\star}
-=
-\frac{\alpha_i/\alpha_\star-p}{1-p}
-\]
-of one shared dimension. Since the representation has total dimension \(d\),
-the capacity level \(\alpha_\star\) is determined by
-\begin{equation}
-\boxed{
-\sum_{i=1}^m
-\left[
-\frac{\alpha_i/\alpha_\star-p}{1-p}
-\right]_0^1
-=
-d,
+0\le d_i\le1,
+\qquad
+\sum_i d_i=d.
 }
 \label{eq:dimension-budget}
 \end{equation}
-where
-\[
-[u]_0^1
-=
-\min\{1,\max\{0,u\}\}.
-\]
+Thus \(d_i\) is the effective amount of first-order dimensional capacity allocated
+to feature \(i\).
 
-The clipped term in Equation~\eqref{eq:dimension-budget} is the fraction of
-one dimension allocated to coordinate \(i\):
+\subsection{Convex allocation}
+
+We first ask how the \(d\) available dimensions should be distributed among the
+features, before choosing their detailed orientation.
+
+The target logit contribution of feature \(i\) is \(\alpha_i z_i\). In the
+feature-aligned fractional relaxation, retaining dimensional share \(d_i\) gives
 \[
-1
-\quad\text{if it is dedicated},
+q_{\mathbf d}(i\mid z)
+\propto
+\exp(\alpha_i d_i z_i).
+\]
+We predict the allocation by
+\begin{equation}
+\boxed{
+\mathbf d^\star
+=
+\arg\min_{\substack{0\le d_i\le1\\ \sum_i d_i=d}}
+\mathbb E_z\,
+\operatorname{CE}
+\left[
+p_\star(\cdot\mid z),
+q_{\mathbf d}(\cdot\mid z)
+\right].
+}
+\label{eq:allocation-program}
+\end{equation}
+This is a convex optimization because the logits are linear in \(\mathbf d\) and
+cross-entropy is convex in the logits.
+
+Define the marginal predictive utility of allocating more dimension to feature
+\(i\) by
+\[
+u_i(\mathbf d)
+=
+-
+\frac{\partial\operatorname{CE}(\mathbf d)}
+{\partial d_i}.
+\]
+Differentiating gives
+\begin{equation}
+\boxed{
+u_i(\mathbf d)
+=
+\alpha_i p
+\left[
+\mathbb E[p_{\star i}\mid z_i=1]
+-
+\mathbb E[q_{\mathbf d,i}\mid z_i=1]
+\right].
+}
+\label{eq:marginal-utility}
+\end{equation}
+
+Let \(\delta\) be the shadow price of one unit of dimensional capacity. The KKT
+conditions for Equation~\eqref{eq:allocation-program} are
+\begin{equation}
+\boxed{
+\begin{cases}
+u_i(\mathbf d^\star)\le \delta,
+&d_i^\star=0,
+\\[1mm]
+u_i(\mathbf d^\star)=\delta,
+&0<d_i^\star<1,
+\\[1mm]
+u_i(\mathbf d^\star)\ge \delta,
+&d_i^\star=1.
+\end{cases}
+}
+\label{eq:water-filling}
+\end{equation}
+Thus features of different importance receive different amounts of capacity until
+the next infinitesimal unit of dimension has the same predictive value wherever it
+is used.
+
+\subsection{Euclidean realization and superposition}
+
+After solving Equation~\eqref{eq:allocation-program}, choose first-order feature
+vectors satisfying
+\begin{equation}
+\boxed{
+\|E_i\|^2=d_i^\star,
 \qquad
-(0,1)
-\quad\text{if it is superposed},
-\qquad
-0
-\quad\text{if it is dropped}.
-\]
+\sum_iE_iE_i^\top=I_d.
+}
+\label{eq:tight-frame-realization}
+\end{equation}
+Such vectors form a Parseval tight frame. A realization exists whenever
+Equation~\eqref{eq:dimension-budget} holds, although it is generally not unique.
 
-Thus one scalar, \(\alpha_\star\), determines which coordinates are
-dedicated, which are represented in superposition, and which are absent.
-
-The theory fixes the norms, the dedicated directions, and the shared frame
-operator, but generally not a unique orientation of the shared tight frame.
-Different frame realizations attain the same quadratic loss.
-
-\subsection{Correlated coordinates}
-
-If the original coordinates of \(z\) are correlated, we first change to
-orthogonal predictive coordinates \(z'\). Let
-\[
-\Sigma=\operatorname{Cov}(z)
-\]
-and take
-\[
-\operatorname{diag}(\alpha)\Sigma^{1/2}
+For every such realization,
+\begin{equation}
+\boxed{
+\sum_{j\neq i}
+\langle E_i,E_j\rangle^2
 =
-U\operatorname{diag}(\beta)V^\top.
-\]
-On the support of \(\Sigma\), define
+d_i^\star(1-d_i^\star).
+}
+\label{eq:forced-overlap}
+\end{equation}
+Hence fractional dimensional allocation necessarily implies superposition:
 \[
-z'
+0<d_i^\star<1
+\quad\Longrightarrow\quad
+\langle E_i,E_j\rangle\neq0
+\quad\text{for at least one }j\neq i.
+\]
+The allocation predicts the total squared overlap of each feature, but not its
+individual overlap partners or signs.
+
+\subsection{Predicting the first-order logit map}
+
+For a chosen compatible feature geometry \(E^{(1)}\), we solve directly for the
+shared decoder together with a mean-embedding intercept
+\(e_0\in\mathbb R^d\):
+\begin{equation}
+\boxed{
+\left(D^\star,e_0^\star\right)(E^{(1)})
 =
-V^\top\Sigma^{-1/2}
+\arg\min_{D,\,e_0}
+\mathbb E_z\,
+\operatorname{CE}
+\left[
+p_\star(\cdot\mid z),
+\operatorname{softmax}
 \left(
-z-\mathbb E[z]
-\right).
+\left(z^\top E^{(1)}+e_0^\top\right)D
+\right)
+\right].
+}
+\label{eq:decoder-program}
+\end{equation}
+The intercept is the \(\bar E\) coordinate of the state decomposition: it
+contributes the state-independent logit row \(e_0^\top D\), carried through the
+decoder — the model class has no per-output bias. We fix the softmax gauge by
+requiring
+\[
+D\mathbf 1=0.
 \]
+For fixed \(E^{(1)}\), Equation~\eqref{eq:decoder-program} is convex in \(D\) at
+fixed \(e_0\) and in \(e_0\) at fixed \(D\); the pair is solved jointly.
 
-Then
-\[
-\mathbb E[z'z'^\top]=I
-\]
-and, in the corresponding output-mode basis,
-\[
-U^\top L(z,\cdot)
+The predicted first-order map is then
+\begin{equation}
+\boxed{
+L^{(1)}
 =
-\operatorname{diag}(\beta)z'
-\]
-up to the output bias and softmax gauge.
+E^{(1)}D^\star(E^{(1)}).
+}
+\label{eq:predicted-first-order-map}
+\end{equation}
 
-Thus \(z'\) is a new coordinate system on the same state space, and
-\(\beta_k\) is the predictive strength of coordinate \(z'_k\).
+Because Equation~\eqref{eq:tight-frame-realization} does not determine a unique
+orientation, the theory predicts a family of first-order maps, one for each
+compatible tight-frame realization. In the iid setting, the stable predictions are
+the allocation \(d_i^\star\), the unavoidable overlap in
+Equation~\eqref{eq:forced-overlap}, and statistics of the resulting maps; individual
+pairwise overlaps may remain underdetermined.
 
-The effective relative cost of interference must also be recomputed in
-these coordinates. Denoting it by \(p_{\mathrm{eff}}\), the same theory
-applies under
+Finally, write
 \[
-\alpha_i\longrightarrow\beta_k,
-\qquad
-p\longrightarrow p_{\mathrm{eff}}.
+L^{(1)}=U\Sigma V^\top.
 \]
-The construction of \(z'\) and \(p_{\mathrm{eff}}\) is given in
-Appendix~\ref{app:correlated-superposition}.
+The matrices
+\[
+UU^\top,\qquad VV^\top,\qquad \Sigma
+\]
+give the invariant feature-side geometry, decoder-side geometry, and predictive-mode
+strengths.
 
+The map alone does not fix raw feature norms: for any invertible \(A\),
+\((EA)(A^{-1}D)=ED\), and the loss is exactly flat along that direction. Plain
+gradient descent from small initialization pins it, since \(E^\top E-D^\top D\) is
+conserved, so the solution is balanced; the trained models here use Adam, whose
+per-coordinate normalization does not conserve it (the state table \(E\) ends several
+times larger than \(D\); retrained with SGD the two agree to \(0.4\%\)). Raw scales
+are therefore an optimizer artefact, and every model, trained or predicted, is put
+in the same gauge: its logit table over states \(\Lambda=ED^\top\) (for the completed
+model, \(\Lambda=[Z,\ \phi(Z),\ \mathbf 1]\,[E^\star;E_2;e_0^\top]\,D\)) is row-centred,
+written \(\Lambda=U\Sigma V^\top\), and factored at rank \(d\) as
+\begin{equation}
+\boxed{
+E_{\mathrm{bal}}
+=
+U\Sigma^{1/2},
+\qquad
+D_{\mathrm{bal}}
+=
+\Sigma^{1/2}V^\top .
+}
+\label{eq:balanced-factorization}
+\end{equation}
+The representation is then read off the balanced code by one estimator for all
+models: the first-order vectors \(E_i\) of the least-squares fit
+\(h(z)\approx\bar h+\sum_i E_i z_i\) to \(E_{\mathrm{bal}}\), with sizes
+\(\|E_i\|^2\) and Grams
+\begin{equation}
+\boxed{
+G_E=EE^\top,
+\qquad
+G_D=D_{\mathrm{bal}}^\top D_{\mathrm{bal}} .
+}
+\label{eq:balanced-grams}
+\end{equation}
+Sizes are in the units of the state table, a factor \(\sqrt{Np(1-p)}\) below
+logit units, so \(\alpha_i\) is compared in those units.
+
+\subsection{Orientation selection: which overlaps, with which signs}
+\label{sec:orientation}
+
+The allocation fixes each feature's total overlap; the tight-frame manifold leaves
+its placement and signs free. Trained networks are not uniform on that manifold:
+averaged over seeds they keep negative overlaps toward the head. The selection is
+the odd term of the expansion whose even term prices overlap magnitudes. At the
+fractional predictor \(q_{\mathbf d^\star}\), the first-order CE pressure on a signed
+overlap \(\langle E_i,E_j\rangle\) is
+\begin{equation}
+\boxed{
+a_{ij}
+=
+\alpha_j\,\mathbb E\!\left[(z_i-p)\,(q_j-p_{\star j})\right]
++
+\alpha_i\,\mathbb E\!\left[(z_j-p)\,(q_i-p_{\star i})\right],
+}
+\label{eq:signed-pressure}
+\end{equation}
+so that to first order \(\Delta\mathrm{CE}\approx\sum_{i<j}a_{ij}\langle E_i,E_j\rangle\)
+and \(a_{ij}>0\) prefers \(\langle E_i,E_j\rangle<0\). The mechanism is the flatness
+of the compressed predictor: when \(z_i=1\) the competitors \(j\) are over-predicted,
+\(q_j>p_{\star j}\), and a negative overlap lets \(i\) suppress \(j\). This term is
+invisible to the convex program (every term there is even in the off-diagonals) and
+to the uniform frame ensemble (whose mean cancels it), which is why neither predicts
+signs.
+
+\paragraph{Prediction rule.}
+The predicted orientation is the compatible frame that follows the pressure
+furthest:
+\begin{equation}
+\boxed{
+E^\star
+=
+\arg\min_{\substack{\|E_i\|^2=d_i^\star\\ E^\top E=I_d}}
+\;\sum_{i<j}a_{ij}\,\langle E_i,E_j\rangle ,
+}
+\label{eq:pressure-frame}
+\end{equation}
+a linear objective over compatible frames, needing no decoder solve. Computed as
+one convex program on the Fantope \(\{0\preceq P\preceq I,\ \operatorname{tr}P=d\}\)
+with the diagonal free,
+\[
+P^{(1)}=\arg\min_{P\in\mathcal F_d}\; C(\operatorname{diag}P)+\sum_{i<j}a_{ij}P_{ij},
+\]
+followed by a fixed-diagonal realization, it also produces the soft tail of the next
+paragraph. The rule is a statement about the optimum of the full class, not only
+about its gradient: with the frame held fixed the class's loss is nearly flat across
+placements (decoder and pairs compensate), but when frame, decoder and pairs are
+optimized together the pressure-following placement wins clearly, and gradient
+descent started from the opposite sign pattern abandons it and ends at the pressure
+pattern at the same loss as every other start. Selecting frames by the
+additive class's cross-entropy fails because that class cannot repair the
+interference the pressure-following frames create. Evidence: results file, \S2.
+
+\paragraph{The soft tail.}
+The same pressure gives every feature that water filling drops a second lever. A
+feature with \(d_j=0\) cannot raise its own logit, but a small vector anti-aligned
+with the represented features lowers their logits when \(z_j=1\), which raises
+\(q_j\) relatively. The benefit is linear in the overlaps and, by Cauchy--Schwarz,
+at most \(\|a_{\cdot j}\|\sqrt{d_j}\) for leverage \(d_j\), while the dimension costs
+\(\delta d_j\); the optimum is small but never zero,
+\begin{equation}
+\boxed{
+d_j=\frac{\|a_{\cdot j}\|^2}{4\delta^2}
+\qquad\text{for features below the water-filling threshold,}
+}
+\label{eq:soft-tail}
+\end{equation}
+with \(\|a_{\cdot j}\|\) the pressure norm onto the represented set. Trained tail
+leverage follows this law with no fitted constant at \(d=3,6\) (slope two in the
+log--log plot, correlation \(0.9\)), and the soft tail is where the trained
+interference beyond the predicted support lives: a third to a half of the trained
+off-diagonal energy sits on features the hard allocation zeroes. At \(d=12\) the
+dropped features' leverage is flat and uncorrelated with the pressure — a converged
+property (not undertraining) that the water level, twenty times smaller there, no
+longer sets; the second-order interference floor does (results file, \S3).
+
+\paragraph{The hierarchy, and what is specific to softmax.}
+Three layers, each tested separately:
+\begin{itemize}
+\item \textbf{Magnitude}: water filling plus tight-frame geometry
+(Equation~\eqref{eq:forced-overlap}).
+\item \textbf{Coarse sign}: generic to compression. The quadratic-loss analogue of
+the pressure makes the same sign calls: any loss facing a too-flat compressed
+predictor pushes overlaps negative.
+\item \textbf{Graded placement}: specific to the softmax (Fisher) weighting of those
+compression errors. Only the softmax \(a_{ij}\) correlates with the trained Gram's
+values; trained frames sit at the low-\(A\) tail of the compatible ensemble,
+\(A=\sum_{i<j}a_{ij}\langle E_i,E_j\rangle\); and under a global logit scale
+\(\alpha\mapsto s\alpha\) the softmax and quadratic pressures converge as \(s\to0\)
+and separate as saturation grows.
+\end{itemize}
+
+\paragraph{Limit.}
+At \(d=12\) no frame score we have predicts the trained placement, a structured,
+mutually negative arrangement among the fractional tail (a packing of near-equal
+features). It is not carried by pairs of non-represented features, not a
+head-versus-tail question, and not resolved by the second-order term; which tail
+partners pair off is decided by something neither pressure order contains
+(results file, \S2.3).
+
+\subsection{Stage two: repair at the predicted frame}
+\label{sec:repair}
+
+The first-order theory stops at \(L^{(1)}=E^{\star}D^\star\). The network's remaining
+context dependence \(E_{\ge2}(z)\) is dominated by feature pairs, so we predict it by
+the additive-plus-pairs class at the fixed frame \(E^\star\): code
+\[
+E(z)=z^\top E^\star+\phi(z)^\top E_2+e_0^\top,
+\qquad
+\phi_{ij}(z)\propto(z_i-p)(z_j-p),
+\]
+read through one decoder \(D\). The pair features are population-orthogonal to the
+first-order ones, so \(E^{(1)}\) is untouched by construction. The problem is convex
+in \(E_2\) at fixed \((D,e_0)\) and in \((D,e_0)\) at fixed code; we alternate the
+two solves from the additive decoder (block-coordinate descent to a stationary point,
+not a certified optimum — the one non-certified step in the pipeline).
+
+\paragraph{What it predicts.}
+Two things the first-order theory could not: about three quarters of the
+cross-entropy gap to the trained network, and the head amplification of Figure~2.
+The mechanism is the one anticipated in the appendix: once the pair vectors absorb
+the interference the frame's overlaps create, the decoder can read the head harder
+without paying for it on co-active states. The completion has to be solved: a
+one-step quadratic in decoder resizing and pair vectors at the tied baseline is
+outside its radius, and the pair sector is conditional on the decoder as much as on
+the frame — the same Fisher/Newton step reproduces the trained pair maps given the
+network's own decoder and not given the additive-optimal one (results file, \S4).
+
+\subsection{Status: validated, failed, and open}
+
+All comparisons use five runs per budget \(d\in\{3,6,12\}\), with task and training
+seeds coupled so that averages span task draws as well as initializations. The
+experiments and numbers are recorded in \texttt{notes/superposition\_results.md}.
+
+\paragraph{Validated.}
+\begin{itemize}
+\item \textbf{Allocation.} Water filling matches trained leverage at correlation
+\(0.977/0.993/0.989\) for \(d=3/6/12\), including the fractional head (no feature
+saturates at small \(d\)) and the position of the support edge (Figure~1 of the
+analysis notebook shows the full profiles, no threshold applied).
+\item \textbf{Overlap magnitudes.} Per-row off-diagonal energy is fixed by
+Equation~\eqref{eq:forced-overlap}; realized frames satisfy it exactly.
+\item \textbf{The pair sector, conditional on the frame.} At a fixed first-order
+frame with the network's own decoder, one Fisher/Newton solve reproduces the trained
+pair maps at per-seed correlation \(0.82/0.80/0.81\) (results file, \S4.2).
+\item \textbf{Repair.} At \(E^\star\), the pair block closes about three quarters
+of the CE gap to trained and reproduces the head amplification
+(Section~\ref{sec:repair}).
+\item \textbf{Orientation.} The pressure frame \(E^\star\) of
+Equation~\eqref{eq:pressure-frame} reproduces the seed-averaged trained placement
+at \(d=3,6\) to within \(0.07/0.02\) of the pairs-class ceiling; the signed pressure
+predicts trained overlap signs at 90\%/82\%/64\% for \(d=3/6/12\).
+\end{itemize}
+
+\paragraph{Known failures.}
+\begin{itemize}
+\item \textbf{Head amplification beyond pairs.} Stage two recovers the head
+(Section~\ref{sec:repair}) but leaves the third feature at \(d=3\) and the second
+spectral mode short; the first-order theory alone under-predicts the whole
+represented block at \(d=3,6\).
+\item \textbf{Placement at \(d=12\).} The pressure frame predicts placement at
+\(d=3,6\) but not at \(d=12\), where both reference models do (Section~\ref{sec:orientation}).
+\item \textbf{Pricing the realization gap.} A certified toll on the allocation is
+consistent but does not improve it; superposition's interference cost is not needed
+to predict \(d_i\) (results file, \S1).
+\item \textbf{Tail edges.} Trained allocations hold small leverage past the
+water-filling cutoff; the soft-tail law of Equation~\eqref{eq:soft-tail} accounts
+for it at \(d=3,6\) but is not yet part of the predicted allocation.
+\end{itemize}
+
+\paragraph{Open.}
+The \(d=12\) placement mechanism; the residual of stage two (wider pair sets, triples);
+the extended dictionary Gram (features
+and pairs) per realization; the distortion--rate frontier
+\(\Delta\) versus \(d\) with slope \(\delta\), connecting the allocation to
+rate--distortion and information-bottleneck accounts in which rate is dimension.
 
 \appendix
 
-\section{Derivation of the Superposition Result}
-\label{app:superposition-derivation}
+\section{Derivation of the First-Order Geometry}
+\label{app:first-order-geometry}
 
-\subsection{From cross-entropy to the quadratic surrogate}
-
-Before imposing balance, let
-\[
-E=[E_1,\ldots,E_m]\in\mathbb R^{d\times m}
-\]
-contain the activation effects of the state coordinates, and let
-\[
-D=[D_1,\ldots,D_m]\in\mathbb R^{d\times m}
-\]
-contain the output decoder vectors.
-
-The representation is
-\[
-E(z)=\sum_j z_jE_j,
-\]
-and the predicted logit for output \(i\) is
-\[
-\widehat L(z,i)
-=
-\langle E(z),D_i\rangle
-=
-\sum_j z_j\langle E_j,D_i\rangle.
-\]
-
-Since the target logit is
-\[
-L(z,i)=\alpha_i z_i,
-\]
-the logit error is
-\begin{equation}
-\delta_i(z)
-=
-z_i
-\left(
-\langle E_i,D_i\rangle-\alpha_i
-\right)
-+
-\sum_{j\neq i}
-z_j\langle E_j,D_i\rangle.
-\label{eq:general-logit-error}
-\end{equation}
-
-The exact second-order expansion of cross-entropy around the target is
-\begin{equation}
-\Delta\mathcal L
-=
-\frac12
-\mathbb E_z
-\left[
-\delta(z)^\top
-F(z)
-\delta(z)
-\right]
-+
-o(\|\delta\|^2),
-\label{eq:fisher-expansion}
-\end{equation}
-where
-\[
-F(z)
-=
-\operatorname{diag}
-\bigl(
-p_\star(\cdot\mid z)
-\bigr)
--
-p_\star(\cdot\mid z)
-p_\star(\cdot\mid z)^\top
-\]
-is the softmax Fisher matrix.
-
-To obtain the analytic capacity model, we make three local approximations:
-
-\begin{enumerate}
-    \item retain the dominant diagonal output curvature \(F_{ii}(z)\);
-    \item neglect cross terms between distinct entries of the logit-error
-    matrix;
-    \item approximate intended-effect curvatures as equal across the
-    represented coordinates.
-\end{enumerate}
-
-An error in the intended effect of coordinate \(i\) has curvature
-\[
-\mathbb E_z
-\left[
-F_{ii}(z)z_i
-\right].
-\]
-
-An unintended effect of coordinate \(j\) on output \(i\), with \(j\neq i\),
-has curvature
-\[
-\mathbb E_z
-\left[
-F_{ii}(z)z_j
-\right].
-\]
-
-For this DGP, output \(i\) is most relevant when \(z_i=1\). Thus
-\(F_{ii}(z)\) is concentrated mainly on examples with \(z_i=1\). Since the
-coordinates are independent,
-\[
-\mathbb E_z
-\left[
-F_{ii}(z)z_j
-\right]
-\approx
-p\,
-\mathbb E_z
-\left[
-F_{ii}(z)z_i
-\right],
-\qquad
-j\neq i.
-\]
-
-Equivalently, an intended-effect error is costly on an event of probability
-\(p\), whereas an unintended cross-coordinate effect is costly primarily on
-the coactivation event
-\[
-z_i=z_j=1,
-\]
-whose probability is \(p^2\). Their relative cost is therefore \(p\).
-
-After dividing by the common intended-effect curvature, we obtain
-\begin{equation}
-\mathcal J(E,D)
-=
-\frac12
-\sum_i
-\left(
-\langle E_i,D_i\rangle-\alpha_i
-\right)^2
-+
-\frac p2
-\sum_{i\neq j}
-\langle E_j,D_i\rangle^2.
-\label{eq:encoder-decoder-surrogate}
-\end{equation}
-
-For the remainder of the derivation, write
-\[
-G=E^\top D.
-\]
-Then
-\[
-G_{ji}
-=
-\langle E_j,D_i\rangle
-\]
-and
-\[
-\operatorname{rank}(G)\leq d.
-\]
-
-Equation~\eqref{eq:encoder-decoder-surrogate} is therefore equivalent to
-\begin{equation}
-\boxed{
-\mathcal J(G)
-=
-\frac12
-\sum_i
-(G_{ii}-\alpha_i)^2
-+
-\frac p2
-\sum_{i\neq j}
-G_{ij}^2,
-\qquad
-\operatorname{rank}(G)\leq d.
-}
-\label{eq:rank-constrained-surrogate}
-\end{equation}
-
-Thus the model is approximating the diagonal coordinate-to-output map
-\[
-\operatorname{diag}(\alpha)
-\]
-with a rank-\(d\) matrix. Diagonal errors are failures to represent intended
-coordinate effects; off-diagonal entries are interference.
-
-\subsection{Why the optimum is a Gram matrix}
-
-Fix nonnegative diagonal values
-\[
-G_{ii}=g_i.
-\]
-At fixed diagonal, minimizing
-Equation~\eqref{eq:rank-constrained-surrogate} is equivalent to minimizing
-\[
-\|G\|_F^2,
-\]
-because
-\[
-\sum_{i\neq j}G_{ij}^2
-=
-\|G\|_F^2-\sum_i g_i^2.
-\]
-
-We first consider the regular case. Let
-\[
-S=\sum_i g_i
-\]
-and suppose
-\[
-\max_i g_i\leq\frac{S}{d}.
-\]
-
-For every matrix with rank at most \(d\),
-\[
-|\operatorname{tr}G|
-\leq
-\|G\|_\star
-\leq
-\sqrt d\,\|G\|_F.
-\]
-Since
-\[
-\operatorname{tr}G=S,
-\]
-we obtain
-\begin{equation}
-\|G\|_F^2
-\geq
-\frac{S^2}{d}.
-\label{eq:frobenius-lower-bound}
-\end{equation}
+\subsection{The rank-limited predictive model}
 
 Let
 \[
-\lambda=\frac{S}{d}.
-\]
-The numbers
-\[
-\frac{g_i}{\lambda}
-\]
-lie in \([0,1]\) and sum to \(d\). By the Schur--Horn theorem, there exists
-a rank-\(d\) orthogonal projection \(Q\) satisfying
-\[
-Q_{ii}=\frac{g_i}{\lambda}.
-\]
-
-The matrix
-\[
-G=\lambda Q
-\]
-has the required diagonal and attains
-Equation~\eqref{eq:frobenius-lower-bound}. It is symmetric positive
-semidefinite and may therefore be written
-\[
-G=E^\top E.
-\]
-
-Its balanced factorization uses the same vectors on the embedding and
-decoder sides, up to a common rotation.
-
-If instead
-\[
-\max_i g_i>\frac{S}{d},
-\]
-a flat rank-\(d\) spectrum is impossible. The largest diagonal entry is too
-large to share the available dimensions evenly. The minimum assigns that
-entry its own orthogonal eigendirection, removes one dimension, and repeats
-the same argument on the remaining diagonal entries.
-
-Recursing produces:
-
-\begin{enumerate}
-    \item a set of the largest entries, each with its own orthogonal
-    direction;
-    \item a remaining positive-semidefinite block with equal nonzero
-    eigenvalues.
-\end{enumerate}
-
-Thus the minimum of the general rank-constrained problem may be chosen
-positive semidefinite. In balanced coordinates we may write
-\[
-G=E^\top E,
-\]
-and Equation~\eqref{eq:rank-constrained-surrogate} becomes
-\begin{equation}
-\boxed{
-\mathcal J(E)
-=
-\frac12
-\sum_i
-\left(
-\|E_i\|^2-\alpha_i
-\right)^2
-+
-\frac p2
-\sum_{i\neq j}
-\langle E_i,E_j\rangle^2.
-}
-\label{eq:gram-surrogate}
-\end{equation}
-
-The alignment of embedding and decoder vectors is therefore a consequence
-of the symmetric minimum-interference solution, rather than an additional
-assumption.
-
-\subsection{The shared tight frame}
-
-Suppose \(r\) coordinates receive dedicated directions, leaving
-\[
-d-r
-\]
-dimensions for the shared coordinates.
-
-Let \(\alpha_\star\) denote the energy in each remaining dimension. The
-shared embeddings satisfy
-\begin{equation}
-\sum_{i\in\mathcal S}E_iE_i^\top
-=
-\alpha_\star I_{d-r}.
-\label{eq:appendix-tight-frame}
-\end{equation}
-
-The total shared interference is
-\begin{align}
-\sum_{\substack{i,j\in\mathcal S\\i\neq j}}
-\langle E_i,E_j\rangle^2
-&=
-\left\|
-\sum_{i\in\mathcal S}E_iE_i^\top
-\right\|_F^2
--
-\sum_{i\in\mathcal S}\|E_i\|^4
-\\
-&=
-(d-r)\alpha_\star^2
--
-\sum_{i\in\mathcal S}\|E_i\|^4.
-\label{eq:shared-interference}
-\end{align}
-
-Moreover,
-\[
-\sum_{i\in\mathcal S}\|E_i\|^2
-=
-(d-r)\alpha_\star.
-\]
-
-For an active shared coordinate, differentiating the objective with respect
-to \(\|E_i\|^2\) gives
-\[
-0
-=
-\left(
-\|E_i\|^2-\alpha_i
-\right)
-+
-p
-\left(
-\alpha_\star-\|E_i\|^2
-\right).
-\]
-
-Hence
-\begin{equation}
-\boxed{
-\|E_i\|^2
-=
-\frac{\alpha_i-p\alpha_\star}{1-p}.
-}
-\label{eq:appendix-shared-magnitude}
-\end{equation}
-
-\subsection{The three regimes}
-
-Equation~\eqref{eq:appendix-shared-magnitude} must satisfy both
-\[
-\|E_i\|^2>0
+z=(z_1,\ldots,z_m),
+\qquad
+z_i\overset{\mathrm{iid}}{\sim}\operatorname{Bernoulli}(p),
 \]
 and
 \[
-\|E_i\|^2\leq\alpha_\star.
+p_\star(x=i\mid z)
+=
+\frac{\exp(\alpha_i z_i)}
+{\sum_j\exp(\alpha_jz_j)}.
+\]
+A valid target logit vector is
+\[
+\ell_\star(z)=\alpha\odot z.
+\]
+Logits are defined only up to addition of a scalar shared across outputs.
+
+The model assigns each state \(z\) an embedding
+\[
+E(z)\in\mathbb R^d
+\]
+and each output \(i\) a shared decoder vector
+\[
+D(i)\in\mathbb R^d.
+\]
+There is no decoder bias. The logits are
+\[
+\ell_i(z)=E(z)^\top D(i).
 \]
 
-The first condition gives
+Stacking all state embeddings and decoder vectors gives
 \[
-\alpha_i>p\alpha_\star.
+\widehat L=\mathsf E D,
 \]
+and therefore
+\[
+\operatorname{rank}\widehat L\le d.
+\]
+The state embeddings are free, but every state must be decoded through the same
+\(d\)-dimensional output geometry.
 
-The second gives
-\[
-\alpha_i\leq\alpha_\star.
-\]
+\subsection{The first-order feature vectors}
 
-Therefore the shared regime is
+Define
+\begin{equation}
+E_i
+=
+\mathbb E[E(z)\mid z_i=1]
+-
+\mathbb E[E(z)\mid z_i=0].
+\label{eq:app-feature-vector}
+\end{equation}
+Let
 \[
-p\alpha_\star<\alpha_i\leq\alpha_\star.
+\bar E=\mathbb E[E(z)]
 \]
+and define the residual
+\begin{equation}
+E_{\ge2}(z)
+=
+E(z)
+-
+\bar E
+-
+\sum_i(z_i-p)E_i.
+\label{eq:app-residual}
+\end{equation}
 
-If
+For each \(i\),
 \[
-\alpha_i\leq p\alpha_\star,
-\]
-the derivative of the objective at \(\|E_i\|^2=0\) is nonnegative, so the
-coordinate is dropped:
-\[
-E_i=0.
-\]
-
-If
-\[
-\alpha_i>\alpha_\star,
-\]
-the stationary shared magnitude would exceed the frame level:
-\[
-\|E_i\|^2>\alpha_\star.
-\]
-The coordinate therefore receives a dedicated orthogonal direction. Since
-it then creates no interference, its magnitude minimizes only
-\[
-\frac12
+\mathbb E[(z_i-p)E(z)]
+=
+p(1-p)
 \left(
-\|E_i\|^2-\alpha_i
-\right)^2,
+\mathbb E[E(z)\mid z_i=1]
+-
+\mathbb E[E(z)\mid z_i=0]
+\right)
+=
+p(1-p)E_i.
 \]
-giving
+Independence also gives
 \[
-\|E_i\|^2=\alpha_i.
+\mathbb E[(z_i-p)(z_j-p)]=0
+\qquad
+i\neq j,
 \]
+and
+\[
+\mathbb E[(z_i-p)^2]=p(1-p).
+\]
+Therefore
+\begin{equation}
+\mathbb E[(z_i-p)E_{\ge2}(z)]=0
+\qquad
+\forall i.
+\label{eq:app-residual-orthogonal}
+\end{equation}
 
-Combining the cases,
+Thus
 \[
+E(z)
+=
+\bar E
++
+\sum_i(z_i-p)E_i
++
+E_{\ge2}(z)
+\]
+is the decomposition of the state embedding into its first-order feature dependence
+and the remaining context dependence.
+
+Collect the \(E_i^\top\) as rows of
+\[
+E^{(1)}
+=
+\begin{bmatrix}
+E_1^\top\\
+\vdots\\
+E_m^\top
+\end{bmatrix}
+\in\mathbb R^{m\times d},
+\]
+and write
+\[
+D=[D(1),\ldots,D(m)]
+\in\mathbb R^{d\times m}.
+\]
+The first-order feature-to-logit map is
+\begin{equation}
 \boxed{
-\|E_i\|^2
-=
-\begin{cases}
-\alpha_i,
-&
-\alpha_i>\alpha_\star,
-\\[2mm]
-\dfrac{\alpha_i-p\alpha_\star}{1-p},
-&
-p\alpha_\star<\alpha_i\leq\alpha_\star,
-\\[3mm]
-0,
-&
-\alpha_i\leq p\alpha_\star.
-\end{cases}
+L^{(1)}=E^{(1)}D.
 }
-\]
+\label{eq:app-first-order-map}
+\end{equation}
+Consequently,
+\begin{equation}
+\boxed{
+\operatorname{rank}L^{(1)}\le d.
+}
+\label{eq:app-first-order-rank}
+\end{equation}
 
-\subsection{Solving the dimensional budget}
+\subsection{Whitening as a hidden-coordinate choice}
 
-A dedicated coordinate consumes one dimension.
-
-A shared coordinate consumes the fraction
+The factorization of \(L^{(1)}\) is not unique. For every invertible
+\(A\in\mathbb R^{d\times d}\),
 \[
-\frac{\|E_i\|^2}{\alpha_\star}
+E^{(1)}D
 =
-\frac{\alpha_i/\alpha_\star-p}{1-p}
+(E^{(1)}A)(A^{-1}D).
 \]
-of one dimension.
+The same transformation may be applied to every state embedding, so it changes only
+the hidden coordinates and not the model's logits.
 
+Assume that \(E^{(1)}\) has rank \(d\). Starting from an arbitrary factorization,
+apply
+\begin{equation}
+E^{(1)}
+\mapsto
+E^{(1)}
+\left(E^{(1)\top}E^{(1)}\right)^{-1/2},
+\label{eq:app-whiten-E}
+\end{equation}
+and
+\begin{equation}
+D
+\mapsto
+\left(E^{(1)\top}E^{(1)}\right)^{1/2}D.
+\label{eq:app-whiten-D}
+\end{equation}
+Their product is unchanged, while the transformed feature matrix satisfies
+\begin{equation}
+\boxed{
+E^{(1)\top}E^{(1)}=I_d.
+}
+\label{eq:app-whitened-gauge}
+\end{equation}
+
+We use the same symbols \(E^{(1)}\) and \(D\) after this coordinate change.
+
+Equation~\eqref{eq:app-whitened-gauge} is equivalently
+\begin{equation}
+\boxed{
+\sum_iE_iE_i^\top=I_d.
+}
+\label{eq:app-tight-frame}
+\end{equation}
+Thus the whitened first-order vectors form a Parseval tight frame.
+
+Define
+\begin{equation}
+\boxed{
+d_i=\|E_i\|^2.
+}
+\label{eq:app-di}
+\end{equation}
+Summing gives
+\[
+\sum_i d_i
+=
+\sum_i\operatorname{tr}(E_iE_i^\top)
+=
+\operatorname{tr}
+\left(
+\sum_iE_iE_i^\top
+\right)
+=
+d.
+\]
+Moreover, the matrix
+\[
+E^{(1)}E^{(1)\top}
+\]
+is an orthogonal projector, so its diagonal entries satisfy
+\[
+0\le d_i\le1.
+\]
 Therefore
 \begin{equation}
 \boxed{
-\sum_i
-\left[
-\frac{\alpha_i/\alpha_\star-p}{1-p}
-\right]_0^1
-=
-d.
+0\le d_i\le1,
+\qquad
+\sum_i d_i=d.
 }
-\label{eq:appendix-budget}
+\label{eq:app-dimensional-budget}
 \end{equation}
 
-The left-hand side is continuous and nonincreasing in \(\alpha_\star\).
-Whenever at least one coordinate is shared, the solution is unique.
+If the first-order component has rank \(r<d\), the same construction applies on its
+support and the total budget is \(r\).
 
-Once the dedicated and shared sets are fixed, the solution is explicit.
-Let
-\[
-\mathcal D
-=
-\{i:\alpha_i>\alpha_\star\},
-\]
-and
-\[
-\mathcal S
-=
-\{i:p\alpha_\star<\alpha_i\leq\alpha_\star\}.
-\]
-Then
+\subsection{The fractional allocation problem}
+
+The hard geometry requires choosing all vectors \(E_i\) subject to
+Equation~\eqref{eq:app-tight-frame}. We first solve the simpler question of how their
+total squared norm should be divided among features.
+
+The target logit contribution of feature \(i\) is \(\alpha_i z_i\). In the
+feature-aligned fractional relaxation, retaining dimensional share \(d_i\) gives
 \begin{equation}
-\boxed{
-\alpha_\star
+q_{\mathbf d}(i\mid z)
 =
-\frac{
-\sum_{i\in\mathcal S}\alpha_i
-}{
-(1-p)\bigl(d-|\mathcal D|\bigr)
-+
-p|\mathcal S|
-}.
-}
-\label{eq:alpha-star-closed-form}
+\frac{\exp(\alpha_i d_i z_i)}
+{\sum_j\exp(\alpha_jd_jz_j)}.
+\label{eq:app-fractional-predictor}
 \end{equation}
-
-The sets change only when \(\alpha_\star\) crosses one of the breakpoints
-\[
-\alpha_i
-\qquad\text{or}\qquad
-\frac{\alpha_i}{p}.
-\]
-Thus the exact solution can be obtained by sorting these breakpoints and
-checking the corresponding closed-form candidate; no iterative
-self-consistency solve is required.
-
-If capacity does not bind, all nonzero coordinates may instead be
-represented orthogonally with
-\[
-\|E_i\|^2=\alpha_i.
-\]
-
-\subsection{Additional geometric consequences}
-
-For a shared coordinate,
-\begin{align}
-\sum_{j\neq i}
-\langle E_i,E_j\rangle^2
-&=
-E_i^\top
-\left(
-\sum_{j\in\mathcal S}E_jE_j^\top
-\right)
-E_i
--
-\|E_i\|^4
-\\
-&=
-\alpha_\star\|E_i\|^2-\|E_i\|^4.
-\end{align}
-
-Thus interference vanishes both when
-\[
-\|E_i\|^2=0
-\]
-and when
-\[
-\|E_i\|^2=\alpha_\star.
-\]
-Only coordinates occupying a fractional share of a dimension experience
-interference.
-
-If \(r\) coordinates are dedicated, the nonzero spectrum of the optimal
-coordinate-to-output map is
-\[
-\boxed{
-\operatorname{spec}_+(E^\top E)
-=
-\{\alpha_i:\alpha_i>\alpha_\star\}
-\cup
-\{
-\underbrace{
-\alpha_\star,\ldots,\alpha_\star
-}_{d-r\text{ times}}
-\}.
-}
-\]
-
-Minimum interference therefore produces strong-coordinate spectral spikes
-above a flat shared spectrum.
-
-The shared frame is generally not unique. Schur--Horn guarantees existence
-of a frame with the predicted norms and frame operator. When explicit
-vectors are needed, a constructive Chan--Li procedure may be used to
-produce one such realization. The particular frame produced by that
-procedure is not uniquely predicted by the quadratic objective.
-
-\subsection{Literal activation scale}
-
-The vectors \(E_i\) above are expressed in balanced feature-effect units.
-
-Suppose the state distribution is represented by \(N\) sampled states, and
-let
-\[
-Z_c[n,i]=z_i^{(n)}-p
-\]
-be the centered \(N\times m\) coordinate matrix. Independence gives
-\[
-Z_c^\top Z_c
-\approx
-Np(1-p)I.
-\]
 
 Define
-\[
-R=\sqrt{Np(1-p)}.
-\]
-
-If \(H\in\mathbb R^{N\times d}\) is the literal activation matrix and
-\(D_{\mathrm{raw}}\in\mathbb R^{d\times m}\) the literal decoder, a balanced
-realization is
-\[
-H
-=
-\frac{1}{\sqrt R}Z_cE^\top,
-\qquad
-D_{\mathrm{raw}}
-=
-\sqrt R\,E.
-\]
-
-Indeed,
-\[
-HD_{\mathrm{raw}}
-=
-Z_cE^\top E,
-\]
-and
-\[
-H^\top H
-\approx
-R\,EE^\top
-=
-D_{\mathrm{raw}}D_{\mathrm{raw}}^\top.
-\]
-
-Therefore the literal activation displacement associated with coordinate
-\(i\) is
-\[
-E_i^{\mathrm{raw}}
-=
-\frac{E_i}{\sqrt R},
-\]
-so
-\[
-\boxed{
-\|E_i^{\mathrm{raw}}\|^2
-=
-\frac{\|E_i\|^2}
-{\sqrt{Np(1-p)}}.
-}
-\]
-
-This is a single global isotropic change of units. It preserves support,
-angles, orthogonality, and tight-frame geometry.
-
-
-\section{Correlated State Coordinates}
-\label{app:correlated-superposition}
-
-Now allow the coordinates of
-\[
-z=(z_1,\ldots,z_m)
-\]
-to have an arbitrary joint distribution.
-
-Define
-\[
-\bar z=z-\mathbb E[z],
-\qquad
-\Sigma=\operatorname{Cov}(z).
-\]
-
-The varying part of the target logit vector is
-\[
-\ell_\star(z)
-=
-\operatorname{diag}(\alpha)\bar z.
-\]
-
-Restricting to the support of \(\Sigma\), take
 \begin{equation}
-\operatorname{diag}(\alpha)\Sigma^{1/2}
-=
-U\operatorname{diag}(\beta_1,\ldots,\beta_r)V^\top.
-\label{eq:correlated-svd}
-\end{equation}
-
-Equivalently, this is the singular-value decomposition of the centered
-state-to-output kernel, weighted by the state distribution.
-
-Define the new state coordinates
-\begin{equation}
-\boxed{
-z'
-=
-V^\top\Sigma^{-1/2}\bar z.
-}
-\label{eq:new-state-coordinates}
-\end{equation}
-
-Then
-\[
-\mathbb E[z'z'^\top]=I_r
-\]
-and, in the corresponding output-mode basis,
-\[
-U^\top\ell_\star(z)
-=
-\operatorname{diag}(\beta_1,\ldots,\beta_r)z'.
-\]
-
-Thus \(z'\) is a new coordinate system on the same state space, and
-\(\beta_k\) is the predictive strength of coordinate \(z'_k\). Directions
-with \(\beta_k=0\) do not change the predictive distribution and may be
-removed.
-
-The \(z'_k\) are uncorrelated, but for non-Gaussian binary data they need not
-be statistically independent. Consequently, the relative cost of
-cross-coordinate interference must be recomputed in the new coordinates.
-
-Let
-\[
-F(z)
-=
-\operatorname{diag}
-\bigl(
-p_\star(\cdot\mid z)
-\bigr)
--
-p_\star(\cdot\mid z)
-p_\star(\cdot\mid z)^\top
-\]
-be the softmax Fisher matrix, and let \(U_k\) denote column \(k\) of \(U\).
-
-A perturbation from input coordinate \(z'_j\) into output mode \(k\) has
-local curvature
-\[
-\kappa_{jk}
+\mathcal C(\mathbf d)
 =
 \mathbb E_z
 \left[
-(z'_j)^2
-U_k^\top F(z)U_k
+-\sum_i
+p_\star(i\mid z)
+\log q_{\mathbf d}(i\mid z)
+\right].
+\label{eq:app-allocation-loss}
+\end{equation}
+The allocation is
+\begin{equation}
+\boxed{
+\mathbf d^\star
+=
+\arg\min_{\substack{0\le d_i\le1\\ \sum_i d_i=d}}
+\mathcal C(\mathbf d).
+}
+\label{eq:app-allocation-program}
+\end{equation}
+
+The logits in Equation~\eqref{eq:app-fractional-predictor} are linear in
+\(\mathbf d\), cross-entropy is convex in the logits, and the constraints are convex.
+Hence Equation~\eqref{eq:app-allocation-program} is a convex optimization problem.
+
+This feature-aligned fractional program is the central allocation approximation. It
+predicts how much first-order dimensional capacity each feature receives before the
+detailed tight-frame orientation is chosen.
+
+\subsection{Marginal predictive utility}
+
+For one state \(z\), softmax cross-entropy satisfies
+\[
+\frac{\partial\operatorname{CE}_z}{\partial\ell_i}
+=
+q_{\mathbf d,i}(z)-p_{\star i}(z).
+\]
+The relaxed logit obeys
+\[
+\frac{\partial\ell_i(z)}{\partial d_i}
+=
+\alpha_i z_i.
+\]
+The chain rule therefore gives
+\[
+\frac{\partial\mathcal C}{\partial d_i}
+=
+\alpha_i
+\mathbb E_z
+\left[
+z_i
+\left(
+q_{\mathbf d,i}-p_{\star i}
+\right)
 \right].
 \]
 
-Assuming these curvatures are well summarized by one common
-intended-coordinate cost and one common cross-coordinate cost, define
-\begin{equation}
-\boxed{
-p_{\mathrm{eff}}
+Since \(z_i\in\{0,1\}\) and \(\Pr(z_i=1)=p\),
+\[
+\mathbb E[z_if(z)]
 =
-\frac{
-\dfrac{1}{r(r-1)}
-\sum_k\sum_{j\neq k}\kappa_{jk}
-}{
-\dfrac{1}{r}
-\sum_k\kappa_{kk}
-}.
-}
-\label{eq:effective-interference}
+p\,\mathbb E[f(z)\mid z_i=1].
+\]
+Thus
+\begin{equation}
+\frac{\partial\mathcal C}{\partial d_i}
+=
+\alpha_i p
+\left[
+\mathbb E[q_{\mathbf d,i}\mid z_i=1]
+-
+\mathbb E[p_{\star i}\mid z_i=1]
+\right].
+\label{eq:app-allocation-gradient}
 \end{equation}
 
-The quantity \(p_{\mathrm{eff}}\) is the analogue of \(p\) in the new
-coordinates: it is the average cost of a cross-coordinate effect relative
-to the average cost of an intended-coordinate error. It is computed from
-the DGP and target probabilities, not fitted to a trained representation.
-
-The transformed capacity surrogate is
-\[
-\mathcal J(E)
-=
-\frac12
-\sum_k
-\left(
-\|E_k\|^2-\beta_k
-\right)^2
-+
-\frac{p_{\mathrm{eff}}}{2}
-\sum_{k\neq\ell}
-\langle E_k,E_\ell\rangle^2.
-\]
-
-When
-\[
-0\leq p_{\mathrm{eff}}<1,
-\]
-the complete result carries over under
-\[
-\alpha_i\longrightarrow\beta_k,
-\qquad
-p\longrightarrow p_{\mathrm{eff}}.
-\]
-
-In particular, the transformed capacity level \(\beta_\star\) satisfies
-\[
+Define the marginal predictive utility
+\begin{equation}
 \boxed{
-\sum_k
+u_i(\mathbf d)
+=
+-
+\frac{\partial\mathcal C}{\partial d_i}.
+}
+\label{eq:app-utility-definition}
+\end{equation}
+Then
+\begin{equation}
+\boxed{
+u_i(\mathbf d)
+=
+\alpha_i p
 \left[
-\frac{
-\beta_k/\beta_\star-p_{\mathrm{eff}}
-}{
-1-p_{\mathrm{eff}}
+\mathbb E[p_{\star i}\mid z_i=1]
+-
+\mathbb E[q_{\mathbf d,i}\mid z_i=1]
+\right].
 }
-\right]_0^1
-=
-d,
-}
-\]
-and
+\label{eq:app-utility}
+\end{equation}
+
+This is the expected reduction in predictive loss obtained by allocating an
+additional infinitesimal amount of dimension to feature \(i\).
+
+\subsection{Water filling}
+
+Introduce a multiplier \(\delta\) for
 \[
-\boxed{
-\|E_k\|^2
+\sum_i d_i=d,
+\]
+and nonnegative multipliers \(\lambda_i,\mu_i\) for the lower and upper bounds. The
+Lagrangian is
+\[
+\mathscr L
 =
+\mathcal C(\mathbf d)
++
+\delta\left(\sum_i d_i-d\right)
+-
+\sum_i\lambda_i d_i
++
+\sum_i\mu_i(d_i-1).
+\]
+
+Stationarity gives
+\[
+\frac{\partial\mathcal C}{\partial d_i}
++\delta-\lambda_i+\mu_i=0.
+\]
+Using
+\[
+u_i=-\frac{\partial\mathcal C}{\partial d_i},
+\]
+together with complementary slackness, gives
+\begin{equation}
+\boxed{
 \begin{cases}
-\beta_k,
-&
-\beta_k>\beta_\star,
-\\[2mm]
-\dfrac{
-\beta_k-p_{\mathrm{eff}}\beta_\star
-}{
-1-p_{\mathrm{eff}}
-},
-&
-p_{\mathrm{eff}}\beta_\star
-<
-\beta_k
-\leq
-\beta_\star,
-\\[3mm]
-0,
-&
-\beta_k
-\leq
-p_{\mathrm{eff}}\beta_\star.
+u_i(\mathbf d^\star)\le \delta,
+&d_i^\star=0,
+\\[1mm]
+u_i(\mathbf d^\star)=\delta,
+&0<d_i^\star<1,
+\\[1mm]
+u_i(\mathbf d^\star)\ge \delta,
+&d_i^\star=1.
 \end{cases}
 }
+\label{eq:app-water-filling}
+\end{equation}
+
+These conditions characterize the global optimum because the allocation problem is
+convex.
+
+Features with larger \(\alpha_i\) generally have larger initial utility and therefore
+receive more dimension. As their allocations increase, the compressed prediction
+moves closer to the target and their marginal utilities fall. At the optimum, the
+next infinitesimal unit of dimensional capacity has the same value \(\delta\)
+wherever it is used.
+
+Because all outputs share the same softmax denominator,
+\[
+u_i=u_i(\mathbf d)
+\]
+generally depends on the complete allocation, not only on \(d_i\). We therefore solve
+Equation~\eqref{eq:app-allocation-program} directly rather than assuming separable
+one-dimensional utility curves.
+
+\subsection{Tight-frame realization and forced overlap}
+
+Given \(\mathbf d^\star\), choose vectors \(E_i\in\mathbb R^d\) satisfying
+\begin{equation}
+\|E_i\|^2=d_i^\star,
+\qquad
+\sum_iE_iE_i^\top=I_d.
+\label{eq:app-frame-realization}
+\end{equation}
+The Schur--Horn theorem guarantees that such a frame exists whenever
+\[
+0\le d_i^\star\le1,
+\qquad
+\sum_i d_i^\star=d.
 \]
 
-Thus correlations change:
+For any such realization,
+\[
+\sum_j
+\langle E_i,E_j\rangle^2
+=
+E_i^\top
+\left(
+\sum_jE_jE_j^\top
+\right)
+E_i
+=
+\|E_i\|^2
+=
+d_i^\star.
+\]
+The term with \(j=i\) is
+\[
+\langle E_i,E_i\rangle^2
+=
+(d_i^\star)^2.
+\]
+Therefore
+\begin{equation}
+\boxed{
+\sum_{j\neq i}
+\langle E_i,E_j\rangle^2
+=
+d_i^\star(1-d_i^\star).
+}
+\label{eq:app-forced-overlap}
+\end{equation}
 
+Thus
+\[
+d_i^\star=0
+\]
+means feature \(i\) is absent,
+\[
+d_i^\star=1
+\]
+permits a dedicated direction, and
+\[
+0<d_i^\star<1
+\]
+requires nonzero overlap with other feature vectors.
+
+The allocation fixes the total squared overlap associated with each feature, but
+not its individual overlap partners or signs. Different tight-frame realizations
+with the same row norms may therefore correspond to different orientations of the
+same predicted allocation.
+
+\subsection{The fixed-geometry decoder problem}
+
+For a chosen tight-frame realization \(E^{(1)}\), define the predicted first-order
+decoder and mean-embedding intercept by
+\begin{equation}
+\boxed{
+\left(D^\star,e_0^\star\right)(E^{(1)})
+=
+\arg\min_{D,\,e_0}
+\mathbb E_z
+\operatorname{CE}
+\left[
+p_\star(\cdot\mid z),
+\operatorname{softmax}
+\left(
+\left(z^\top E^{(1)}+e_0^\top\right)D
+\right)
+\right].
+}
+\label{eq:app-decoder-program}
+\end{equation}
+The intercept represents \(\bar E\), the mean of the state embedding: its logit
+contribution \(e_0^\top D\) is a state-independent row through the decoder, so the
+class stays bias-free. We fix the output gauge by requiring
+\begin{equation}
+D\mathbf1=0.
+\label{eq:app-decoder-gauge}
+\end{equation}
+Subtracting the mean decoder vector changes every state's logits only by a constant
+shared across outputs, and therefore does not change the predicted probabilities.
+
+For fixed \(E^{(1)}\), the logits are linear in \(D\) at fixed \(e_0\) and linear in
+\(e_0\) at fixed \(D\), so Equation~\eqref{eq:app-decoder-program} is convex in each
+block; the pair is solved jointly.
+
+The predicted first-order map is
+\begin{equation}
+\boxed{
+L^{(1)}
+=
+E^{(1)}D^\star(E^{(1)}).
+}
+\label{eq:app-predicted-map}
+\end{equation}
+It automatically satisfies
+\[
+\operatorname{rank}L^{(1)}\le d.
+\]
+
+Let
+\[
+q(\cdot\mid z)
+=
+\operatorname{softmax}
+\left(
+\left(z^\top E^{(1)}+e_0^\top\right)D
+\right),
+\qquad
+\bar r=\mathbb E_z\left[q-p_\star\right].
+\]
+The gradient with respect to \(D\) is
+\[
+\nabla_D\mathcal C
+=
+\mathbb E_z
+\left[
+\left(E^{(1)\top}z+e_0\right)
+\left(q-p_\star\right)^\top
+\right],
+\]
+and with respect to \(e_0\),
+\[
+\nabla_{e_0}\mathcal C
+=
+D\,\bar r.
+\]
+Therefore the joint optimum satisfies
+\begin{equation}
+\boxed{
+E^{(1)\top}
+\mathbb E_z
+\left[
+z\left(q-p_\star\right)^\top
+\right]
+=
+-\,e_0\,\bar r^\top,
+\qquad
+D\,\bar r=0.
+}
+\label{eq:app-moment-matching}
+\end{equation}
+
+Thus the feature--output probability moments expressible through the chosen
+\(d\)-dimensional geometry are matched up to a rank-one correction along the mean
+residual \(\bar r\), and the mean residual lies in the null space of the decoder —
+in particular the predicted map annihilates it, \(L^{(1)}\bar r=0\). These two
+conditions are checkable observables of any claimed solution.
+
+Because the allocation does not select a unique tight-frame orientation, the complete
+prediction is the family
+\[
+\left\{
+E^{(1)}D^\star(E^{(1)})
+:
+E^{(1)\top}E^{(1)}=I_d,\;
+\|E_i\|^2=d_i^\star
+\right\}.
+\]
+
+\subsection{Balanced geometry}
+\label{app:balanced}
+
+The allocation \(d_i^\star\) and the first-order map \(E^{(1)}D\) are invariant to
+hidden-coordinate reparameterization \(E\to EA\), \(D\to A^{-1}D\); raw feature and
+decoder norms are not, and the loss cannot select them. Under gradient flow from small
+initialization the two factors of a product \(ED^\top\) stay balanced,
+\(E^\top E=D^\top D\), because the two gradient terms in \(\tfrac{d}{dt}(E^\top E-D^\top D)\)
+cancel. Adam's per-coordinate rescaling breaks the cancellation: each row of the state
+table receives the gradient of one state while each row of \(D\) sums over all states,
+yet both move about one learning rate per step, so \(E\) grows roughly
+\(\sqrt{n/m}\) times faster (measured 4.6--7.8 at \(n/m=32\); an SGD retrain is balanced to
+\(0.4\%\)). We therefore impose the balanced gauge on every model's row-centred logit
+table over states, \(\Lambda=U\Sigma V^\top\), truncated to rank \(d\):
+\begin{equation}
+\boxed{
+E_{\mathrm{bal}}
+=
+U\Sigma^{1/2},
+\qquad
+D_{\mathrm{bal}}
+=
+\Sigma^{1/2}V^\top,
+}
+\label{eq:app-balanced-factorization}
+\end{equation}
+the same operation the other settings apply to their log-conditional tables. The
+feature vectors are the least-squares first-order coefficients of \(E_{\mathrm{bal}}\)
+on \(z\) (the conditional-mean difference \(\mathbb E[h\mid z_i=1]-\mathbb E[h\mid z_i=0]\)
+agrees in population but leaks the other features' chance sample correlations, about
+\(1/\sqrt n\) each). The balancing acts on the table over states rather than on the
+\(m\times m\) first-order map because the trained model's parameters are that table.
+
+\subsection{Why strict additivity disfavors fractional allocation}
+
+The allocation program predicts fractional values
+\[
+0<d_i^\star<1.
+\]
+Equation~\eqref{eq:app-forced-overlap} shows that any Euclidean realization of such
+an allocation necessarily has overlapping first-order feature directions.
+
+Suppose the complete representation were strictly additive:
+\begin{equation}
+E(z)
+=
+E_0+\sum_i z_iE_i.
+\label{eq:app-strictly-additive}
+\end{equation}
+The complete logits would then be determined by the first-order map:
+\[
+\ell(z)
+=
+E_0^\top D
++
+z^\top L^{(1)}.
+\]
+There would be no additional state dependence available to correct errors created
+by overlap among the feature directions.
+
+For small deviations from the ideal fractional prediction, the leading additive
+realization cost is quadratic in the unwanted overlaps. If these overlaps have
+approximately a common predictive price \(\beta>0\), then
+\begin{equation}
+\mathcal C_{\mathrm{add}}(\mathbf d)
+\approx
+\mathcal C(\mathbf d)
++
+\beta
+\sum_{i\neq j}
+\langle E_i,E_j\rangle^2.
+\label{eq:app-additive-overlap-cost}
+\end{equation}
+Using Equation~\eqref{eq:app-forced-overlap},
+\begin{equation}
+\boxed{
+\mathcal C_{\mathrm{add}}(\mathbf d)
+\approx
+\mathcal C(\mathbf d)
++
+\beta\sum_i d_i(1-d_i).
+}
+\label{eq:app-additive-allocation-cost}
+\end{equation}
+
+Since
+\[
+\sum_i d_i=d,
+\]
+we have
+\[
+\sum_i d_i(1-d_i)
+=
+d-\sum_i d_i^2.
+\]
+Thus the additive realization cost is minimized by making the allocation as
+polarized as possible: some features approach \(d_i=1\), while the rest approach
+\(d_i=0\).
+
+The corresponding interior stationarity condition is
+\begin{equation}
+\boxed{
+u_i(\mathbf d)
+-
+\beta(1-2d_i)
+=
+\delta.
+}
+\label{eq:app-additive-kkt}
+\end{equation}
+Relative to ordinary water filling,
+\[
+u_i(\mathbf d)=\delta,
+\]
+the extra term discourages small fractional allocations and favors completing
+features that already receive substantial capacity.
+
+Equation~\eqref{eq:app-additive-allocation-cost} is an approximation, not an exact
+identity. The exact result is the forced-overlap law in
+Equation~\eqref{eq:app-forced-overlap}. The approximation assumes that, in the iid
+setting, the leading predictive cost of those overlaps is approximately proportional
+to their total squared magnitude. The realization gap per unit of forced overlap measures \(\beta\)
+(\(\approx0.02\)--\(0.04\)); adding it to the allocation does not improve the
+prediction (\texttt{notes/superposition\_results.md}, \S1).
+
+\subsection{Why the full model can sustain fractional allocation}
+
+The complete state embedding need not be strictly additive. In general,
+\begin{equation}
+E(z)
+=
+\bar E
++
+\sum_i(z_i-p)E_i
++
+E_{\ge2}(z).
+\label{eq:app-full-representation}
+\end{equation}
+The residual \(E_{\ge2}(z)\) remains in the same space:
+\[
+E_{\ge2}(z)\in\mathbb R^d.
+\]
+It therefore introduces no additional representational dimensions.
+
+Its role is instead to let different feature combinations occupy different points
+inside the same \(d\)-dimensional space. For example, with two binary features,
+strict additivity would require
+\[
+E(1,1)
+=
+E(1,0)+E(0,1)-E(0,0).
+\]
+A nonlinear state embedding may instead use
+\[
+E(1,1)
+=
+E(1,0)+E(0,1)-E(0,0)
++
+\Delta_{12},
+\]
+where
+\[
+\Delta_{12}\in\mathbb R^d.
+\]
+
+Such context-dependent movements can correct predictive errors caused by overlapping
+first-order directions. They therefore reduce the realization penalty associated
+with fractional \(d_i\), allowing the first-order geometry of the full model to
+remain close to the convex allocation prediction.
+
+The main theory does not attempt to predict \(E_{\ge2}(z)\). Its role is to explain
+why the convex first-order allocation can describe a full nonlinear model even when
+a strictly additive rank-\(d\) representation prefers a much more polarized geometry.
+The pair block of this correction is quantified in Section~\ref{sec:repair}.
+
+\subsection{Summary}
+
+The theory requires two convex optimizations.
+
+First, the dimensional allocation is predicted by
 \[
 \boxed{
-\text{the state coordinates that compete for capacity},
+\mathbf d^\star
+=
+\arg\min_{\substack{0\le d_i\le1\\\sum_i d_i=d}}
+\mathcal C(\mathbf d).
 }
 \]
-their predictive strengths
+Its KKT conditions give the resource-rational water-filling law
 \[
-\boxed{\beta_k,}
+u_i(\mathbf d^\star)=\delta
 \]
-and the effective relative cost of their interference
+for fractionally represented features.
+
+Second, after choosing any tight-frame realization
 \[
-\boxed{p_{\mathrm{eff}}.}
+E^{(1)\top}E^{(1)}=I_d,
+\qquad
+\|E_i\|^2=d_i^\star,
+\]
+the first-order map is predicted by
+\[
+\boxed{
+\left(D^\star,e_0^\star\right)
+=
+\arg\min_{D,\,e_0}
+\mathbb E_z
+\operatorname{CE}
+\left[
+p_\star(\cdot\mid z),
+\operatorname{softmax}
+\left(
+\left(z^\top E^{(1)}+e_0^\top\right)D
+\right)
+\right].
+}
+\]
+Then
+\[
+L^{(1)}=E^{(1)}D^\star,
+\]
+with the state-independent logit row \(e_0^{\star\top}D^\star\) carried through the
+decoder.
+
+The allocation predicts the whitened feature norms
+\[
+\|E_i\|^2=d_i^\star
+\]
+and the unavoidable squared overlap
+\[
+\sum_{j\neq i}\langle E_i,E_j\rangle^2
+=
+d_i^\star(1-d_i^\star).
 \]
 
-If the curvatures \(\kappa_{jk}\) vary substantially across coordinate
-pairs, no single scalar \(p_{\mathrm{eff}}\) accurately summarizes the
-loss. The correlated problem then remains a weighted rank-constrained
-optimization rather than the closed-form scalar theory above.
-
-In the iid binary setting, using the original coordinates \(z_i\) recovers
-the coactivation approximation
-\[
-p_{\mathrm{eff}}\approx p.
-\]
-After a nontrivial change of coordinates, \(p_{\mathrm{eff}}\) should be
-recomputed from Equation~\eqref{eq:effective-interference}; it need not
-numerically equal the original Bernoulli rate.
+Finally, the balanced SVD of \(L^{(1)}\) gives the predicted raw first-order feature
+and decoder Grams, under the additional balanced-factorization assumption.
