@@ -39,7 +39,6 @@ def _wa_config():
         "random_seed": 0,
         "model_kwargs": {"model_type": "linear"},
         "training_kwargs": {"batch_size": 16},
-        "eval_kwargs": {"num_eval_batches": 1, "output_hidden_states": False},
     })
     return Config(cfg)
 
@@ -66,7 +65,7 @@ def test_sae_trains_from_the_shared_pipeline_on_feature_codes(tmp_path):
     codes = model.embedding.weight.detach().cpu().numpy()[:ds.n_items]
     assert np.allclose(codes, ds.features)
     assert not model.embedding.weight.requires_grad
-    assert evaluator.input_code(model).shape == (64, 2)             # the bottleneck code
+    assert evaluator.representation(model).shape == (64, 2)             # the bottleneck code
 
 
 def test_power_spectrum_gives_a_power_law_importance_ladder():

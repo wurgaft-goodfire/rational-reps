@@ -21,35 +21,42 @@ from .config import Config
 
 
 #########################
-# Reading a trained model's code
+# Reading a trained model's representation
 #########################
 
 def decoder_weights(model, dataset):
-    """The readout rows over the outcome tokens, whatever the architecture calls them. (C, d)."""
-    if hasattr(model, "readout"):                              # linear
-        W = model.readout
-    elif hasattr(model, "mlp"):                                # mlp: the final layer
-        W = model.mlp[-1].weight
-    elif hasattr(model, "head"):                               # rnn
-        W = model.head.weight[dataset.label_tokens]
-    elif hasattr(model, "decoder"):                            # sae: the bottleneck's readout
-        W = model.decoder.weight
-    else:                                                      # causal LM: the unembedding
-        W = model.get_output_embeddings().weight[dataset.label_tokens]
+    """The readout rows over the outcome tokens, (C, d): ``readout_matrix`` restricted to the
+    dataset's outcome tokens when the head is vocabulary-wide (the causal LMs)."""
+    W = model.readout_matrix
+    if W.shape[0] == getattr(dataset, "vocab_size", None) and len(dataset.label_tokens) < W.shape[0]:
+        W = W[dataset.label_tokens]
     return W.detach().float().cpu().numpy()
 
 
-def input_code(model, dataset, project=True):
-    """Pre-decode code of every input the task defines, ``(n_inputs, d)``. ``project`` (the default)
-    re-expresses it in the readout's row space: the loss says nothing about directions the decoder
-    cannot read, so they are not part of the geometry the task pins down. ``None`` when the
-    architecture has no vector code (a bilinear readout reads an outer product)."""
-    with torch.no_grad():
-        X = model.input_reps(dataset.model_inputs())
-    if X is None:
+def representation(model, dataset, project=True):
+    """The representation of every input the task defines, ``(n_inputs, d)``: the last hidden
+    state at the last position, which is what the readout reads. ``project`` (the default)
+    re-expresses it in the readout's row space: the loss says nothing about directions the
+    decoder cannot read. ``None`` when the readout reads no vector (a bilinear readout)."""
+    if model.readout_matrix is None:
         return None
+    with torch.no_grad():
+        X = model(dataset.model_inputs().to(next(model.parameters()).device),
+                  output_hidden_states=True)["hidden_states"][-1][:, -1]
     X = X.detach().float().cpu().numpy()
     return X @ readout_basis(model, dataset).T if project else X
+
+
+def run_extras(run_dir):
+    """The final checkpoint's saved evaluation of a run: dict(metrics, extras) with ``extras``
+    holding ``logits`` (n, C), ``representation`` (n, width) and ``readout`` (C, width) as numpy arrays.
+    Reads ``checkpoints/<last>/metrics.pt``; no model is constructed."""
+    ckpt = os.path.join(run_dir, "checkpoints")
+    last = max(int(d) for d in os.listdir(ckpt) if d.isdigit())
+    saved = torch.load(os.path.join(ckpt, str(last), "metrics.pt"), weights_only=False)
+    extras = {k: (np.asarray(v.numpy() if hasattr(v, "numpy") else v, dtype=float) if v is not None else None)
+              for k, v in saved["extras"].items()}
+    return dict(metrics=saved["metrics"], extras=extras, step=saved["step"])
 
 
 def readout_basis(model, dataset, tol=1e-4):

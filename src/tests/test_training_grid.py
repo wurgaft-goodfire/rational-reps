@@ -2,6 +2,8 @@
 / relational settings) — not a full grid, just enough to catch anything broadly broken. Slow."""
 import math
 
+import numpy as np
+
 import pytest
 
 from src.code.train import train_inline
@@ -18,11 +20,13 @@ def _graph_overrides(structure, kw):
     return ov + [f"+structure_kwargs.{k}={v}" for k, v in kw.items()]
 
 
-def _check(history, dataset, model):
-    assert {"cka_vs_predicted", "rsa_vs_predicted"}.issubset(history.columns)
-    assert len(history) >= 1
-    rsa = history.iloc[-1]["rsa_vs_predicted"]
-    assert isinstance(rsa, float) and not math.isnan(rsa)      # produced a real geometry score
+def _check(history, dataset, model, evaluator):
+    from src.code.eval import rsa as _rsa
+    from src.code.geometry import predicted_geometry
+    assert "loss" in history.columns and len(history) >= 1
+    rep = evaluator.evaluate(model)[1]["representation"].numpy()
+    score = _rsa(rep, predicted_geometry(np.asarray(dataset.conditional, float)))
+    assert isinstance(score, float) and not math.isnan(score)   # produced a real geometry score
     # the embedding table must cover the item tokens (distinct from outcome classes when rectangular)
     assert model.get_input_embeddings().weight.shape[0] >= len(dataset.item_tokens)
 
@@ -39,14 +43,14 @@ def test_graph_training_runs(structure, kw, arch, tmp_path):
     model, dataset, evaluator, history, _ = train_inline(
         _graph_overrides(structure, kw) + [f"runner={arch}"] + _QUICK,
         name=f"grid_{structure}_{arch}", cache_dir=str(tmp_path))
-    _check(history, dataset, model)
+    _check(history, dataset, model, evaluator)
 
 
 def test_features_training_runs(tmp_path):
     model, dataset, evaluator, history, _ = train_inline(
         ["setting=feature_cube", "runner=linear"] + _QUICK,
         name="grid_features", cache_dir=str(tmp_path))
-    _check(history, dataset, model)
+    _check(history, dataset, model, evaluator)
 
 
 def test_relational_training_runs(tmp_path):
@@ -57,8 +61,7 @@ def test_relational_training_runs(tmp_path):
         ["setting=relational", "relation=modular_add", "+relation_kwargs.p=7", "runner=linear"] + _QUICK,
         name="grid_relational", cache_dir=str(tmp_path))
     assert dataset.arity == 2
-    assert evaluator.input_code(model) is None                 # a bilinear readout has no code
-    assert "cka_vs_predicted" not in history.columns
+    assert evaluator.evaluate(model)[1]["representation"] is None         # a bilinear readout has no representation
     assert history.iloc[-1]["loss"] < 1.0
 
 
@@ -68,7 +71,7 @@ def test_relational_training_scores_geometry_when_the_code_is_a_vector(tmp_path)
     model, dataset, evaluator, history, _ = train_inline(
         ["setting=relational", "relation=modular_add", "+relation_kwargs.p=7", "runner=mlp"] + _QUICK,
         name="grid_relational_mlp", cache_dir=str(tmp_path))
-    _check(history, dataset, model)
+    _check(history, dataset, model, evaluator)
 
 
 def test_eval_steps_null_scores_only_the_final_step(tmp_path):

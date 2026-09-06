@@ -9,7 +9,8 @@ from omegaconf import OmegaConf
 from src.code.config import Config
 from src.code.data import KernelDataset
 from src.code.models import init_model
-from src.code.eval import Evaluator
+from src.code.eval import Evaluator, rsa
+from src.code.geometry import predicted_geometry
 
 pytestmark = pytest.mark.slow
 
@@ -23,7 +24,6 @@ def _train_and_score(model_type, steps=500, lr=0.01, n=12):
         "gamma": 0.8, "sample_mode": sample_mode, "random_seed": 0,
         "model_kwargs": {"model_type": model_type, "model_config": mc},
         "training_kwargs": {"batch_size": 256, "context_length": 6},
-        "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     config = Config(cfg)
     dataset = KernelDataset(config)
@@ -37,15 +37,16 @@ def _train_and_score(model_type, steps=500, lr=0.01, n=12):
         batch = dataset.__getitem__()
         out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward(); opt.step()
-    metrics, _ = Evaluator(config, dataset).evaluate(model)
-    return metrics
+    metrics, extras = Evaluator(config, dataset).evaluate(model)
+    return metrics | {"rsa": rsa(extras["representation"].numpy(),
+                                predicted_geometry(np.asarray(dataset.conditional, float)))}
 
 
 @pytest.mark.parametrize("model_type", ["linear", "mlp", "rnn"])
 def test_architecture_converges_to_predicted_circle(model_type):
     metrics = _train_and_score(model_type)
     # every architecture recovers the circle geometry (random init ~ 0)
-    assert metrics["rsa_vs_predicted"] > 0.6, f"{model_type}: {metrics}"
+    assert metrics["rsa"] > 0.6, f"{model_type}: {metrics}"
 
 
 def _train_features(steps=600, lr=0.01):
@@ -58,7 +59,6 @@ def _train_features(steps=600, lr=0.01):
         "structure_kwargs": {"N": 32, "m": 4, "p": 0.3},
         "model_kwargs": {"model_type": "linear", "model_config": mc},
         "training_kwargs": {"batch_size": 256, "context_length": 6},
-        "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     config = Config(cfg)
     dataset = KernelDataset(config)
@@ -72,12 +72,14 @@ def _train_features(steps=600, lr=0.01):
         batch = dataset.__getitem__()
         out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward(); opt.step()
-    return Evaluator(config, dataset).evaluate(model)[0]
+    metrics, extras = Evaluator(config, dataset).evaluate(model)
+    return metrics | {"rsa": rsa(extras["representation"].numpy(),
+                                 predicted_geometry(np.asarray(dataset.conditional, float)))}
 
 
 def test_linear_converges_to_features_geometry():
     # the learned per-item embedding recovers the predicted natural-parameter manifold
-    assert _train_features()["rsa_vs_predicted"] > 0.6
+    assert _train_features()["rsa"] > 0.6
 
 
 def _cka(X, Y):
@@ -95,7 +97,6 @@ def test_bilinear_modular_addition_learns_a_circle():
         "setting": "relational", "relation": "modular_add", "relation_kwargs": {"p": p},
         "random_seed": 1, "model_kwargs": {"model_type": "linear", "model_config": mc},
         "training_kwargs": {"batch_size": 256, "context_length": 6},
-        "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     config = Config(cfg)
     dataset = RelationalDataset(config)

@@ -13,8 +13,7 @@ TINY = ["runner=transformer", "setting=graph", "structure_kwargs.n=12",
         "training_kwargs.train_steps=200", "training_kwargs.eval_steps=100",
         "training_kwargs.batch_size=128", "training_kwargs.context_length=24",
         "training_kwargs.learning_rate=0.003", "model_kwargs.model_config.hidden_size=32",
-        "model_kwargs.model_config.num_hidden_layers=2", "model_kwargs.model_config.num_attention_heads=2",
-        "eval_kwargs.num_eval_batches=2"]
+        "model_kwargs.model_config.num_hidden_layers=2", "model_kwargs.model_config.num_attention_heads=2"]
 
 
 def test_train_inline_returns_live_model_and_geometry_history(tmp_path):
@@ -22,12 +21,16 @@ def test_train_inline_returns_live_model_and_geometry_history(tmp_path):
 
     # live model, usable in-process without reloading from disk
     assert model.get_input_embeddings().weight.shape[0] == dataset.vocab_size
-    # in-memory history with the geometry metrics logged across training
-    assert {"step", "loss", "cka_vs_predicted", "rsa_vs_predicted"}.issubset(history.columns)
+    # in-memory history logged across training
+    assert {"step", "loss"}.issubset(history.columns)
     assert len(history) >= 2
-    # the live model can be re-scored through the returned evaluator
-    metrics, _ = evaluator.evaluate(model)
-    assert metrics["rsa_vs_predicted"] > 0.6                    # learned the circle
+    # the live model can be re-scored through the returned evaluator, and its saved representation
+    # matches the closed-form circle
+    from src.code.eval import rsa
+    from src.code.geometry import predicted_geometry
+    import numpy as np
+    _, extras = evaluator.evaluate(model)
+    assert rsa(extras["representation"].numpy(), predicted_geometry(np.asarray(dataset.conditional, float))) > 0.6
 
 
 def test_train_inline_is_config_keyed_and_reuses_without_retraining(tmp_path):
@@ -47,6 +50,6 @@ def test_train_inline_is_config_keyed_and_reuses_without_retraining(tmp_path):
     assert cfg2.run_dir == cfg1.run_dir
     assert {p: p.stat().st_mtime_ns for p in model_files} == mtimes   # checkpoints untouched -> reused
     assert list(h2["step"]) == list(h1["step"])                       # identical history returned
-    # the loaded model is the trained final checkpoint: scores match the last logged step
+    # the loaded model is the trained final checkpoint: its score matches the last logged step
     metrics2, _ = ev2.evaluate(m2)
-    assert metrics2["rsa_vs_predicted"] == pytest.approx(h1["rsa_vs_predicted"].iloc[-1], abs=1e-4)
+    assert metrics2["loss"] == pytest.approx(h1["loss"].iloc[-1], abs=1e-4)

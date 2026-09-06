@@ -61,3 +61,15 @@ def test_structure_distinguishes_settings_that_share_a_setting_name(tmp_path):
     assert len(set(dirs.values())) == 3
     assert "structure=feature_cube" in dirs["feature_cube"]
     assert "default_run" not in dirs["graph"]
+
+
+def test_evaluation_settings_do_not_invalidate_a_trained_run():
+    # eval draws no RNG and touches no parameter, so changing how a run is scored must not mark
+    # its weights stale (which would silently retrain every cached run)
+    from src.code.train import _run_key, resolve_config
+    base = resolve_config(["setting=graph", "structure_kwargs.n=8"])
+    other = resolve_config(["setting=graph", "structure_kwargs.n=8",
+                            "+eval_kwargs.output_hidden_states=true"])
+    assert _run_key(base.cfg) == _run_key(other.cfg)
+    changed = resolve_config(["setting=graph", "structure_kwargs.n=9"])
+    assert _run_key(base.cfg) != _run_key(changed.cfg)

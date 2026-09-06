@@ -1,5 +1,5 @@
-"""Unit tests for the Evaluator: fixed-batch determinism, scalar loss, and the collator
-dropping eval-only keys. Uses the graph dataset with a fake model."""
+"""Unit tests for the Evaluator: every input once against its exact target, the saved
+representation, and the collator dropping eval-only keys. Uses the graph dataset."""
 import numpy as np
 import torch
 from omegaconf import OmegaConf
@@ -16,40 +16,49 @@ def _config():
         "gamma": 0.8, "sample_mode": "pointwise", "random_seed": 0,
         "model_kwargs": {"model_type": "linear"},
         "training_kwargs": {"batch_size": 4, "context_length": 8},
-        "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     return Config(cfg)
 
 
-class _FakeModel:
-    """Deterministic logits over the outcome classes; no embedding table."""
-    output_key = "logits"
-
-    def __init__(self, num_dims):
-        self.num_dims = num_dims
-
-    def __call__(self, input_ids, output_hidden_states=False):
-        b, length = input_ids.shape
-        g = torch.Generator().manual_seed(0)
-        return {"logits": torch.randn(b, length, self.num_dims, generator=g)}
-
-
-def test_evaluate_returns_only_loss_when_model_has_no_embedding():
+def test_evaluate_scores_every_input_once_against_its_exact_row():
+    # the loss is KL(model || true) averaged over the n distinct inputs, each paired with its own
+    # conditional row: the Bayes-optimal logits score zero, a uniform model scores the mean KL
+    # from uniform to the rows
+    from src.code.models import LinearModel, ModelConfig
     config = _config()
     dataset = KernelDataset(config)
-    metrics, extras = Evaluator(config, dataset).evaluate(_FakeModel(dataset.num_dims))
-    # rep metrics are gated on the model exposing an embedding table; the fake model has none
-    assert set(metrics) == {"loss"}
-    assert all(isinstance(v, float) for v in metrics.values())
-    assert "all_loss" in extras
+    ev = Evaluator(config, dataset)
+    n = len(dataset.input_tuples())
+    assert ev.inputs.shape[0] == n and ev.targets.shape == (n, dataset.num_dims)
+    assert torch.allclose(ev.targets, dataset.P[dataset._row_index(dataset.input_tuples())].cpu())
+
+    class _Bayes:
+        output_key = "logits"
+        def __call__(self, input_ids, output_hidden_states=False):
+            return {"logits": ev.targets.log()}
+    assert abs(Evaluator(config, dataset).evaluate(_Bayes())[0]["loss"]) < 1e-6
+
+    class _Uniform(_Bayes):
+        def __call__(self, input_ids, output_hidden_states=False):
+            return {"logits": torch.zeros(n, dataset.num_dims)}
+    kl_uniform = (ev.targets * (ev.targets.clamp_min(1e-30).log() + np.log(dataset.num_dims))).sum(1).mean()
+    assert abs(Evaluator(config, dataset).evaluate(_Uniform())[0]["loss"] - kl_uniform.item()) < 1e-5
 
 
-def test_fixed_batches_make_evaluate_deterministic():
+def test_evaluate_saves_the_representation_the_readout_reads():
+    # extras: logits over the inputs, the representation (last hidden state) and the readout, such that
+    # code @ readout.T reproduces the logits
+    from src.code.models import LinearModel, ModelConfig
     config = _config()
     dataset = KernelDataset(config)
-    evaluator = Evaluator(config, dataset)
-    model = _FakeModel(dataset.num_dims)
-    assert evaluator.evaluate(model)[0] == evaluator.evaluate(model)[0]
+    model = LinearModel(ModelConfig(vocab_size=dataset.vocab_size, num_classes=dataset.num_dims,
+                                    embed_dim=3, arity=1))
+    metrics, extras = Evaluator(config, dataset).evaluate(model.to("cuda" if torch.cuda.is_available() else "cpu"))
+    n = len(dataset.input_tuples())
+    assert set(metrics) == {"loss"} and set(extras) == {"logits", "representation", "readout"}
+    assert extras["logits"].shape == (n, dataset.num_dims) and extras["representation"].shape == (n, 3)
+    assert extras["readout"].shape == (dataset.num_dims, 3)
+    assert np.allclose(extras["representation"].numpy() @ extras["readout"].T, extras["logits"].numpy(), atol=1e-5)
 
 
 def test_collator_unwraps_the_prebatched_dict_and_drops_what_the_model_rejects():

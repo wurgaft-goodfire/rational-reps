@@ -1,6 +1,8 @@
 """The first-order geometry pipeline (geometry.py), from notes/superposition.tex:
 convex allocation -> tight-frame realization -> convex decoder -> balanced SVD.
 Every test pins an analytic answer or an independent audit."""
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -156,7 +158,7 @@ def test_predict_geometry_reports_frame_ensemble_statistics():
     assert out["ce_rep"] < out["ce_add"] <= out["ce_star"] + 1e-9   # completion lowers the CE at E*
     # the completion's logit map over its dictionary [z; phi(z); 1], and the dictionary in
     # balanced coordinates: the rank-d factorization is exact with equal scale in both factors
-    M = np.vstack([out["E_star"], out["E2_rep"], out["e0_rep"]]) @ out["C_rep"]
+    M = np.vstack([out["E_star"], out["E2_rep"], out["e0_rep"]]) @ out["D_rep"]
     assert out["map_rep"].shape == (16 + 28 + 1, 16) and np.allclose(out["map_rep"], M)
     Mc, B, D, S = geometry.factor_logcond(M, rank=3)
     assert B.shape == (45, 3) and D.shape == (3, 16) and S.shape == (3,)
@@ -202,7 +204,7 @@ def test_feature_model_builds_the_centered_dictionary_and_is_bias_free():
     assert np.abs(Zc.T @ pairs / 512).max() < 0.1     # centered blocks nearly orthogonal
     ids = torch.arange(8).reshape(8, 1)
     L = model(ids)["logits"].detach().numpy()
-    h = model.input_reps(ids).detach().numpy()
+    h = model(ids, output_hidden_states=True)["hidden_states"][-1][:, -1].detach().numpy()
     W = model.readout.detach().numpy()
     assert np.allclose(L, h @ W.T, atol=1e-6)
     assert not any("bias" in n for n, _ in model.named_parameters())
@@ -253,16 +255,31 @@ def test_logit_map_recovers_a_planted_additive_map_exactly():
     assert abs(r2 - 1.0) < 1e-12
 
 
-def test_logit_features_recovers_planted_balanced_sizes():
+def test_measure_recovers_a_planted_rank_d_table():
+    # a mean-free additive table with orthogonal writers of sizes 4 / 2.25 / 1: `measure`
+    # returns their leverages (1, 1, 1, then 0), balanced sizes in the table's own units
+    # (sigma-split), the table's top-d spectrum per state, and a diagonal projector
     rng = np.random.default_rng(4)
     m, d, p, n = 32, 3, 0.3, 8192
     Z = (rng.random((n, m)) < p).astype(float)
     E = np.zeros((m, d))
-    E[0, 0], E[1, 1], E[2, 2] = 2.0, 1.5, 1.0        # orthogonal writers, sizes 4/2.25/1
-    L = (Z - Z.mean(0)) @ (E @ E.T)                  # mean-free code: sizes are exact
-    sizes = (geometry.logit_features(L, Z, d) ** 2).sum(1)
-    assert np.allclose(sizes[:3], [4.0, 2.25, 1.0], rtol=0.05)
-    assert sizes[3:].max() < 0.05
+    E[0, 0], E[1, 1], E[2, 2] = 2.0, 1.5, 1.0
+    L = (Z - Z.mean(0)) @ (E @ E.T)
+    h, G, S, GD, P = geometry.measure(L, Z, d)
+    assert np.allclose(h[:3], 1.0, atol=1e-6) and h[3:].max() < 1e-6
+    assert np.allclose(np.diag(G)[3:], 0.0, atol=1e-9) and np.all(np.diff(np.diag(G)[:3]) < 0)
+    assert np.allclose(S, np.linalg.svd(L - L.mean(1, keepdims=True), compute_uv=False)[:d] / np.sqrt(n))
+    assert np.allclose(P[:3, :3], np.eye(3), atol=1e-6) and GD.shape == (m, m)
+
+
+@pytest.mark.slow
+def test_theory_table_is_the_completed_models_logit_table():
+    # [x, phi(x), 1] @ map_rep reproduces (x E* + phi(x) E2 + e0) D
+    out = geometry.predict_geometry(LADDER[:16], _bernoulli(16, n=4096), 3, n_frames=2, n_top=8)
+    Z = _bernoulli(16, n=4096)
+    table = geometry.theory_table(out, Z, n_top=8)
+    ref = (Z @ out["E_star"] + geometry.pair_features(Z, 8) @ out["E2_rep"] + out["e0_rep"]) @ out["D_rep"]
+    assert np.allclose(table, ref)
 
 
 def _tied_ce(alpha, Z, di, G_off):
@@ -370,9 +387,240 @@ def test_biconvex_pairs_never_increases_the_objective_and_beats_the_additive_cla
 
 
 def test_sweep_grid_enumerates_unique_cells_with_unique_run_names_and_paths():
-    from src.code import sweep_superposition as sw
+    from src.scripts import sweep_superposition as sw
     cs = sw.cells()
-    assert len(cs) == 4 * 3 * 3 * 5 and len(set(cs)) == len(cs)
+    assert len(cs) == 4 * 3 * 3 * 3 * 5 and len(set(cs)) == len(cs)
     assert len({sw.run_name(*c) for c in cs}) == len(cs)
     assert len({sw.cell_path(*c) for c in cs}) == len(cs)
-    assert (0.3, 0.5, 6, 0) in cs and sw.run_name(0.3, 0.5, 6, 0) == "sp_p0.3_b0.5_d6_s0"
+    assert (0.3, 0.5, 0.0, 6, 0) in cs and sw.run_name(0.3, 0.5, 0.0, 6, 0) == "sp_p0.3_b0.5_d6_s0"
+    assert sw.run_name(0.3, 0.5, 0.6, 6, 0) == "sp_p0.3_b0.5_d6_s0_r0.6"
+    assert sw.run_name(0.3, 0.5, 0.0, 6, 0, "paired_features") == "pairf_p0.3_b0.5_d6_s0"
+    W, X = sw.modes(np.ones(4), _bernoulli(4, n=64), 0.0)
+    assert W.shape == (4,) and X.shape == (64, 4)
+    assert not sw.cached(0.3, 0.5, 0.0, 3, 99)
+
+
+# ── correlated features: predictive modes ──────────────────────────────────────────────────
+
+def _correlated(m, n=8192, p=0.3, rho=0.5, seed=0):
+    from src.code.data import feature_cube
+    return feature_cube(n, m, p, scale=8.0, seed=seed, spectrum="power", beta=0.5, rho=rho)[1]["Z"]
+
+
+def _tied_ce_map(W, Z, di, G_off):
+    # exact CE of the tied map for a general logit map W: logits (z d + X G_off) W^T
+    from scipy.special import logsumexp
+    G, P, _ = geometry._softmax_stats(W, Z)
+    X = Z - Z.mean(0)
+    L = (Z * di + X @ G_off) @ W.T
+    return float((logsumexp(L, axis=1) - (P * L).sum(1)).mean())
+
+
+def test_whiten_decorrelates_the_features_and_inverts():
+    # u = C^{-1/2} z has identity covariance and Z = U C^{1/2}
+    Z = _correlated(8)
+    U, C_half = geometry.whiten(Z)
+    assert np.allclose(np.cov(U.T, bias=True), np.eye(8), atol=1e-8)
+    assert np.allclose(U @ C_half, Z, atol=1e-8)
+    assert np.allclose(C_half @ C_half, np.cov(Z.T, bias=True), atol=1e-8)
+
+
+def test_a_diagonal_logit_map_reproduces_the_vector_form():
+    # every stage accepts the (m, m) logit map; diag(alpha) is the vector path exactly
+    alpha, Z = LADDER[:10], _bernoulli(10, n=4096)
+    W = np.diag(alpha)
+    di_v, dl_v = allocate_d(alpha, Z, 3); di_m, dl_m = allocate_d(W, Z, 3)
+    assert np.allclose(di_v, di_m, atol=1e-9) and abs(dl_v - dl_m) < 1e-9
+    assert np.allclose(geometry.signed_pressure(alpha, Z, di_v), geometry.signed_pressure(W, Z, di_v))
+    assert np.allclose(geometry.interference_curvature(alpha, Z, di_v),
+                       geometry.interference_curvature(W, Z, di_v))
+    a = geometry.signed_pressure(alpha, Z, di_v)
+    P_v, _ = geometry.fantope_geometry(alpha, Z, 3, a); P_m, _ = geometry.fantope_geometry(W, Z, 3, a)
+    assert np.allclose(P_v, P_m, atol=1e-8)
+    E1 = tight_frame(di_v)
+    assert np.allclose(decoder_map(alpha, Z, E1)[0], decoder_map(W, Z, E1)[0], atol=1e-6)
+
+
+def test_whitening_is_a_no_op_on_exactly_independent_features():
+    # on the full cube {0,1}^k the sample covariance is exactly diagonal, so the whitened
+    # problem (alpha C^{1/2}, C^{-1/2} Z) is the raw one up to a uniform rescaling
+    k = 8
+    Z = np.array(np.meshgrid(*[[0, 1]] * k, indexing="ij")).reshape(k, -1).T.astype(float)
+    alpha = LADDER[:k]
+    U, C_half = geometry.whiten(Z)
+    W = np.diag(alpha) @ C_half.T
+    di, _ = allocate_d(alpha, Z, 3); dw, _ = allocate_d(W, U, 3)
+    assert np.allclose(di, dw, atol=1e-6)
+    a, aw = geometry.signed_pressure(alpha, Z, di), geometry.signed_pressure(W, U, dw)
+    assert np.allclose(a, aw, atol=1e-8)
+    P, _ = geometry.fantope_geometry(alpha, Z, 3, a); Pw, _ = geometry.fantope_geometry(W, U, 3, aw)
+    assert np.allclose(P, Pw, atol=1e-6)
+
+
+def test_pressure_and_curvature_are_derivatives_for_a_full_logit_map():
+    # the derivative identities hold on whitened correlated features, where the logit
+    # map is a full matrix
+    Z = _correlated(8, n=4096)
+    U, C_half = geometry.whiten(Z)
+    W = np.diag(LADDER[:8]) @ C_half.T
+    di, _ = allocate_d(W, U, 3)
+    a = geometry.signed_pressure(W, U, di)
+    H = geometry.interference_curvature(W, U, di)
+    pairs = np.triu_indices(8, 1)
+    h = 1e-3
+    def ce(deltas):
+        G = np.zeros((8, 8))
+        for (i, j), v in deltas:
+            G[i, j] = G[j, i] = v
+        return _tied_ce_map(W, U, di, G)
+    for p in (0, 4, 15):
+        i, j = pairs[0][p], pairs[1][p]
+        fd = (ce([((i, j), h)]) - ce([((i, j), -h)])) / (2 * h)
+        assert abs(fd - a[i, j]) < 1e-6 * max(1.0, abs(a[i, j])) + 1e-7
+        fdd = (ce([((i, j), h)]) - 2 * ce([]) + ce([((i, j), -h)])) / h ** 2
+        assert abs(fdd - H[p, p]) < 2e-3 * abs(H[p, p])
+    assert np.allclose(H, H.T) and np.all(np.linalg.eigvalsh(H) > -1e-9)
+
+
+def test_pair_features_are_orthogonal_to_the_first_order_dictionary():
+    # residualised on [1, z], the pair block cannot leak into the first-order vectors
+    # even when the features are correlated
+    Z = _correlated(8, n=4096)
+    U = geometry.whiten(Z)[0]
+    phi = geometry.pair_features(U, 6)
+    X = np.column_stack([np.ones(len(U)), U])
+    assert phi.shape == (4096, 15)
+    assert np.abs(X.T @ phi).max() < 1e-8
+    assert np.allclose(phi.std(0), 1.0)
+
+
+def _theory_table(alpha, X, d):
+    # stages one to three at fixed frame (no pairs): the theory's logit table over states
+    di, _ = allocate_d(alpha, X, d)
+    P, _ = geometry.fantope_geometry(alpha, X, d, geometry.signed_pressure(alpha, X, di))
+    L1, o = decoder_map(alpha, X, tight_frame(np.diag(P), init=P))
+    return X @ L1 + o
+
+
+def _balanced_feature_gram(table, Z, d):
+    # feature-space Gram of a model from its logit table over states, in the common gauge
+    H = geometry.factor_logcond(table, rank=d)[1]
+    E = feature_vectors(H, Z)[0]
+    return E @ E.T
+
+
+@pytest.mark.slow
+def test_whitening_brings_the_theory_to_the_exact_optimum_on_correlated_features():
+    # equicorrelated features (rho = 0.6, m = 16, d = 3): the exact joint optimum of the
+    # additive class is the oracle. On raw features the relaxation misallocates and its
+    # placement is uncorrelated with the oracle; on the predictive modes it recovers the
+    # oracle's leverage and placement and closes most of the CE gap.
+    m, d, k = 16, 3, 8
+    alpha = LADDER[:m]
+    Z = _correlated(m, n=4096, rho=0.6)
+    iu = np.triu_indices(k, 1)
+    opt = geometry.biconvex_pairs(alpha, Z, d, n_top=0, rounds=15)
+    table_opt = (np.column_stack([np.ones(len(Z)), Z]) @ opt["B"]) @ opt["D"]
+    G_opt = _balanced_feature_gram(table_opt, Z, d)
+    G, P, _ = geometry._softmax_stats(alpha, Z)
+    U, C_half = geometry.whiten(Z)
+    scores = {}
+    for name, al, X in [("raw", alpha, Z), ("white", np.diag(alpha) @ C_half.T, U)]:
+        table = _theory_table(al, X, d)
+        G_th = _balanced_feature_gram(table, Z, d)
+        scores[name] = (geometry._excess_ce(table, G, P),
+                        np.corrcoef(np.diag(G_th), np.diag(G_opt))[0, 1],
+                        np.corrcoef(G_th[:k, :k][iu], G_opt[:k, :k][iu])[0, 1])
+    assert scores["white"][0] < scores["raw"][0] - 0.05
+    assert scores["white"][1] > scores["raw"][1]
+    assert scores["white"][2] > 0.3 > scores["raw"][2]
+
+
+def test_mutually_exclusive_features_are_predicted_antipodal_in_both_bases():
+    # two features that never co-occur inside an iid background (m = 16, d = 3): the
+    # predicted feature-space overlap of the pair is negative on raw features and on the
+    # predictive modes alike (the TMS antipodal arrangement)
+    rng = np.random.default_rng(0)
+    n, m, d = 4096, 16, 3
+    c = rng.choice(3, size=n, p=[0.3, 0.3, 0.4])
+    Z = np.column_stack([c == 0, c == 1, rng.random((n, m - 2)) < 0.3]).astype(float)
+    alpha = LADDER[:m]
+    U, C_half = geometry.whiten(Z)
+    for al, X in [(alpha, Z), (np.diag(alpha) @ C_half.T, U)]:
+        G = _balanced_feature_gram(_theory_table(al, X, d), Z, d)
+        assert G[0, 1] < -0.02
+
+
+# ── the exact tied-map Fantope program ─────────────────────────────────────────────────────
+
+def test_tied_map_ce_gradient_matches_finite_differences_on_the_fantope():
+    # F(P) = E CE(softmax(A P z)); its gradient is Z^T (q - p*) W / n, symmetrised
+    alpha, Z = LADDER[:8], _correlated(8, n=2048, rho=0.4)
+    rng = np.random.default_rng(0)
+    P = geometry._fantope_project(rng.normal(size=(8, 8)), 3)
+    f, G = geometry.tied_map_ce(alpha, Z, P)
+    h = 1e-5
+    for i, j in [(0, 0), (0, 1), (2, 5), (7, 7)]:
+        Dm = np.zeros((8, 8)); Dm[i, j] = Dm[j, i] = h
+        fd = (geometry.tied_map_ce(alpha, Z, P + Dm)[0] - geometry.tied_map_ce(alpha, Z, P - Dm)[0]) / (2 * h)
+        assert abs(fd - (G[i, j] + G[j, i]) * (1.0 if i != j else 0.5)) < 1e-6
+
+
+def test_exact_fantope_program_lowers_the_tied_ce_by_leaving_the_projectors():
+    # the exact tied-map program minimises the objective the linearised one expands, so
+    # its tied CE is no worse at its own optimum; it gets there by moving far from the
+    # projectors (a larger relaxation gap eta), which is why the pipeline keeps the
+    # linearised program for the frame
+    alpha, Z = LADDER[:16], _bernoulli(16, n=4096)
+    di, _ = allocate_d(alpha, Z, 3)
+    a = geometry.signed_pressure(alpha, Z, di)
+    P_lin, eta_lin = geometry.fantope_geometry(alpha, Z, 3, a)
+    P_ex, eta_ex = geometry.fantope_geometry(alpha, Z, 3)
+    assert geometry.tied_map_ce(alpha, Z, P_ex)[0] <= geometry.tied_map_ce(alpha, Z, P_lin)[0] + 1e-9
+    assert eta_ex > 2 * eta_lin
+    assert abs(np.trace(P_ex) - 3) < 1e-6 and np.abs(np.diag(P_ex) - np.diag(P_lin)).max() < 0.1
+
+
+def test_mutually_exclusive_features_are_predicted_antipodal_in_both_bases():
+    # two features that never co-occur inside an iid background (m = 16, d = 3): the
+    # predicted feature-space overlap of the pair is negative on raw features and on the
+    # predictive modes alike (the TMS antipodal arrangement)
+    rng = np.random.default_rng(0)
+    n, m, d = 4096, 16, 3
+    c = rng.choice(3, size=n, p=[0.3, 0.3, 0.4])
+    Z = np.column_stack([c == 0, c == 1, rng.random((n, m - 2)) < 0.3]).astype(float)
+    alpha = LADDER[:m]
+    U, C_half = geometry.whiten(Z)
+    for al, X in [(alpha, Z), (np.diag(alpha) @ C_half.T, U)]:
+        G = _balanced_feature_gram(_theory_table(al, X, d), Z, d)
+        assert G[0, 1] < -0.02
+
+
+# ── the exact tied-map Fantope program ─────────────────────────────────────────────────────
+
+def test_tied_map_ce_gradient_matches_finite_differences_on_the_fantope():
+    # F(P) = E CE(softmax(A P z)); its gradient is Z^T (q - p*) W / n, symmetrised
+    alpha, Z = LADDER[:8], _correlated(8, n=2048, rho=0.4)
+    rng = np.random.default_rng(0)
+    P = geometry._fantope_project(rng.normal(size=(8, 8)), 3)
+    f, G = geometry.tied_map_ce(alpha, Z, P)
+    h = 1e-5
+    for i, j in [(0, 0), (0, 1), (2, 5), (7, 7)]:
+        Dm = np.zeros((8, 8)); Dm[i, j] = Dm[j, i] = h
+        fd = (geometry.tied_map_ce(alpha, Z, P + Dm)[0] - geometry.tied_map_ce(alpha, Z, P - Dm)[0]) / (2 * h)
+        assert abs(fd - (G[i, j] + G[j, i]) * (1.0 if i != j else 0.5)) < 1e-6
+
+
+def test_exact_fantope_program_lowers_the_tied_ce_by_leaving_the_projectors():
+    # the exact tied-map program minimises the objective the linearised one expands, so
+    # its tied CE is no worse at its own optimum; it gets there by moving far from the
+    # projectors (a larger relaxation gap eta), which is why the pipeline keeps the
+    # linearised program for the frame
+    alpha, Z = LADDER[:16], _bernoulli(16, n=4096)
+    di, _ = allocate_d(alpha, Z, 3)
+    a = geometry.signed_pressure(alpha, Z, di)
+    P_lin, eta_lin = geometry.fantope_geometry(alpha, Z, 3, a)
+    P_ex, eta_ex = geometry.fantope_geometry(alpha, Z, 3)
+    assert geometry.tied_map_ce(alpha, Z, P_ex)[0] <= geometry.tied_map_ce(alpha, Z, P_lin)[0] + 1e-9
+    assert eta_ex > 2 * eta_lin
+    assert abs(np.trace(P_ex) - 3) < 1e-6 and np.abs(np.diag(P_ex) - np.diag(P_lin)).max() < 0.1

@@ -1,5 +1,7 @@
 import logging
+import os
 
+import safetensors.torch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -27,21 +29,17 @@ def init_model(config):
     return model.to("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class _CausalLMBase:
-    """What the causal LMs share: item probing by a forward pass on the minimal context."""
-
-    def input_reps(self, input_ids):
-        """Pre-decode code for a batch of model inputs ``(B, T)``: the final hidden state at the
-        last input position, which is where the outcome is predicted."""
-        return self(input_ids, output_hidden_states=True)["hidden_states"][-1][:, -1, :]
-
-
 def load_model(config, model_path, device="cuda"):
+    """Load a saved run's model. The small in-house classes are rebuilt from their config and
+    state dict directly (no Hugging Face loading machinery, no progress bars); LLMs go through
+    ``from_pretrained``. Returns (model, tokenizer or None)."""
     model_type = config.model_kwargs.model_type
     if model_type in MODEL_CLASSES:
-        model = MODEL_CLASSES[model_type].from_pretrained(model_path)
+        cls = MODEL_CLASSES[model_type]
+        model = cls(cls.config_class.from_pretrained(model_path))
+        model.load_state_dict(safetensors.torch.load_file(os.path.join(model_path, "model.safetensors")))
         model.output_key = "logits"
-        return model.to(device), None
+        return model.to(device).eval(), None
     if model_type == "llm":
         model = transformers.AutoModelForCausalLM.from_pretrained(model_path)
         model.output_key = "logits"
@@ -50,6 +48,14 @@ def load_model(config, model_path, device="cuda"):
 
 
 ################# Model ladder (representational convergence) ########################
+
+class _CausalLMBase:
+    """What the causal LMs share: ``hidden_states`` per position with the head's input last."""
+
+    @property
+    def readout_matrix(self):
+        """The next-token head, (vocab, width): logits = hidden_states[-1] @ readout_matrix.T."""
+        return self.get_output_embeddings().weight
 
 class ModelConfig(transformers.PretrainedConfig):
     """Config for the from-scratch models. Sizing fields (vocab_size/num_classes/arity) are patched
@@ -92,6 +98,14 @@ class _ModelBase(transformers.PreTrainedModel):
     def set_input_embeddings(self, module):
         self.embedding = module
 
+    @staticmethod
+    def _with_hidden(out, h, output_hidden_states):
+        """Attach ``hidden_states = (h,)`` with ``h`` (B, T, width) — the readout's input at the
+        last position — when asked, matching the causal LMs' interface."""
+        if output_hidden_states:
+            out["hidden_states"] = (h if h.ndim == 3 else h[:, None, :],)
+        return out
+
     def _finish(self, logits, labels):
         """``labels`` is the exact outcome distribution (``distribution_labels``) for the
         readout heads: cross-entropy takes it as class probabilities; ``loss="reverse_kl"``
@@ -118,20 +132,19 @@ class LinearModel(_ModelBase):
         shape = (config.num_classes,) + (config.embed_dim,) * config.arity
         self.readout = nn.Parameter(torch.randn(*shape) * config.init_scale)
 
-    def forward(self, input_ids, distribution_labels=None, **kwargs):
+    def forward(self, input_ids, distribution_labels=None, output_hidden_states=False, **kwargs):
         input_ids = input_ids[:, :self.arity]               # the outcome column is the LM's target
         e = self.embedding(input_ids)                       # (B, arity, d)
         letters = "ijklmn"[: self.arity]
         eq = f"c{letters}," + ",".join("b" + l for l in letters) + "->bc"
         logits = torch.einsum(eq, self.readout, *[e[:, j] for j in range(self.arity)])
-        return self._finish(logits, distribution_labels)
+        return self._with_hidden(self._finish(logits, distribution_labels), e, output_hidden_states)
 
-    def input_reps(self, input_ids):
-        """Pre-decode code per input tuple: the embedding. ``None`` with several slots — there the
-        readout is a tensor contracting them, so no vector code exists for the decoder to read."""
-        if self.config.arity > 1:
-            return None
-        return self.embedding(input_ids).flatten(1)
+    @property
+    def readout_matrix(self):
+        """(num_classes, d) at arity 1; ``None`` for the bilinear readout, which contracts an
+        outer product and so reads no vector code."""
+        return self.readout if self.arity == 1 else None
 
 
 class MLPModel(_ModelBase):
@@ -146,14 +159,14 @@ class MLPModel(_ModelBase):
         layers.append(nn.Linear(in_dim, config.num_classes, bias=False))
         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, input_ids, distribution_labels=None, **kwargs):
+    def forward(self, input_ids, distribution_labels=None, output_hidden_states=False, **kwargs):
         e = self.embedding(input_ids[:, :self.config.arity]).flatten(1)   # (B, arity*d)
-        return self._finish(self.mlp(e), distribution_labels)
+        h = self.mlp[:-1](e)                                               # penultimate activation
+        return self._with_hidden(self._finish(self.mlp[-1](h), distribution_labels), h, output_hidden_states)
 
-    def input_reps(self, input_ids):
-        """Penultimate activation for a batch of input tuples: the slots are embedded, concatenated
-        and run through every layer but the readout."""
-        return self.mlp[:-1](self.embedding(input_ids).flatten(1))
+    @property
+    def readout_matrix(self):
+        return self.mlp[-1].weight
 
 
 class RNNModel(_CausalLMBase, _ModelBase):
@@ -176,6 +189,10 @@ class RNNModel(_CausalLMBase, _ModelBase):
             out["loss"] = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
                                           labels[:, 1:].reshape(-1))
         return out
+
+    @property
+    def readout_matrix(self):
+        return self.head.weight
 
 
 class SAEModel(_ModelBase):
@@ -204,15 +221,16 @@ class SAEModel(_ModelBase):
     def _code(self, item_ids):
         return torch.relu(self.encoder(self.embedding(item_ids).flatten(1)))
 
-    def forward(self, input_ids, distribution_labels=None, **kwargs):
+    def forward(self, input_ids, distribution_labels=None, output_hidden_states=False, **kwargs):
         h = self._code(input_ids[:, :self.config.arity])
         out = self._finish(self.decoder(h), distribution_labels)
         if distribution_labels is not None:
             out["loss"] = out["loss"] + self.config.l1 * h.abs().mean()
-        return out
+        return self._with_hidden(out, h, output_hidden_states)
 
-    def input_reps(self, input_ids):
-        return self._code(input_ids)                        # the bottleneck code
+    @property
+    def readout_matrix(self):
+        return self.decoder.weight
 
 
 class FeatureModel(_ModelBase):
@@ -246,12 +264,13 @@ class FeatureModel(_ModelBase):
         with torch.no_grad():
             self.phi[:len(table)] = table
 
-    def forward(self, input_ids, distribution_labels=None, **kwargs):
-        return self._finish(self.input_reps(input_ids[:, :1]) @ self.readout.T,
-                            distribution_labels)
+    def forward(self, input_ids, distribution_labels=None, output_hidden_states=False, **kwargs):
+        h = self.e0 + self.phi[input_ids[:, 0]] @ self.E                  # the code, (B, d)
+        return self._with_hidden(self._finish(h @ self.readout.T, distribution_labels), h, output_hidden_states)
 
-    def input_reps(self, input_ids):
-        return self.e0 + self.phi[input_ids.reshape(-1)] @ self.E
+    @property
+    def readout_matrix(self):
+        return self.readout
 
 
 class TransformerModel(_CausalLMBase, transformers.GPTNeoXForCausalLM):

@@ -75,12 +75,12 @@ the only thing that tells their runs apart.
 
 ```
 $CACHE_DIR/{setting}/{override_dirname}/{name}/
-  config_resolved.yaml     # full resolved config (reproducibility + eval cache match)
-  eval_batches.pt          # fixed eval batches (for the eval cache loop)
+  config_resolved.yaml     # full resolved config (reproducibility)
+  history.csv              # the training curve
   checkpoints/
     {step}/
       model/               # saved weights
-      metrics.pt           # {metrics, extras, step}
+      metrics.pt           # {metrics, extras, step}: KL plus logits, representation, readout
 ```
 
 ## Notebooks
@@ -167,6 +167,6 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 
 ## Repo invariants
 
-- **Build once, evaluate as a pure function.** Eval setup (fixed batches) happens once; `evaluate(model)` is then a pure function of the model, reproducible across checkpoints.
+- **Evaluate as a pure function.** Every model is scored on every input the task defines against its exact outcome distribution, so `evaluate(model)` is a pure function of the model, reproducible across checkpoints and architectures.
 - **Config-driven, no hardcoding.** All knobs live in `conf/`. Derive model I/O dims from the dataset; never hardcode them.
-- **Reproducible artifacts.** Each run writes `config_resolved.yaml`; eval writes `metrics.pt` (+ `eval_batches.pt` for the cache loop).
+- **Reproducible artifacts.** Each run writes `config_resolved.yaml` and, at the end of training, `metrics.pt` with the model's logits, representation and readout over every input — so analysis reads a run without constructing the model (`analysis_utils.run_extras`).

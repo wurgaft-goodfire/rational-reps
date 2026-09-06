@@ -58,6 +58,10 @@ seeds coupled. Numbers below are 5-seed means at d = 3 / 6 / 12 unless stated.
 
 ## Figures (notebook `superposition_analysis.py`)
 
+Every figure has its own p / β / ρ selectors and reads the sweep grid (540 cells × linear, pairs,
+additive) lazily from each run's saved evaluation (`metrics.pt`: logits, representation, readout);
+no model is constructed in the notebook.
+
 Every model is put in one gauge: its logit table over states Λ = E Dᵀ (theory: [Z, φ(Z), 1]·map_rep),
 row-centred, balanced SVD at rank d (`factor_logcond(Λ, rank=d)`, the repo-wide `predicted_geometry`),
 then the first-order vectors E_i of the least-squares fit h(z) ≈ h̄ + Σ E_i z_i to the balanced code.
@@ -80,7 +84,7 @@ balanced to 0.4%). Raw scales are an optimizer artefact.
 
 ## Sweep over sparsity, ladder slope and rank (2026-09-04)
 
-`src/code/sweep_superposition.py`: p ∈ {0.05, 0.15, 0.3, 0.5} × β ∈ {0.25, 0.5, 1.0} × d ∈ {3, 6, 12},
+`src/scripts/sweep_superposition.py`: p ∈ {0.05, 0.15, 0.3, 0.5} × β ∈ {0.25, 0.5, 1.0} × d ∈ {3, 6, 12},
 5 seeds per cell (180 networks, 180 theory solves, cached in `outputs/.../superposition_sweep`).
 Notebook Figs 8a/8b (allocation small multiples) and 9 (score heatmaps; placement on the leverage
 projectors).
@@ -100,6 +104,48 @@ projectors).
 - **Soft-tail slope** is ≈ 2–3 only for sparse features at d ≤ 6 (p ≤ 0.15, β = 0.5: 2.3–3.3); it is
   0.5–1.8 at the reference cell and below 1 at d = 12 everywhere. The slope-2 law is a sparse,
   low-rank statement, not general.
+
+## Correlated features (2026-09-04, in progress)
+
+Pipeline generalised to a logit map: `alpha` may be an (m, m) matrix (`_logit_map`); all stages
+take (W, X) and `whiten(Z)` gives the predictive modes u = z C^{-1/2} with W = diag(α) C^{1/2}
+(`sweep_superposition.modes`). Pair features are residualised on [1, z]. Tests: whitening
+identities, vector/matrix equivalence, exact no-op on the full cube, derivative identities for
+a full map, pair-block orthogonality, oracle test at ρ = 0.6 (m = 16, d = 3), antipodal sign test.
+
+- **Oracle checks (exact additive optimum by biconvex, m = 16, d = 3, n = 4096).** ρ = 0.3:
+  theory CE raw 0.371 vs modes 0.317 (oracle 0.269), placement −0.03 vs +0.38. ρ = 0.6: 0.350 vs
+  0.254 (oracle 0.216), placement −0.21 vs +0.42. Modes win clearly on shared-factor correlation.
+- **Caveat.** A mutually exclusive pair inside iid features (m = 16, d = 3): both coordinates
+  predict the antipodal sign, but raw is closer to the oracle (CE 0.269 vs 0.297; oracle 0.237).
+  The relaxation is basis-dependent; modes are the right basis for shared-factor correlation,
+  which the ρ sweep uses. Open: a basis choice that covers both (e.g. pick the lower completed CE).
+- **Runs (Fig 10a/b): ρ ∈ {0.3, 0.6} at the reference cell, d ∈ {3, 6, 12}, 5 seeds, theory on the
+  modes.** Mode-space allocation transfers (leverage corr 0.96–0.99 at every ρ). Placement
+  (leverage projectors, top 16) falls with correlation: ρ = 0: +0.60 / +0.69 / +0.23 (d = 3 / 6 / 12);
+  ρ = 0.3: +0.06 / +0.19 / +0.16; ρ = 0.6: +0.14 / +0.35 / +0.35. In feature space the trained Grams
+  at ρ = 0.3, 0.6 stay near-diagonal with weak negative overlaps, much like ρ = 0; the theory at
+  ρ = 0.6 adds a positive block among features 5–8 the networks do not have. One-factor
+  equicorrelation is a weak probe of "correlated features align": every feature shares the same
+  factor, so there is no specific pair to align. Block correlation is the sharper test.
+- The ρ = 0 reference numbers are unchanged by the residualised pair block (placement +0.60 / +0.69 /
+  +0.23 vs +0.60 / +0.68 / +0.25 before), so the earlier grid results stand.
+
+## Exact tied-map Fantope program (2026-09-04, tested and shelved)
+
+Replacing the linearised objective (exact CE of the diagonal + aᵀg) by the exact tied-map CE
+E[CE(softmax(A P z))] over the whole Fantope is still one convex program (`tied_map_ce`,
+`fantope_geometry(a=None)`), and its KKT conditions are water filling on the eigenvalues of P.
+But its optimum exploits the relaxation: at the reference cell, d = 3, η jumps from 0.24 to
+1.11, the realised frame's CE is worse (0.333 vs 0.323) and the placement against trained
+collapses (+0.03 vs +0.57). At ρ = 0.6 it lowers the tied CE substantially (0.254 vs 0.313 raw)
+but predicts no orientation either. The linear off-diagonal term is what keeps the linearised
+optimum near the projectors; the pipeline keeps it. Kept as an option for the record.
+
+Also measured: at ρ = 0.6 the trained networks have no consistent orientation across seeds
+(placement self-agreement +0.23 at d = 3, +0.02 at d = 6), so orientation is not a target there;
+allocation is (leverage corr 0.98–0.996 for every variant). The whitened linearised pipeline
+gives the lowest realised CE at ρ = 0.6 (0.196 / 0.123 at d = 3 / 6 vs raw 0.313 / 0.211).
 
 ## What is open
 

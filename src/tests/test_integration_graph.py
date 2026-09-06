@@ -2,6 +2,8 @@
 predicted circle. Marked slow — runs the real Hydra + HuggingFace Trainer path in a subprocess."""
 import glob
 import os
+
+import numpy as np
 import subprocess
 import sys
 
@@ -22,7 +24,7 @@ def _run(module, cache_dir, *overrides):
         "training_kwargs.context_length=24", "training_kwargs.learning_rate=0.003",
         "model_kwargs.model_config.hidden_size=32", "model_kwargs.model_config.num_hidden_layers=2",
         "model_kwargs.model_config.num_attention_heads=2", "model_kwargs.model_config.intermediate_size=64",
-        "eval_kwargs.num_eval_batches=2", "overwrite=true", "hydra.sweep.subdir=single", *overrides,
+        "overwrite=true", "hydra.sweep.subdir=single", *overrides,
     ]
     env = {**os.environ, "CACHE_DIR": str(cache_dir), "WANDB_MODE": "disabled"}
     result = subprocess.run(cmd, cwd=str(here()), env=env, capture_output=True, text=True)
@@ -33,12 +35,17 @@ def _run(module, cache_dir, *overrides):
 def test_ring_transformer_converges_to_predicted_circle(tmp_path):
     _run("src.code.train", tmp_path)
     ckpts = tmp_path / "graph-cooccurrence" / "single" / "checkpoints"
-    final = torch.load(ckpts / "200" / "metrics.pt", weights_only=False)["metrics"]
-    # the learned token embedding should match the closed-form circle (random init ~ 0)
-    assert final["rsa_vs_predicted"] > 0.7, final
-    assert final["cka_vs_predicted"] > 0.7, final
+    saved = torch.load(ckpts / "200" / "metrics.pt", weights_only=False)
+    # the saved representation (last hidden state per item) should match the closed-form circle
+    from src.code.eval import cka, rsa
+    from src.code.geometry import predicted_geometry
+    from src.code.train import init_dataset, resolve_config
+    dataset = init_dataset(resolve_config(["setting=graph", "structure_kwargs.n=12"]))
+    E_pred = predicted_geometry(np.asarray(dataset.conditional, float))
+    rep = saved["extras"]["representation"].numpy()
+    assert rsa(rep, E_pred) > 0.7 and cka(rep, E_pred) > 0.7
 
-    # the standalone eval path also computes representation metrics
+    # the standalone eval path writes the same artifacts
     _run("src.code.eval", tmp_path)
-    reval = torch.load(ckpts / "200" / "metrics.pt", weights_only=False)["metrics"]
-    assert "rsa_vs_predicted" in reval
+    reval = torch.load(ckpts / "200" / "metrics.pt", weights_only=False)
+    assert set(reval["extras"]) == {"logits", "representation", "readout"}

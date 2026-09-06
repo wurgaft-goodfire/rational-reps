@@ -16,15 +16,8 @@ def _(mo):
     mo.md(r"""
     # What is a concept? Instructive figures on the ring
 
-    An environment is a conditional over alternatives; every notion of "concept" is a reading of
-    its centered log factorization $L_c = E\,D$. One space, one invariant:
-    $$ \langle e(i),\, d(x) \rangle = \log \tilde p(x \mid i), $$
-    concepts at the rows of $E$, outcomes at the columns of $D$, axes indexed by the rows of $D$.
-    In the symmetric case $E = D^\top$ up to scale: concept points and outcome prototypes share
-    one circle.
-
-    Environment: a 60-node ring with the **heat** kernel, so each concept's output is a wrapped
-    Gaussian bump.
+    Environments are conditionals over alternatives; every figure reads the centered log
+    factorization $L_c = E\,D$, with $\langle e(i), d(x)\rangle = \log\tilde p(x \mid i)$.
     """)
     return
 
@@ -85,11 +78,9 @@ def _(mo):
     mo.md(r"""
     ## 1. One intrinsic dimension, two linear dimensions
 
-    The ring's latent angle $\theta$ is a single intrinsic dimension, but a linear code needs
-    two: the von Mises kernel factorizes exactly as $L_c = E\,D$ with the $(\cos\theta,
-    \sin\theta)$ pair. Top: the structure, its log-conditional, and the closed-form embedding.
-    Middle: the exact rank-2 factorization. Bottom: an input $z$'s angle → its two linear
-    coordinates → its point on the circle.
+    The ring's angle is one intrinsic dimension, but the linear code needs the
+    $(\cos\theta, \sin\theta)$ pair: structure, log-conditional, factorization, and the dual
+    reading of one input.
     """)
     return
 
@@ -175,18 +166,8 @@ def _(mo):
     mo.md(r"""
     ## 2. Three worlds: the one law as geometry
 
-    $\log p(x \mid i) = \langle e_i, d_x\rangle$, drawn (the SVD checks live in the geometry
-    notebook).
-
-    - **Binary property.** The contrast $u = d_{\mathrm{yes}} - d_{\mathrm{no}}$ is one
-      direction; a concept's log-odds is its projection on $u$. The prototypes' shared component
-      is a gauge the softmax ignores, so the chord between them is the log-odds axis.
-    - **Line (temperature).** Gaussian tuning $\log p(x \mid \theta) = -(\theta - \mu_x)^2/2 +
-      \mathrm{const}(\theta)$ factorizes exactly in 2-D: embeddings stay the straight line
-      $e_\theta = (\theta, 1)$ and the curvature moves into the decoder parabola
-      $d_x = (\mu_x, -\mu_x^2/2)$.
-    - **Circle (time of week).** Von Mises tuning; symmetry makes the normalizer constant, so
-      $e = d$ up to scale — concentric circles, the self-legible symmetric world.
+    Binary property, temperature line, time-of-week circle. Each panel draws $e$ and $d$ with
+    its kernel above; logits are the dot products.
     """)
     return
 
@@ -347,13 +328,9 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 2b. The same three worlds, with the readout's decision regions
+    ## 2b. The readout's decision regions
 
-    Logits are linear in the code with no bias, so every token's argmax region is a **cone from
-    the origin**: angle decides, radius only sharpens the softmax. Binary: two half-planes split
-    $\perp u$, the chord crossing the boundary at its midpoint. Line: five cones; the embedding
-    line crosses their boundaries at $\theta = (\mu_i + \mu_j)/2$. Circle: seven equal sectors,
-    the Voronoi of the day decoders.
+    The same three worlds with each token's argmax region: cones from the origin.
     """)
     return
 
@@ -453,7 +430,7 @@ def _(
     frame(_a, "circle: seven equal sectors", (-2.25, 2.25), (-1.85, 2.1))
     fig_regions.tight_layout()
     plot_utils.save_figure(fig_regions, FIGURES / "concepts_decision_regions.png")
-    return argmax_regions, cols5, hue7, region_bg, yes_no
+    return argmax_regions, cols5, hue7, region_bg
 
 
 @app.cell(hide_code=True)
@@ -461,12 +438,8 @@ def _(mo):
     mo.md(r"""
     ## 2c. The same three worlds, from trained networks
 
-    The centered kernels are rank $\le 2$ (binary is rank 1: two outcomes leave only the
-    contrast), so a linear net with a 2-D code is exact. Each panel draws the trained network's
-    own embedding rows and readout rows over its argmax regions, rotated/reflected into the
-    canonical position of §2 (the isometries the loss leaves free). The binary decoder pair
-    trains to $\pm u$ — the shared offset drawn in §2 is gauge, and weight decay removes it —
-    and the plane's second coordinate is loss-flat.
+    Binary features, temperature line, time-of-week circle from trained 2-D linear nets, rotated
+    and reflected into canonical position.
     """)
     return
 
@@ -480,21 +453,28 @@ def _(
     train_inline,
 ):
     WORLDS = {
-        # words -> binary features (the superposition setting, dense p and full rank)
-        "binary": {"structure": "feature_cube", "N": 12, "m": 2, "p": 0.5, "scale": 3.0, "seed": 0},
         # continuous latents, coarse outcomes: 21 temperatures -> 5 adjectives, 28 times -> 7 days
         "line": {"structure": "chain", "cooccurrence": "gaussian", "n": 21, "m": 5, "gamma": 0.05},
         "week": {"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 1.5},
     }
     learned = {}
     for _name, _sp in WORLDS.items():
-        # the centered kernels are rank <= 2, so a 2-D code loses nothing
+        # the centered kernels are rank 2, so a 2-D code loses nothing
         _model, _ds, _ev, _, _ = train_inline(graph_overrides(_sp) +
                                               ["runner=linear", "model_kwargs.model_config.embed_dim=2"])
-        _E = _ev.input_code(_model, project=False)     # the raw 2-D plane: D is drawn in it too
+        _E = _ev.representation(_model, project=False)     # the raw 2-D plane: D is drawn in it too
         _D = _model.readout.detach().cpu().numpy()
         print(f"{_name:8s} CKA={cka(_E, predicted_geometry(graph_conditional(_sp))):.3f}")
         learned[_name] = {"E": _E, "D": _D}
+
+    # the LRH / binary-property world: words with 2 binary features, read out word->word (heat kernel);
+    # additive kernel -> centered rank 2, so a 2-D code is exact
+    CUBE2 = {"structure": "hypercube", "cooccurrence": "heat", "n": 2, "gamma": 0.8}
+    _model, _ds, _ev, _, _ = train_inline(graph_overrides(CUBE2) +
+                                          ["runner=linear", "model_kwargs.model_config.embed_dim=2"])
+    learned["cube"] = {"E": _ev.representation(_model, project=False),
+                       "D": _model.readout.detach().cpu().numpy()}
+    print(f"cube     CKA={cka(learned['cube']['E'], predicted_geometry(graph_conditional(CUBE2))):.3f}")
     return (learned,)
 
 
@@ -506,6 +486,7 @@ def _(
     c_red,
     code_axes,
     cols5,
+    cube_codes,
     days,
     frame,
     hue7,
@@ -515,7 +496,6 @@ def _(
     plt,
     region_bg,
     vec,
-    yes_no,
 ):
     def _rot(a):
         _c, _s = np.cos(a), np.sin(a)
@@ -523,15 +503,17 @@ def _(
 
     def _gauge(E, D, world):
         """Rotate/reflect the learned plane into canonical position (the isometries the loss leaves)."""
-        if world == "binary":                          # the contrast d_f1 - d_f2 on +x
-            _u = D[0] - D[1]
-            R = _rot(-np.arctan2(_u[1], _u[0]))
+        if world == "cube":                            # feature-0 flip horizontal, feature-1 up
+            _f0 = (E[1] - E[0] + E[3] - E[2]) / 2
+            R = _rot(-np.arctan2(_f0[1], _f0[0]))
         elif world == "line":                          # the embedding line horizontal
             _v = np.linalg.svd(E - E.mean(0), full_matrices=False)[2][0]
             R = _rot(-np.arctan2(_v[1], _v[0]))
         else:                                          # week: Monday's decoder at the top
             R = _rot(np.pi / 2 - np.arctan2(D[0, 1], D[0, 0]))
         E, D = E @ R.T, D @ R.T
+        if world == "cube" and (E[2] - E[0] + E[3] - E[1])[1] < 0:   # feature-1 upward
+            E, D = E * [1, -1], D * [1, -1]
         if world == "line":
             if E[-1, 0] < E[0, 0]:                     # cold -> hot rightward
                 E, D = E * [-1, 1], D * [-1, 1]
@@ -543,20 +525,28 @@ def _(
 
     fig_learned, _ax = plt.subplots(1, 3, figsize=(19.5, 6))
 
-    # binary: words on the log-odds axis; the second coordinate is loss-flat
+    # binary features (LRH): 4 words at the square corners; flipping a feature adds the same vector
     _a = _ax[0]
-    _E, _D = _gauge(learned["binary"]["E"], learned["binary"]["D"], "binary")
-    _r = 1.3 * max(np.abs(_E).max(), np.abs(_D).max())
-    region_bg(_a, *argmax_regions(_D.T, (-_r, _r), (-_r, _r)), yes_no, fade=0.16)
-    code_axes(_a, 0.95 * _r, -0.95 * _r, 0.95 * _r)
-    for _d, _lab, _dy in [(_D[0], r"$d_{f_1}$", 0.1), (_D[1], r"$d_{f_2}$", -0.1)]:
-        vec(_a, _d)
-        _a.annotate(_lab, _d * 1.2 + [0, _dy * _r], fontsize=12.5, ha="center", va="center", color="0.3")
-    _a.scatter(*_E.T, c=np.arange(len(_E)), cmap=plot_utils.FIG.item_cmap,
-               s=48, zorder=4, edgecolor="white", lw=0.7)
-    _a.text(0, -0.85 * _r, r"log-odds $f_1\!:\!f_2$ = x coordinate", fontsize=11.5,
-            ha="center", color="0.35")
-    frame(_a, "binary: trained words on the log-odds axis", (-_r, _r), (-_r, _r))
+    _E, _D = _gauge(learned["cube"]["E"], learned["cube"]["D"], "cube")
+    _r = 1.35 * max(np.abs(_E).max(), np.abs(_D).max())
+    _col4 = plot_utils.FIG.item_cmap(np.linspace(0.15, 0.85, 4))
+    region_bg(_a, *argmax_regions(_D.T, (-_r, _r), (-_r, _r)), _col4, fade=0.18)
+    code_axes(_a, 0.9 * _r, -0.9 * _r, 0.9 * _r)
+    _cf = [plot_utils.FIG.colors["blue"], plot_utils.FIG.colors["orange"]]
+    _edges = {0: [(0, 1), (2, 3)], 1: [(0, 2), (1, 3)]}                # bit k: pairs it connects
+    for _k, _prs in _edges.items():
+        for _i, _j in _prs:
+            _a.annotate("", xy=_E[_j], xytext=_E[_i],
+                        arrowprops=dict(arrowstyle="->", lw=2.4, color=_cf[_k]))
+    _a.annotate(r"flip $f_1$", (_E[0] + _E[1]) / 2 + [0, -0.09 * _r], color=_cf[0],
+                fontsize=12, ha="center", va="top")
+    _a.annotate(r"flip $f_2$", (_E[0] + _E[2]) / 2 + [-0.1 * _r, 0], color=_cf[1],
+                fontsize=12, ha="right", va="center")
+    _a.scatter(*_E.T, s=180, facecolor="white", edgecolor="0.2", lw=1.6, zorder=5)
+    for _i, _z in enumerate(cube_codes(2)):
+        _a.annotate("".join(str(int(_b)) for _b in _z), _E[_i], fontsize=10, color="0.2",
+                    ha="center", va="center", zorder=6)
+    frame(_a, "binary features: flipping one adds a vector (LRH)", (-_r, _r), (-_r, _r))
 
     # line: embeddings on an affine line crossing the five cones in order
     _a = _ax[1]
@@ -602,15 +592,10 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 3. Many binary features: LRH is the additive special case
+    ## 3. Many binary features: linear analogies
 
-    The hypercube with the **heat** kernel makes the log-conditional additive over bits,
-    $L(z, x) = \sum_k a_k z_k x_k$, so the optimal code is one direction per feature:
-    flipping bit $k$ adds the same vector $2\sqrt{a_k}\,e_k$ *whatever the other bits are*.
-    That is the linear representation hypothesis — parallel analogy edges — recovered as the
-    special case of an additive kernel. The oracle's twelve edges come in three exactly
-    parallel quadruples; a trained model's should be near-parallel within a bit and
-    near-orthogonal across bits.
+    Hypercube with the heat kernel: flipping bit $k$ adds the same vector whatever the other
+    bits are. Oracle beside the trained model.
     """)
     return
 
@@ -634,7 +619,8 @@ def _(
 
     _model, _ds, _ev, _, _ = train_inline(graph_overrides(CUBE) +
                                           ["runner=linear", f"model_kwargs.model_config.embed_dim={NBITS}"])
-    E_cube_hat = _ev.input_code(_model)
+    E_cube_hat = _ev.representation(_model)
+    D_cube_hat = _model.readout.detach().cpu().numpy()
     print(f"hypercube CKA(learned, oracle) = {cka(E_cube_hat, E_cube):.3f}")
 
     def analogy_vectors(E, k):
@@ -654,7 +640,7 @@ def _(
     for _name, _e in [("oracle", E_cube), ("learned", E_cube_hat)]:
         _w, _x = cosine_stats(_e)
         print(f"{_name:8s} analogy edges: within-bit cos = {_w:.3f}   across-bit |cos| = {_x:.3f}")
-    return D_cube, E_cube, E_cube_hat, NBITS, Z_cube, analogy_vectors
+    return D_cube_hat, E_cube, E_cube_hat, NBITS, Z_cube, analogy_vectors
 
 
 @app.cell
@@ -699,7 +685,7 @@ def _(
         frame(_a, _title, (-_m, _m), (-_m, _m))
     fig_cube.tight_layout()
     plot_utils.save_figure(fig_cube, FIGURES / "concepts_hypercube_analogies.png")
-    return (P_cube,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -707,25 +693,9 @@ def _(mo):
     mo.md(r"""
     ## 4. Uncertainty is location in the space
 
-    Mixing codes is exact log-linear pooling: for $e_w = \sum_z w_z\, e(z)$,
-    $$ e_w \cdot d_x = \sum_z w_z \log \tilde p(x \mid z)
-       \;\;\Longrightarrow\;\; \hat p_w(x) \propto \prod_z p(x \mid z)^{w_z}. $$
-    The code plane is the natural-parameter space of the outcome family; the item embeddings sit
-    on a fixed-confidence shell inside it, and a belief lives at its pooled code.
-
-    - **Cube.** Belief over one feature slides the code along that feature's analogy edge — a
-      chord far from the origin, offset by the other features' coordinates; the midpoint is
-      maximal feature uncertainty. Because the code is linear in $z$, it carries only the
-      per-feature marginals: feature correlations are invisible.
-    - **Line.** The embedding is affine in $\theta$, so pooling collapses to the mean: every
-      belief with the same mean lands on the same on-shell point. The confidence axis still
-      exists — the second coordinate scales the quadratic term, the predictive's precision —
-      and the Bayes predictive sits below the shell at $s = 1 - \gamma\,\mathrm{Var}(\theta)$
-      (variance of the belief, tilted by the outcome normalizer; the tilt vanishes on
-      homogeneous worlds). Mixing embeddings never reaches it; only evidence does — the
-      inference notebook's (count, evidence) plane is exactly this axis.
-    - **Circle.** The shell is curved, so pooling leaves it automatically: spread shortens the
-      resultant, radius = von Mises concentration, the center = uniform.
+    Mixing codes is log-linear pooling. Cube: belief over one feature slides along its analogy
+    edge. Line: pooling collapses to the mean; the Bayes predictive sits below the shell.
+    Circle: pooling walks rim $\to$ center.
     """)
     return
 
@@ -733,14 +703,14 @@ def _(mo):
 @app.cell
 def _(
     D,
-    D_cube,
+    D_cube_hat,
     E,
-    E_cube,
+    E_cube_hat,
     FIGURES,
     L,
     NBITS,
-    P_cube,
     Z_cube,
+    analogy_vectors,
     cols5,
     frame,
     np,
@@ -754,33 +724,38 @@ def _(
 
     fig_unc, _ax = plt.subplots(1, 3, figsize=(17, 5.4))
 
-    # cube: belief over bit 2 walks the analogy edge 000 -> 001, far from the origin
+    # cube (trained): belief over one feature slides along its analogy edge, the same
+    # direction at every context (LRH); readout of the chord = geometric pool of the endpoints
     _a = _ax[0]
-    _XY = E_cube @ P_cube
-    for _k in range(NBITS):
+    _Uh = np.stack([analogy_vectors(E_cube_hat, _k).mean(0) for _k in range(NBITS)])
+    _Uh /= np.linalg.norm(_Uh, axis=1, keepdims=True)
+    _Ph = np.stack([_Uh[0] + 0.42 * _Uh[2], _Uh[1] + 0.28 * _Uh[2]]).T    # axonometric from trained dirs
+    _XY = E_cube_hat @ _Ph
+    _bit = 2                                            # the feature whose belief we sweep
+    _lo = np.flatnonzero(Z_cube[:, _bit] == 0)
+    for _k in range(NBITS):                             # full wireframe, light
         for _i in np.flatnonzero(Z_cube[:, _k] == 0):
-            _a.plot(*np.stack([_XY[_i], _XY[_i + 2 ** _k]]).T, color="0.85", lw=1.4, zorder=1)
-    _a.scatter(*_XY.T, c="0.4", s=28, zorder=3)
-    for _i, _z in enumerate(Z_cube):                   # vertex labels pushed outward, off the edges
+            _a.plot(*np.stack([_XY[_i], _XY[_i + 2 ** _k]]).T, color="0.88", lw=1.2, zorder=1)
+    for _i in _lo:                                      # the parallel edge family of this feature
+        _a.plot(*np.stack([_XY[_i], _XY[_i + 2 ** _bit]]).T, color="0.62", lw=1.5, zorder=2)
+    _a.scatter(*_XY.T, c="0.35", s=26, zorder=3)
+    for _i, _z in enumerate(Z_cube):
         _o = _XY[_i] - _XY.mean(0)
         _a.annotate("".join(str(int(_b)) for _b in _z), _XY[_i] + 0.16 * _o / np.linalg.norm(_o),
-                    fontsize=9.5, color="0.55", ha="center", va="center")
+                    fontsize=9, color="0.55", ha="center", va="center")
     _bs = np.linspace(0, 1, 11)
-    _chord = np.outer(1 - _bs, E_cube[0]) + np.outer(_bs, E_cube[4])
-    _a.scatter(*(_chord @ P_cube).T, c=_bs, cmap="viridis", s=46, zorder=4)
-    _a.scatter([0], [0], c="0.3", marker="+", s=90, zorder=4)
-    _a.annotate("origin", (0, 0), (0.07, -0.16), fontsize=10, color="0.45")
-    _a.annotate(r"$p(f_3{=}1)$: 0 $\to$ 1", (_chord[5] @ P_cube), (_chord[5] @ P_cube) + [0.2, -0.14],
+    _v0, _v1 = 0, 2 ** _bit                             # 000 -> 001, one context
+    _chord = np.outer(1 - _bs, E_cube_hat[_v0]) + np.outer(_bs, E_cube_hat[_v1])
+    _a.scatter(*(_chord @ _Ph).T, c=_bs, cmap="viridis", s=48, zorder=4)
+    _a.annotate(r"$p(f_3{=}1)$: 0 $\to$ 1", (_chord[6] @ _Ph), (_chord[6] @ _Ph) + [0.18, -0.12],
                 fontsize=10.5, color="0.3", va="top")
-    # the chord's readout is the exact geometric pool of the two vertex conditionals
-    _p0, _p1 = (np.exp(_l) / np.exp(_l).sum() for _l in (E_cube[0] @ D_cube, E_cube[4] @ D_cube))
-    _pool = _p0[None] ** (1 - _bs[:, None]) * _p1[None] ** _bs[:, None]
-    _pool /= _pool.sum(1, keepdims=True)
-    _lc = _chord @ D_cube
-    _pc = np.exp(_lc - _lc.max(1, keepdims=True)); _pc /= _pc.sum(1, keepdims=True)
-    print(f"cube: max |softmax(chord) - geometric pool| = {np.abs(_pc - _pool).max():.2e}")
+    _lg0, _lg1 = E_cube_hat[_v0] @ D_cube_hat.T, E_cube_hat[_v1] @ D_cube_hat.T
+    _p0, _p1 = (np.exp(_l - _l.max()) / np.exp(_l - _l.max()).sum() for _l in (_lg0, _lg1))
+    _pool = _p0[None] ** (1 - _bs[:, None]) * _p1[None] ** _bs[:, None]; _pool /= _pool.sum(1, keepdims=True)
+    _lc = _chord @ D_cube_hat.T; _pc = np.exp(_lc - _lc.max(1, keepdims=True)); _pc /= _pc.sum(1, keepdims=True)
+    print(f"cube (trained): max |softmax(chord) - geometric pool| = {np.abs(_pc - _pool).max():.2e}")
     _m = 1.3 * np.abs(_XY).max()
-    frame(_a, "cube: belief over one feature = its analogy edge", (-_m, _m), (-_m, _m))
+    frame(_a, "cube: belief over a feature = its analogy edge", (-_m, _m), (-_m, _m))
 
     # line: the (mean, precision) plane; items on the unit-precision shell s = 1
     _a = _ax[1]

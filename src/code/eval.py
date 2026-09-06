@@ -1,6 +1,5 @@
 import os
 import sys
-from dataclasses import dataclass
 
 import hydra
 import numpy as np
@@ -18,8 +17,7 @@ load_dotenv()
 from .config import Config
 from .models import load_model, MODEL_CLASSES
 from .data import init_dataset
-from .analysis_utils import input_code
-from .geometry import predicted_geometry
+from .analysis_utils import decoder_weights, representation
 
 
 #########################
@@ -101,176 +99,52 @@ def rsa(X, Y):
     denom = np.sqrt((rx ** 2).sum() * (ry ** 2).sum())
     return float((rx * ry).sum() / denom) if denom > 0 else 0.0
 
-# Config fields that must match for a cached eval to be reusable. These determine
-# the fixed eval batches (which task distributions are sampled and how). Keep this
-# in sync with anything EvalComponents.build reads off the dataset/config.
-_CACHE_MATCH_KEYS = ("setting", "random_seed")
-
-
-def _find_cached_eval_cell(cache_dir: str, config) -> str:
-    """Locate the eval-cache subdir whose resolved config matches `config` on
-    ``_CACHE_MATCH_KEYS``. `cache_dir` may be a single run (self-match) or a sweep
-    root with per-cell subdirs. Fails loudly if nothing matches."""
-    if not os.path.isdir(cache_dir):
-        raise FileNotFoundError(f"Eval cache dir does not exist: {cache_dir}")
-    candidates = []
-    if os.path.isfile(os.path.join(cache_dir, "eval_batches.pt")):
-        candidates.append(cache_dir)
-    else:
-        for entry in sorted(os.listdir(cache_dir)):
-            sub = os.path.join(cache_dir, entry)
-            if os.path.isfile(os.path.join(sub, "eval_batches.pt")):
-                candidates.append(sub)
-    live = {k: config.cfg.get(k) for k in _CACHE_MATCH_KEYS}
-    for cell in candidates:
-        cached = OmegaConf.load(os.path.join(cell, "config_resolved.yaml"))
-        if all(cached.get(k) == live[k] for k in _CACHE_MATCH_KEYS):
-            return cell
-    raise FileNotFoundError(f"No eval cache cell in {cache_dir} matches {live}")
-
-
-#########################
-# EvalComponents: the deterministic, model-independent eval setup, built once.
-#########################
-
-@dataclass
-class EvalComponents:
-    batches: list  # fixed pre-sampled eval batches (on CPU)
-    device: torch.device
-
-    @classmethod
-    def build(cls, config, dataset) -> "EvalComponents":
-        """Pre-sample a fixed set of eval batches once. Sampling is deterministic
-        given the seed, so every checkpoint/step is scored on the same batches."""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        batches = []
-        for _ in range(config.eval_kwargs.num_eval_batches):
-            batch = dataset.__getitem__()
-            if hasattr(dataset, "optimal_predictions"):           # Bayes targets, computed on demand
-                batch["eval_labels"] = dataset.optimal_predictions(batch["input_ids"])
-            batches.append({k: v.cpu() for k, v in batch.items()})
-        return cls(batches=batches, device=device)
-
-    def save(self, path: str):
-        torch.save({"batches": self.batches}, path)
-
-
 #########################
 # Evaluator: the only public interface for evaluation.
 #########################
 
 class Evaluator:
-    """Owns all evaluation logic. Build once; call evaluate(model) per checkpoint/step. Works for
-    any model exposing a dict output with `.output_key` logits — trained transformers, the
-    from-scratch model ladder, and pretrained LLMs alike."""
+    """Evaluate a model on every input the task defines, against the exact (Bayes) outcome
+    distribution of each. Build once; call evaluate(model) per checkpoint/step. Works for any
+    model exposing a dict output with `.output_key` logits and the ladder's ``hidden_states``
+    contract (the last hidden state at the last position is what the readout reads)."""
 
     def __init__(self, config, dataset):
         self.config = config
         self.dataset = dataset
-        self.c = EvalComponents.build(config, dataset)
-        self.predicted_E = self._build_predicted_geometry()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.inputs = dataset.model_inputs().cpu()                 # (n, arity [+1]), every input once
+        # the exact target after the input: appended dummy token, then the last predicted position
+        padded = torch.cat([self.inputs, torch.zeros_like(self.inputs[:, :1])], dim=1)
+        targets = dataset.optimal_predictions(padded.to(dataset.device))
+        self.targets = (targets[:, -1] if targets.ndim == 3 else targets).float().cpu()   # (n, C)
 
-    def _build_predicted_geometry(self):
-        """Closed-form predicted code E, built once from the dataset's conditional (if it has
-        one). None if the dataset exposes no conditional -> no representation metrics."""
-        conditional = getattr(self.dataset, "conditional", None)
-        if conditional is None:
-            return None
-        return predicted_geometry(conditional)
-
-    @classmethod
-    def from_cache(cls, config, dataset, cache_dir):
-        """Reuse a prior eval run's fixed batches from `cache_dir` instead of
-        re-sampling, so online and standalone eval score on identical batches.
-        `cache_dir` may be a single run or a sweep root (config-matched per cell)."""
-        cell = _find_cached_eval_cell(cache_dir, config)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        cached = torch.load(os.path.join(cell, "eval_batches.pt"), weights_only=False)
-        self = cls.__new__(cls)
-        self.config = config
-        self.dataset = dataset
-        self.c = EvalComponents(batches=cached["batches"], device=device)
-        self.predicted_E = self._build_predicted_geometry()
-        return self
-
-    # ── public interface ──────────────────────────────────────────────────
-
-    def evaluate(self, model, output_hidden_states=None) -> tuple[dict, dict]:
-        """Evaluate `model` on the fixed batches. Returns (metrics, extras): `metrics` is a flat
-        {key: scalar} dict ready for wandb; `extras` holds the heavy per-example tensors
-        (all_loss, hidden_states) for optional disk saving."""
-        if output_hidden_states is None:
-            output_hidden_states = self.config.eval_kwargs.output_hidden_states
+    def evaluate(self, model) -> tuple[dict, dict]:
+        """Returns (metrics, extras): ``metrics`` is {"loss": KL(model || true) over the inputs};
+        ``extras`` holds what analysis reads instead of the model: ``logits`` (n, C) at the
+        outcome slot, ``representation`` (n, width) the last hidden state at the last position
+        (None for a readout that reads no vector), ``readout`` (C, width)."""
         if hasattr(model, "eval"):
             model.eval()
-
-        aggregated = self._eval_batches(model, output_hidden_states)
-        metrics = {k: v for k, v in aggregated.items() if isinstance(v, (int, float))}
-        extras = {k: v for k, v in aggregated.items() if not isinstance(v, (int, float))}
-
-        metrics.update(self._representation_metrics(model))
-
+        with torch.no_grad():
+            out = model(self.inputs.to(self.device), output_hidden_states=True)
+        logits = out[model.output_key].float().cpu()
+        if logits.ndim == 3:
+            logits = logits[:, -1]                                 # the position predicting the outcome
+        if logits.shape[-1] == self.dataset.vocab_size:            # vocab-wide head -> outcome tokens
+            logits = logits[:, self.dataset.label_tokens]
+        metrics = self.dataset.compute_metrics((logits, self.targets), return_all=False)
+        readout = getattr(model, "readout_matrix", None)
+        rep = out["hidden_states"][-1][:, -1].float().cpu() if readout is not None and "hidden_states" in out else None
+        extras = {"logits": logits, "representation": rep,
+                  "readout": None if readout is None else decoder_weights(model, self.dataset)}
         if hasattr(model, "train"):
             model.train()
         return metrics, extras
 
-    def _representation_metrics(self, model) -> dict:
-        """CKA/RSA of the model's per-item pre-decode representation vs the predicted geometry.
-        Empty unless the dataset has a conditional and a representation can be extracted."""
-        if self.predicted_E is None:
-            return {}
-        reps = self.input_code(model)
-        if reps is None:
-            return {}
-        return {"cka_vs_predicted": cka(reps, self.predicted_E),
-                "rsa_vs_predicted": rsa(reps, self.predicted_E)}
-
-    def input_code(self, model, project=True):
-        """The pre-decode code of every input the task defines — the one accessor the metrics and
-        the notebooks share. ``None`` when the architecture exposes no vector code."""
-        if not hasattr(model, "input_reps"):
-            return None
-        return input_code(model, self.dataset, project=project)
-
-    # ── private helpers ───────────────────────────────────────────────────
-
-    def _eval_batches(self, model, output_hidden_states) -> dict:
-        per_batch = []
-        with torch.no_grad():
-            for batch in self.c.batches:
-                outputs, eval_labels, hidden_states = self._eval_batch(model, batch, output_hidden_states)
-                batch_metrics = dict(self.dataset.compute_metrics((outputs, eval_labels), return_all=True))
-                if hidden_states is not None:
-                    batch_metrics["hidden_states"] = hidden_states
-                per_batch.append(batch_metrics)
-        return self._aggregate_metrics(per_batch)
-
-    def _eval_batch(self, model, batch, output_hidden_states):
-        all_outputs = model(batch["input_ids"].to(self.c.device), output_hidden_states=output_hidden_states)
-        outputs = all_outputs[model.output_key].cpu()
-        # A vocab-wide head (causal LM) is mapped down to the dataset's outcome tokens.
-        if outputs.shape[-1] == self.dataset.vocab_size:
-            outputs = outputs[..., self.dataset.label_tokens]
-        eval_labels = batch.get("eval_labels", batch["labels"]).cpu()
-        hidden_states = (
-            torch.stack([h.cpu() for h in all_outputs["hidden_states"]], dim=1)
-            if output_hidden_states else None
-        )
-        return outputs, eval_labels, hidden_states
-
-    @staticmethod
-    def _aggregate_metrics(per_batch: list) -> dict:
-        """Average scalars and concatenate tensors/lists across batches."""
-        aggregated = {}
-        for key in per_batch[0].keys():
-            first = per_batch[0][key]
-            if isinstance(first, (int, float)):
-                aggregated[key] = sum(b[key] for b in per_batch) / len(per_batch)
-            elif isinstance(first, (list, torch.Tensor)):
-                aggregated[key] = torch.cat([b[key] for b in per_batch], dim=0)
-            elif isinstance(first, dict):
-                aggregated[key] = Evaluator._aggregate_metrics([b[key] for b in per_batch])
-        return aggregated
+    def representation(self, model, project=True):
+        """The representation of every input (`analysis_utils.representation`); None without one."""
+        return representation(model, self.dataset, project=project)
 
 
 #########################
@@ -287,9 +161,6 @@ def run_evaluation(cfg: DictConfig) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def build_evaluator(dataset):
-        cache_dir = config.get("eval_cache_dir")
-        if cache_dir:
-            return Evaluator.from_cache(config, dataset, cache_dir)
         return Evaluator(config, dataset)
 
     if model_type in MODEL_CLASSES:
@@ -319,8 +190,7 @@ def run_evaluation(cfg: DictConfig) -> None:
         if tokenizer is not None:
             config.tokenizer = tokenizer  # instance attr; data.py reads it via hasattr
         dataset = init_dataset(config, overwrite_data=cfg.overwrite)
-        evaluator = build_evaluator(dataset)
-        evaluator.c.save(os.path.join(config.run_dir, "eval_batches.pt"))
+        evaluator = Evaluator(config, dataset)
         metrics, extras = evaluator.evaluate(model)
         torch.save({"metrics": metrics, "extras": extras, "step": None},
                    os.path.join(config.output_dir, "metrics.pt"))

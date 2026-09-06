@@ -1,7 +1,7 @@
-"""The representation-comparison path in the Evaluator, exercised deterministically (no training).
+"""The representation the Evaluator saves, compared with the predicted geometry outside it.
 
-A model whose embedding *is* the predicted geometry must score CKA/RSA ~ 1; a shuffled embedding
-must score lower. Also guards the gating: datasets without a `.conditional` emit no rep metrics.
+A model whose representation *is* the predicted geometry must score CKA/RSA ~ 1 against it; a shuffled
+representation must score lower; a readout that reads no vector yields none.
 """
 import numpy as np
 import pytest
@@ -12,8 +12,7 @@ from omegaconf import OmegaConf
 from src.code.config import Config
 from src.code.data import KernelDataset
 from src.code.eval import Evaluator, cka, rsa
-from src.code.geometry import factor_logcond
-from src.code.geometry import factor_logcond
+from src.code.geometry import factor_logcond, predicted_geometry
 
 
 def _config(n=16):
@@ -22,29 +21,24 @@ def _config(n=16):
         "gamma": 0.8, "sample_mode": "pointwise", "random_seed": 0,
         "model_kwargs": {"model_type": "linear"},
         "training_kwargs": {"batch_size": 8, "context_length": 6},
-        "eval_kwargs": {"num_eval_batches": 2, "output_hidden_states": False},
     })
     return Config(cfg)
 
 
 class _EmbModel:
-    """Fake model exposing a fixed embedding table + uniform logits over outcomes."""
+    """Fake model in the ladder's contract: a fixed embedding table read by a fixed readout."""
     output_key = "logits"
 
-    def __init__(self, weight, readout, num_dims, device="cpu"):
-        self._emb = nn.Embedding.from_pretrained(
-            torch.tensor(weight, dtype=torch.float64)).to(device)   # where the dataset's ids live
-        self.num_dims = num_dims
-        self.readout = torch.tensor(readout)      # logits = code @ readout.T, as in every model
-
-    def get_input_embeddings(self):
-        return self._emb
-
-    def input_reps(self, input_ids):
-        return self._emb(input_ids[:, -1])                   # the item's embedding, pre-decode
+    def __init__(self, weight, readout, device="cpu"):
+        self._emb = nn.Embedding.from_pretrained(torch.tensor(weight, dtype=torch.float32)).to(device)
+        self.readout_matrix = torch.tensor(readout, dtype=torch.float32)
 
     def __call__(self, input_ids, output_hidden_states=False):
-        return {"logits": torch.zeros(input_ids.shape[0], self.num_dims)}
+        h = self._emb(input_ids[:, -1:])                                  # (B, 1, d)
+        out = {"logits": h[:, -1] @ self.readout_matrix.T.to(h.device)}
+        if output_hidden_states:
+            out["hidden_states"] = (h,)
+        return out
 
 
 def test_metrics_helpers_are_invariant_and_bounded():
@@ -54,38 +48,37 @@ def test_metrics_helpers_are_invariant_and_bounded():
     assert cka(X, X @ np.linalg.qr(np.random.default_rng(1).standard_normal((3, 3)))[0]) > 0.99
 
 
-def test_evaluator_scores_matching_embedding_near_one_and_shuffled_lower():
+def test_saved_representation_of_the_predicted_geometry_scores_one_and_shuffled_lower():
     config = _config(n=16)
     dataset = KernelDataset(config)
     evaluator = Evaluator(config, dataset)
-    # the predicted factorization: E is the code, D the decoder that turns it into the target
     _, E, D, _ = factor_logcond(np.asarray(dataset.conditional, float))
+    E_pred = predicted_geometry(np.asarray(dataset.conditional, float))
 
     vocab, d = dataset.vocab_size, E.shape[1]
     weight = np.zeros((vocab, d)); weight[dataset.item_tokens.numpy()] = E
-    metrics, _ = evaluator.evaluate(_EmbModel(weight, D.T, dataset.num_dims, dataset.device))
-    assert metrics["rsa_vs_predicted"] > 0.99
-    assert metrics["cka_vs_predicted"] > 0.99
+    metrics, extras = evaluator.evaluate(_EmbModel(weight, D.T, dataset.device))
+    assert metrics["loss"] < 1e-6                                       # the exact factorization
+    rep = extras["representation"].numpy()
+    assert cka(rep, E_pred) > 0.99 and rsa(rep, E_pred) > 0.99
 
     shuffled = weight.copy()
-    perm = np.random.default_rng(0).permutation(16)
-    shuffled[dataset.item_tokens.numpy()] = E[perm]
-    m2, _ = evaluator.evaluate(_EmbModel(shuffled, D.T, dataset.num_dims, dataset.device))
-    assert m2["rsa_vs_predicted"] < metrics["rsa_vs_predicted"]
+    shuffled[dataset.item_tokens.numpy()] = E[np.random.default_rng(0).permutation(16)]
+    _, ex2 = evaluator.evaluate(_EmbModel(shuffled, D.T, dataset.device))
+    assert rsa(ex2["representation"].numpy(), E_pred) < 0.99
 
 
-def test_no_rep_metrics_when_model_exposes_no_code():
+def test_no_representation_is_saved_when_the_readout_reads_none():
     config = _config(n=16)
     dataset = KernelDataset(config)
-    evaluator = Evaluator(config, dataset)
 
-    class _NoCode:                                           # no input_reps -> no geometry to score
+    class _NoCode:                                           # no readout_matrix -> no vector representation
         output_key = "logits"
         def __call__(self, input_ids, output_hidden_states=False):
             return {"logits": torch.zeros(input_ids.shape[0], dataset.num_dims)}
 
-    metrics, _ = evaluator.evaluate(_NoCode())
-    assert "rsa_vs_predicted" not in metrics
+    metrics, extras = Evaluator(config, dataset).evaluate(_NoCode())
+    assert set(metrics) == {"loss"} and extras["representation"] is None and extras["readout"] is None
 
 
 def test_cca_is_blind_to_an_invertible_map_where_cka_is_not():

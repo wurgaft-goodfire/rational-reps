@@ -38,15 +38,7 @@ class StepMetricsCallback(TrainerCallback):
         self.step_interval = step_interval
         self.use_wandb = config.cfg.wandb.enabled
         self.history = []  # in-memory {step, **metrics} log, returned for notebook use
-        # Build the evaluator once (fixed batches), reusing a cached eval if configured.
-        cache_dir = config.get("eval_cache_dir")
-        if cache_dir:
-            self.evaluator = Evaluator.from_cache(config, trainer.train_dataset, cache_dir)
-        else:
-            self.evaluator = Evaluator(config, trainer.train_dataset)
-            # Persist the fixed batches so a later standalone eval (eval_cache_dir)
-            # can score checkpoints on the exact same batches.
-            self.evaluator.c.save(os.path.join(config.run_dir, "eval_batches.pt"))
+        self.evaluator = Evaluator(config, trainer.train_dataset)   # every input, exact targets
 
     def on_step_end(self, args, state, control, **kwargs):
         final = state.global_step >= state.max_steps

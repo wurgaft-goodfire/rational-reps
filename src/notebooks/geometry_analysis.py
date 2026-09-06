@@ -73,7 +73,7 @@ def _(
     predicted_geometry,
     train_inline,
 ):
-    from src.code.analysis_utils import input_code
+    from src.code.analysis_utils import representation
 
     ITEM_CMAP = plot_utils.FIG.item_cmap           # twilight minus its grey ends (house item map)
 
@@ -88,7 +88,7 @@ def _(
         codes, oracle = {}, None
         for label, overrides in runs.items():
             model, dataset, _, _, _ = train_inline(overrides)
-            codes[label] = input_code(model, dataset)
+            codes[label] = representation(model, dataset)
             if oracle is None:
                 oracle = np.asarray(predicted_geometry(np.asarray(dataset.conditional, float)), float)
         scores = {label: cka(code, oracle) for label, code in codes.items()}

@@ -88,12 +88,38 @@ def predicted_geometry(log_cond, rank=None):
 
 ##### Superposition: first-order geometry of a rank-limited softmax (notes/superposition.tex) #####
 
+def whiten(Z, tol=1e-10):
+    """Predictive modes of binary features, u = z C^{-1/2} with C the covariance of z and
+    the symmetric (pseudo-inverse) root, so mode k stays closest to feature k. Returns
+    (U (n, m), C_half (m, m)) with Z = U @ C_half; the Bayes map on the modes is
+    diag(alpha) @ C_half.T. Exactly collinear features share a mode: merge them first."""
+    Z = np.asarray(Z, float)
+    lam, V = np.linalg.eigh(np.cov(Z.T, bias=True))
+    keep = lam > tol * lam.max()
+    root = np.where(keep, np.sqrt(np.where(keep, lam, 1.0)), 0.0)
+    inv_root = np.where(keep, 1.0 / np.where(keep, root, 1.0), 0.0)
+    return Z @ (V * inv_root) @ V.T, (V * root) @ V.T
+
+
+def _logit_map(alpha, Z):
+    """The Bayes logit map W (outcomes, modes): a vector alpha is diag(alpha) (logits
+    alpha_i z_i); an (m, r) matrix is used as is (logits z W^T)."""
+    alpha = np.asarray(alpha, float)
+    return np.diag(alpha) if alpha.ndim == 1 else alpha
+
+
 def _softmax_stats(alpha, Z):
     """Target probabilities and centred target logits for a dataset. Returns (G, P, Gc)."""
     from scipy.special import logsumexp
-    G = np.asarray(Z, float) * np.asarray(alpha, float)
+    G = np.asarray(Z, float) @ _logit_map(alpha, Z).T
     P = np.exp(G - logsumexp(G, axis=1, keepdims=True))
     return G, P, G - G.mean(1, keepdims=True)
+
+
+def _field(W, Z, q, P):
+    """Gradient of the mean CE with respect to the per-mode leverages at logits
+    (z d) W^T: mean_n z_k ((q - P) W)_k. Returns (r,)."""
+    return (Z * ((q - P) @ W)).mean(0)
 
 
 def _excess_ce(L, G, P):
@@ -114,14 +140,14 @@ def _box_simplex(v, d):
 
 def allocate_d(alpha, Z, d, iters=2000, step=2.0):
     """The convex dimensional allocation on a dataset: minimize the CE of the
-    fractional predictor softmax(alpha_i d_i z_i) over {0 <= d_i <= 1, sum d_i = d}
-    by projected gradient with early stop. Returns (di (m,), delta), delta the
-    interior marginal-utility level."""
+    fractional predictor softmax((z d) W^T) over {0 <= d_k <= 1, sum d_k = d} by
+    projected gradient with early stop; W = diag(alpha) for a vector alpha. Returns
+    (di (r,), delta), delta the interior marginal-utility level."""
     from scipy.special import logsumexp
-    alpha = np.asarray(alpha, float)
+    W = _logit_map(alpha, Z)
     Z = np.asarray(Z, float)
-    m = len(alpha)
-    G, P, _ = _softmax_stats(alpha, Z)
+    m = Z.shape[1]
+    G, P, _ = _softmax_stats(W, Z)
     di = np.full(m, d / m)
     f_prev, stall = np.inf, 0
 
@@ -129,7 +155,7 @@ def allocate_d(alpha, Z, d, iters=2000, step=2.0):
         return _box_simplex(v, d)
 
     for _ in range(iters):
-        L = Z * (alpha * di)
+        L = (Z * di) @ W.T
         f = float((logsumexp(L, axis=1) - (P * L).sum(1)).mean())
         if f > f_prev - 1e-12:
             step *= 0.5
@@ -140,10 +166,10 @@ def allocate_d(alpha, Z, d, iters=2000, step=2.0):
             stall = 0
         f_prev = f
         q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
-        di = project(di - step * alpha * (Z * (q - P)).mean(0))
-    L = Z * (alpha * di)
+        di = project(di - step * _field(W, Z, q, P))
+    L = (Z * di) @ W.T
     q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
-    u = -alpha * (Z * (q - P)).mean(0)
+    u = -_field(W, Z, q, P)
     interior = (di > 1e-3) & (di < 1 - 1e-3)
     return di, float(u[interior].mean())
 
@@ -175,49 +201,50 @@ def tight_frame(di, seed=0, iters=4000, init=None):
 def decoder_map(alpha, Z, E1, maxiter=4000):
     """The fixed-geometry decoder solve on a dataset: min over D (d, m) and
     mean-embedding offset e0 (d,) of the CE of softmax((z^T E1 + e0^T) D).
-    Convex in each block, solved jointly from the tied decoder E1^T diag(alpha).
-    Returns (L1 (m, m) row-centred, o (m,))."""
+    Convex in each block, solved jointly from the tied decoder E1^T W^T.
+    Returns (L1 (r, m) row-centred, o (m,))."""
     from scipy.optimize import minimize
     from scipy.special import logsumexp
-    alpha = np.asarray(alpha, float)
+    W = _logit_map(alpha, Z)
     Z = np.asarray(Z, float)
-    m = len(alpha)
+    m = W.shape[0]
     d = E1.shape[1]
-    G, P, _ = _softmax_stats(alpha, Z)
+    G, P, _ = _softmax_stats(W, Z)
     ZE = Z @ E1
     n = len(Z)
 
     def fg(x):
-        C = x[:d * m].reshape(d, m)
+        D = x[:d * m].reshape(d, m)
         e0 = x[d * m:]
         H = ZE + e0
-        L = H @ C
+        L = H @ D
         lse = logsumexp(L, axis=1)
         q = np.exp(L - lse[:, None])
         return (float((lse - (P * L).sum(1)).mean()),
-                np.concatenate([(H.T @ (q - P) / n).ravel(), (q - P).mean(0) @ C.T]))
+                np.concatenate([(H.T @ (q - P) / n).ravel(), (q - P).mean(0) @ D.T]))
 
-    x0 = np.concatenate([(E1.T * alpha).ravel(), np.zeros(d)])
+    x0 = np.concatenate([(E1.T @ W.T).ravel(), np.zeros(d)])
     r = minimize(fg, x0, jac=True, method="L-BFGS-B",
                  options=dict(maxiter=maxiter, maxfun=2 * maxiter, ftol=1e-10,
                               gtol=1e-6))
-    C = r.x[:d * m].reshape(d, m)
-    L1 = E1 @ C
-    return L1 - L1.mean(1, keepdims=True), r.x[d * m:] @ C
+    D = r.x[:d * m].reshape(d, m)
+    L1 = E1 @ D
+    return L1 - L1.mean(1, keepdims=True), r.x[d * m:] @ D
 
 
 def signed_pressure(alpha, Z, di):
     """The first-order CE pressure on each signed overlap <E_i, E_j> at the
-    fractional predictor softmax(alpha_i d_i z_i): a_ij = alpha_j E[(z_i - p)(q_j - p*_j)]
-    + alpha_i E[(z_j - p)(q_i - p*_i)]. a_ij > 0 means a negative overlap lowers the
-    CE (feature i should suppress outcome j). Returns a (m, m), zero diagonal."""
+    fractional predictor softmax((z d) W^T): a_kl = Cov(z_k, ((q - p*) W)_l)
+    + Cov(z_l, ((q - p*) W)_k), i.e. alpha_j Cov(z_i, q_j - p*_j) + (i <-> j) for a
+    diagonal map. a_kl > 0 means a negative overlap lowers the CE. Returns a (r, r),
+    zero diagonal."""
     from scipy.special import logsumexp
-    alpha = np.asarray(alpha, float)
+    W = _logit_map(alpha, Z)
     Z = np.asarray(Z, float)
-    G, P, _ = _softmax_stats(alpha, Z)
-    L = Z * (alpha * np.asarray(di, float))
+    G, P, _ = _softmax_stats(W, Z)
+    L = (Z * np.asarray(di, float)) @ W.T
     q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
-    half = alpha[None, :] * ((Z - Z.mean(0)).T @ (q - P)) / len(Z)
+    half = (Z - Z.mean(0)).T @ ((q - P) @ W) / len(Z)
     a = half + half.T
     np.fill_diagonal(a, 0.0)
     return a
@@ -226,28 +253,23 @@ def signed_pressure(alpha, Z, di):
 def interference_curvature(alpha, Z, di):
     """Fisher curvature of the tied-map CE in the off-diagonal coordinates g_p,
     p = (i, j) over the upper triangle, at the fractional predictor: H[p, q] =
-    E[dl_p^T (diag q - q q^T) dl_q], where g_p moves logit j by alpha_j (z_i - p)
-    and logit i by alpha_i (z_j - p). Returns H (m(m-1)/2, m(m-1)/2), PSD."""
+    E[dl_p^T (diag q - q q^T) dl_q], where g_p moves the logits by
+    (z_k - p_k) W[:, l] + (z_l - p_l) W[:, k]. Returns H (r(r-1)/2, r(r-1)/2), PSD."""
     from scipy.special import logsumexp
-    alpha = np.asarray(alpha, float)
+    W = _logit_map(alpha, Z)
     Z = np.asarray(Z, float)
-    n, m = Z.shape
-    L = Z * (alpha * np.asarray(di, float))
+    n, r = Z.shape
+    L = (Z * np.asarray(di, float)) @ W.T
     q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
     X = Z - Z.mean(0)
-    I, J = np.triu_indices(m, 1)
-    npairs = len(I)
+    I, J = np.triu_indices(r, 1)
     # S[:, p] = q . dl_p ; the rank-one Fisher part is -S^T S / n
-    S = q[:, J] * X[:, I] * alpha[J] + q[:, I] * X[:, J] * alpha[I]
+    QW = q @ W
+    S = X[:, I] * QW[:, J] + X[:, J] * QW[:, I]
     H = -S.T @ S / n
-    # the diagonal Fisher part groups pairs by the outcome they hit
-    pair_index = np.full((m, m), -1)
-    pair_index[I, J] = pair_index[J, I] = np.arange(npairs)
-    for k in range(m):
-        others = np.delete(np.arange(m), k)
-        idx = pair_index[k, others]
-        W = X[:, others] * alpha[k]                          # weight on logit k
-        H[np.ix_(idx, idx)] += (W * q[:, [k]]).T @ W / n
+    for k in range(W.shape[0]):                             # the diagonal Fisher part, per outcome
+        Dk = X[:, I] * W[k, J] + X[:, J] * W[k, I]
+        H += (Dk * q[:, [k]]).T @ Dk / n
     return H
 
 
@@ -257,46 +279,74 @@ def _fantope_project(P, d):
     return (U * _box_simplex(lam, d)) @ U.T
 
 
+def tied_map_ce(alpha, Z, P):
+    """The exact CE of the tied map — logits z P W^T, the Bayes readout on the projected
+    input — and its gradient in P. Returns (ce, G (r, r)) with G = Z^T (q - p*) W / n;
+    at a diagonal P the off-diagonal part of G + G^T is the signed pressure."""
+    from scipy.special import logsumexp
+    W = _logit_map(alpha, Z)
+    Z = np.asarray(Z, float)
+    _, Pt, _ = _softmax_stats(W, Z)
+    L = (Z @ P) @ W.T
+    lse = logsumexp(L, axis=1)
+    q = np.exp(L - lse[:, None])
+    return float((lse - (Pt * L).sum(1)).mean()), Z.T @ ((q - Pt) @ W) / len(Z)
+
+
 def _fantope_objective(alpha, Z, P, a, H):
     """C(diag P) + a^T g + g^T H g / 2 with g the upper-triangle off-diagonals of P."""
     from scipy.special import logsumexp
-    G, Pt, _ = _softmax_stats(alpha, Z)
-    L = Z * (alpha * np.clip(np.diag(P), 0.0, 1.0))
+    W = _logit_map(alpha, Z)
+    G, Pt, _ = _softmax_stats(W, Z)
+    L = (np.asarray(Z, float) * np.clip(np.diag(P), 0.0, 1.0)) @ W.T
     C = float((logsumexp(L, axis=1) - (Pt * L).sum(1)).mean())
     iu = np.triu_indices(len(P), 1)
     g = P[iu]
     return C + float(a[iu] @ g) + (0.0 if H is None else 0.5 * float(g @ H @ g))
 
 
-def fantope_geometry(alpha, Z, d, a, H=None, iters=1000, tol=1e-10):
-    """The first-order geometry as one convex program on the Fantope: minimize the
-    exact fractional-predictor CE of the diagonal plus the local expansion of the
-    interference in the off-diagonals, a^T g (+ g^T H g / 2), over 0 <= P <= I,
-    tr P = d. Projected gradient with backtracking. Returns (P (m, m),
+def fantope_geometry(alpha, Z, d, a=None, H=None, iters=1000, tol=1e-10):
+    """The first-order geometry as one convex program on the Fantope {0 <= P <= I,
+    tr P = d}, by projected gradient with backtracking. With `a` (and `H`): the exact CE
+    of diag P plus a^T g (+ g^T H g / 2) in the off-diagonals g — the linearised program
+    whose first-order term is the signed pressure; its optimum stays near the projectors.
+    Without `a`: the exact tied-map CE E[CE(softmax(A P z))] over the whole P, whose KKT
+    conditions are water filling on the eigenvalues of P; convex too, but its optimum
+    exploits the relaxation (eta ~ 1) and realizes poorly. Returns (P (r, r),
     eta = tr(P - P^2), the projector-relaxation gap)."""
     from scipy.special import logsumexp
-    alpha = np.asarray(alpha, float)
+    W = _logit_map(alpha, Z)
     Z = np.asarray(Z, float)
-    m = len(alpha)
-    G, Pt, _ = _softmax_stats(alpha, Z)
+    m = Z.shape[1]
+    G, Pt, _ = _softmax_stats(W, Z)
     iu = np.triu_indices(m, 1)
-    d0, _ = allocate_d(alpha, Z, d)
-    P = np.diag(d0)
-    f = _fantope_objective(alpha, Z, P, a, H)
-    step = 1.0
-    for _ in range(iters):
+
+    def value(P):
+        return tied_map_ce(W, Z, P)[0] if a is None else _fantope_objective(W, Z, P, a, H)
+
+    def gradient(P):
+        if a is None:
+            Gd = tied_map_ce(W, Z, P)[1]
+            return 0.5 * (Gd + Gd.T)
         di = np.clip(np.diag(P), 0.0, 1.0)
-        L = Z * (alpha * di)
+        L = (Z * di) @ W.T
         q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
         g = P[iu]
-        goff = a[iu] + (0.0 if H is None else H @ g)
         grad = np.zeros((m, m))
-        grad[iu] = 0.5 * goff
+        grad[iu] = 0.5 * (a[iu] + (0.0 if H is None else H @ g))
         grad = grad + grad.T
-        grad[np.diag_indices(m)] = alpha * (Z * (q - Pt)).mean(0)
+        grad[np.diag_indices(m)] = _field(W, Z, q, Pt)
+        return grad
+
+    d0, _ = allocate_d(W, Z, d)
+    P = np.diag(d0)
+    f = value(P)
+    step = 1.0
+    for _ in range(iters):
+        grad = gradient(P)
         while True:
             P_new = _fantope_project(P - step * grad, d)
-            f_new = _fantope_objective(alpha, Z, P_new, a, H)
+            f_new = value(P_new)
             if f_new <= f or step < 1e-12:
                 break
             step *= 0.5
@@ -316,20 +366,19 @@ def top_eigenspace(P, d):
 
 def predict_geometry(alpha, Z, d, n_frames=32, n_top=18, seed=0):
     """The geometry on a dataset (notes/superposition.tex). Allocation: water filling.
-    Orientation: the linear Fantope program on the signed pressure with the diagonal
+    Orientation: the linearised Fantope program on the signed pressure with the diagonal
     free, realized as the fixed-diagonal frame E* (the *_star outputs; eta is the
-    projector-relaxation gap). Completion: decoder and pair block solved at E* by
-    convex block alternation (the *_rep outputs: E2_rep (K, d), e0_rep (d,), C_rep (d, m),
+    projector-relaxation gap). The exact tied-map program (`a=None`) is not used: its
+    optimum sits far from the projectors (eta ~ 1) and loses the orientation once realized. Completion: decoder and pair block solved at E* by
+    convex block alternation (the *_rep outputs: E2_rep (K, d), e0_rep (d,), D_rep (d, m),
     and map_rep (m + K + 1, m), the completed model's logit map over its dictionary
     [z; phi(z); 1], whose `predicted_geometry` at rank d is the dictionary in balanced
     coordinates: feature rows, pair rows, offset). Reference band:
     n_frames random compatible frames at the water-filling diagonal (the *_mean/_sd
     outputs)."""
     from joblib import Parallel, delayed, parallel_config
-    alpha = np.asarray(alpha, float)
     Z = np.asarray(Z, float)
-    m = len(alpha)
-    G, Pt, _ = _softmax_stats(alpha, Z)
+    m = Z.shape[1]
     d_wf, delta = allocate_d(alpha, Z, d)
     a = signed_pressure(alpha, Z, d_wf)
     P_star, eta = fantope_geometry(alpha, Z, d, a)
@@ -351,7 +400,7 @@ def predict_geometry(alpha, Z, d, n_frames=32, n_top=18, seed=0):
                 E_star=E_star, ce_star=ce_star, gram_star=gram_star,
                 sizes_star=np.diag(gram_star), spectra_star=spectra_star,
                 gramD_star=gramD_star, offset_star=offset_star,
-                E2_rep=rep["E2"], e0_rep=rep["e0"], C_rep=rep["D"], map_rep=map_rep,
+                E2_rep=rep["E2"], e0_rep=rep["e0"], D_rep=rep["D"], map_rep=map_rep,
                 ce_rep=rep["ce"][-1],
                 ce_add=rep["ce_additive"], ce_trace_rep=rep["ce"],
                 frame_ce=frame_ce,
@@ -373,11 +422,15 @@ def _realize_frame(alpha, Z, E1, d):
 
 
 def pair_features(Z, n_top):
-    """Standardized centered pair products (z_i - p_i)(z_j - p_j) for i < j < n_top:
-    the second Walsh level, population-orthogonal to the features. Returns (n, K)."""
-    Zc = np.asarray(Z, float) - np.asarray(Z, float).mean(0)
+    """Pair products (z_i - p_i)(z_j - p_j) for i < j < n_top, residualised on [1, z] so
+    the block is exactly orthogonal to the first-order dictionary (the second Walsh
+    level when the features are independent), then standardized. Returns (n, K)."""
+    Z = np.asarray(Z, float)
+    Zc = Z - Z.mean(0)
     i, j = np.triu_indices(n_top, 1)
     phi = Zc[:, i] * Zc[:, j]
+    X = np.column_stack([np.ones(len(Z)), Zc])
+    phi = phi - X @ np.linalg.lstsq(X, phi, rcond=None)[0]
     return phi / phi.std(0)
 
 
@@ -390,48 +443,47 @@ def repair(alpha, Z, E1, n_top=18, rounds=30, tol=1e-5):
     D (d, m), e0 (d,), ce (excess CE per round), ce_additive)."""
     from scipy.optimize import minimize
     from scipy.special import logsumexp
-    alpha = np.asarray(alpha, float)
     Z = np.asarray(Z, float)
-    m, d, n = len(alpha), E1.shape[1], len(Z)
     G, P, _ = _softmax_stats(alpha, Z)
+    m, d, n = G.shape[1], E1.shape[1], len(Z)
     bayes = float((logsumexp(G, axis=1) - (P * G).sum(1)).mean())
     phi = pair_features(Z, n_top)
     L1, o = decoder_map(alpha, Z, E1)
-    C = E1.T @ L1
-    e0 = np.linalg.lstsq(C.T, o, rcond=None)[0]           # offset row o = e0^T C
+    D = E1.T @ L1
+    e0 = np.linalg.lstsq(D.T, o, rcond=None)[0]           # offset row o = e0^T D
     H1 = Z @ E1
     E2 = np.zeros((phi.shape[1], d))
     ce = [_excess_ce(Z @ L1 + o, G, P)]
     for _ in range(rounds):
         def fg2(x):
             E2_ = x.reshape(-1, d)
-            L = (H1 + phi @ E2_ + e0) @ C
+            L = (H1 + phi @ E2_ + e0) @ D
             lse = logsumexp(L, axis=1)
             q = np.exp(L - lse[:, None])
             return (float((lse - (P * L).sum(1)).mean()),
-                    (phi.T @ ((q - P) @ C.T) / n).ravel())
+                    (phi.T @ ((q - P) @ D.T) / n).ravel())
         E2 = minimize(fg2, E2.ravel(), jac=True, method="L-BFGS-B",
                       options=dict(maxiter=2000, ftol=1e-10, gtol=1e-6)).x.reshape(-1, d)
         Hc = H1 + phi @ E2
 
         def fgD(x):
-            C_ = x[:d * m].reshape(d, m)
+            D_ = x[:d * m].reshape(d, m)
             e0_ = x[d * m:]
             Hh = Hc + e0_
-            L = Hh @ C_
+            L = Hh @ D_
             lse = logsumexp(L, axis=1)
             q = np.exp(L - lse[:, None])
             return (float((lse - (P * L).sum(1)).mean()),
-                    np.concatenate([(Hh.T @ (q - P) / n).ravel(), (q - P).mean(0) @ C_.T]))
-        x = minimize(fgD, np.concatenate([C.ravel(), e0]), jac=True, method="L-BFGS-B",
+                    np.concatenate([(Hh.T @ (q - P) / n).ravel(), (q - P).mean(0) @ D_.T]))
+        x = minimize(fgD, np.concatenate([D.ravel(), e0]), jac=True, method="L-BFGS-B",
                      options=dict(maxiter=4000, ftol=1e-10, gtol=1e-6)).x
-        C, e0 = x[:d * m].reshape(d, m), x[d * m:]
-        L = (Hc + e0) @ C
+        D, e0 = x[:d * m].reshape(d, m), x[d * m:]
+        L = (Hc + e0) @ D
         ce.append(float((logsumexp(L, axis=1) - (P * L).sum(1)).mean()) - bayes)
         if ce[-2] - ce[-1] < tol * ce[-2]:
             break
-    L1 = E1 @ C
-    return dict(E2=E2, L1=L1 - L1.mean(1, keepdims=True), D=C, e0=e0,
+    L1 = E1 @ D
+    return dict(E2=E2, L1=L1 - L1.mean(1, keepdims=True), D=D, e0=e0,
                 ce=np.array(ce), ce_additive=ce[0])
 
 
@@ -443,21 +495,20 @@ def biconvex_pairs(alpha, Z, d, n_top=18, rounds=10, seed=0, init=None):
     ce_trace) with the excess CE after every block solve."""
     from scipy.optimize import minimize
     from scipy.special import logsumexp
-    alpha = np.asarray(alpha, float)
     Z = np.asarray(Z, float)
-    n, m = Z.shape
+    n, r = Z.shape
     G, P, _ = _softmax_stats(alpha, Z)
+    m = G.shape[1]
     bayes = float((logsumexp(G, axis=1) - (P * G).sum(1)).mean())
     psi = np.column_stack([np.ones(n), Z, pair_features(Z, n_top)])
     if init is None:
         di, _ = allocate_d(alpha, Z, d)
         E1 = tight_frame(di, seed=seed)
         L1, o = decoder_map(alpha, Z, E1)
-        C = E1.T @ L1
+        D = E1.T @ L1
         B = np.zeros((psi.shape[1], d))
-        B[1:1 + m] = E1
-        B[0] = np.linalg.lstsq(C.T, o, rcond=None)[0]
-        D = C
+        B[1:1 + r] = E1
+        B[0] = np.linalg.lstsq(D.T, o, rcond=None)[0]
     else:
         B, D = (np.array(x, float) for x in init)
 
@@ -523,16 +574,20 @@ def leverage(W):
     return np.diag(P).copy(), P
 
 
-def logit_features(L, Z, d):
-    """Measured feature vectors of a logit matrix: balanced SVD of the row-centred
-    logits, additive regression of the code on Z, rescaled to balanced units.
-    Returns E (m, d) with sizes ||E_i||^2 comparable to alpha."""
-    L = np.asarray(L, float)
-    Z = np.asarray(Z, float)
-    Lc = L - L.mean(1, keepdims=True)
-    U, S, _ = np.linalg.svd(Lc, full_matrices=False)
-    H = U[:, :d] * np.sqrt(S[:d])
-    scale = np.sqrt(len(Z) * Z.mean() * (1 - Z.mean()))
-    return np.sqrt(scale) * feature_vectors(H, Z)[0]
+def measure(L, X, d):
+    """One model's geometry from its logit table over states L (n, m), in the coordinates X
+    (n, r) — features, or predictive modes: balanced rank-d code H and readout D
+    (`factor_logcond`), first-order vectors E1 of H by least squares on [X, 1]. Returns
+    (leverage (r,), feature Gram E1 E1^T (r, r), top-d singular values of the row-centred
+    table per state (d,), readout Gram D^T D (m, m), leverage projector (r, r))."""
+    _, H, D, S = factor_logcond(L, rank=d)
+    E1 = feature_vectors(H, X)[0]
+    h, P = leverage(E1)
+    return h, E1 @ E1.T, S / np.sqrt(len(L)), D.T @ D, P
 
 
+def theory_table(out, X, n_top=18):
+    """The completed model's logit table over states from `predict_geometry`'s output:
+    [x, phi(x), 1] @ map_rep. (n, m)."""
+    X = np.asarray(X, float)
+    return np.column_stack([X, pair_features(X, n_top), np.ones(len(X))]) @ out["map_rep"]

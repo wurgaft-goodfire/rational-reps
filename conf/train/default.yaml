@@ -23,5 +23,3 @@ training_kwargs:
   compile_mode: default # default | reduce-overhead | max-autotune
 
 eval_kwargs:
-  num_eval_batches: 10 # number of fixed batches pre-sampled once for evaluation
-  output_hidden_states: false # extract + save hidden states (for representational analysis)

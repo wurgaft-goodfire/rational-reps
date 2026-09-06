@@ -128,6 +128,13 @@ def train(config, dataset):
     history = pd.DataFrame(metrics_callback.history)
     history.to_csv(os.path.join(config.run_dir, "history.csv"), index=False)
 
+    # The final evaluation — KL plus the representation (logits, code, readout over every
+    # input) — is saved next to the final checkpoint so analysis never needs the model.
+    metrics, extras = metrics_callback.evaluator.evaluate(trainer.model)
+    last = max(int(d) for d in os.listdir(config.output_dir) if d.isdigit())
+    torch.save({"metrics": metrics, "extras": extras, "step": last},
+               os.path.join(config.output_dir, str(last), "metrics.pt"))
+
     # Return the trained artifacts so callers (notebooks) can use them in-process; the CLI
     # entry point ignores the return value.
     return {
@@ -141,10 +148,11 @@ def train(config, dataset):
 def _run_key(cfg):
     """The config content that identifies a run: everything except machine-local bookkeeping."""
     c = OmegaConf.to_container(cfg, resolve=True)
-    for k in ("cache_dir", "run_dir", "output_dir", "data_path", "eval_cache_dir", "overwrite", "wandb"):
+    for k in ("cache_dir", "run_dir", "output_dir", "data_path", "overwrite", "wandb",
+              "eval_kwargs", "eval_cache_dir"):
         c.pop(k, None)
-    # Online eval scores fixed pre-sampled batches and draws no RNG, so its cadence changes the
-    # density of the history curve but never the trained weights.
+    # Evaluation draws no RNG and touches no parameter, so its cadence and settings change the
+    # history curve and the saved metrics but never the trained weights.
     c.get("training_kwargs", {}).pop("eval_steps", None)
     return c
 
@@ -186,9 +194,13 @@ def _load_run(config, dataset, device=None):
     """Load a finished run's final checkpoint + rebuild its evaluator (on the run's cached eval
     batches) and history — the reuse counterpart to `train()`, returning the same artifacts."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    evaluator = Evaluator.from_cache(config, dataset, config.run_dir)
+    evaluator = Evaluator(config, dataset)
     last = max(int(d) for d in os.listdir(config.output_dir) if d.isdigit())
     model, _ = load_model(config, os.path.join(config.output_dir, str(last), "model"), device=device)
+    saved = os.path.join(config.output_dir, str(last), "metrics.pt")
+    if not os.path.exists(saved):                 # a run from before the evaluation was saved
+        metrics, extras = evaluator.evaluate(model)
+        torch.save({"metrics": metrics, "extras": extras, "step": last}, saved)
     history = pd.read_csv(os.path.join(config.run_dir, "history.csv"))
     return model, dataset, evaluator, history
 

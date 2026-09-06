@@ -37,11 +37,6 @@ hydra:
 # Environment variable for cache directory (falls back to ./outputs if unset)
 cache_dir: ${oc.env:CACHE_DIR,./outputs}
 
-# Optional path to a prior eval run's output dir (single run or sweep root). When
-# set, evaluation reuses its cached fixed batches via Evaluator.from_cache so that
-# training-time online eval and standalone eval score on identical batches.
-eval_cache_dir: null
-
 # Common paths computed from cache_dir
 output_dir: ${run_dir} # overridden by runners that checkpoint (e.g. ${run_dir}/checkpoints)
 data_path: ${cache_dir}/${setting}/${name}/data.pt

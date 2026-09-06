@@ -311,6 +311,42 @@ G_D=D_{\mathrm{bal}}^\top D_{\mathrm{bal}} .
 Sizes are in the units of the state table, a factor \(\sqrt{Np(1-p)}\) below
 logit units, so \(\alpha_i\) is compared in those units.
 
+\subsection{Correlated features: the predictive modes}
+\label{sec:modes}
+
+Every stage above evaluates its objective on the data, so nothing in it assumes
+independent features; what does depend on the coordinates is the relaxation itself.
+The fractional predictor scales each coordinate's logit by its own leverage, and the
+Fantope constrains an \emph{orthogonal} projector, so ``fraction represented'' is
+measured in whichever basis the inputs are written. With correlated features that
+basis matters: a shared component of two features is one direction, not two, and the
+raw coordinates charge for it twice (a duplicated feature is the extreme case).
+
+We therefore write the inputs in their predictive modes,
+\begin{equation}
+u = z\,C^{-1/2},\qquad C=\operatorname{Cov}(z),
+\label{eq:modes}
+\end{equation}
+the symmetric root so that mode \(k\) stays closest to feature \(k\), and \(u\) has
+identity covariance. The Bayes logits \(\alpha_i z_i\) become \(u\,W^\top\) with the
+logit map
+\begin{equation}
+W=\operatorname{diag}(\alpha)\,C^{1/2}
+\label{eq:mode-map}
+\end{equation}
+(outcomes by modes): outcome \(i\) reads a mixture of modes, which is the only
+structural change. Water filling, pressure, Fantope program, frame, and completion
+run unchanged on \((W, u)\); for a diagonal map they are the formulas of the previous
+sections, and for independent features \(C\propto I\) so the modes are the features.
+The trained networks are measured on the same coordinates (least squares of the
+balanced code on \([1, u]\)); feature-space vectors follow as \(E = C^{-1/2}\tilde E\).
+
+The choice is a modelling decision about the relaxation, not a theorem. On
+one-factor equicorrelated features the mode coordinates bring the theory to the exact
+optimum of the additive class where the raw coordinates do not (Section~\ref{sec:results}); on a
+mutually exclusive pair inside independent features both coordinates predict the
+antipodal arrangement, the raw ones with the lower CE.
+
 \subsection{Orientation selection: which overlaps, with which signs}
 \label{sec:orientation}
 

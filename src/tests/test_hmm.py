@@ -22,7 +22,6 @@ def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0, structure="ring",
         "sample_mode": "sequence", "infer_latent": latent, "random_seed": seed,
         "model_kwargs": {"model_type": "transformer"},
         "training_kwargs": {"batch_size": 64, "context_length": 40},
-        "eval_kwargs": {"num_eval_batches": 1, "output_hidden_states": False},
     }))
 
 
