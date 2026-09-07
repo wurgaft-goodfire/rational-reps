@@ -147,11 +147,87 @@ Also measured: at ρ = 0.6 the trained networks have no consistent orientation a
 allocation is (leverage corr 0.98–0.996 for every variant). The whitened linearised pipeline
 gives the lowest realised CE at ρ = 0.6 (0.196 / 0.123 at d = 3 / 6 vs raw 0.313 / 0.211).
 
+## Correlated features are captured, and how (2026-09-06)
+
+The pipeline never assumed independence: every stage evaluates its objective on the data. What
+correlation changes is the coordinates. The inputs are written in their predictive modes
+u = z C^{-1/2} (C the feature covariance, symmetric root so mode k stays closest to feature k), and the
+Bayes logits become u Wᵀ with the logit map W = diag(α) C^{1/2}: outcome i reads a mixture of modes,
+which is the only structural change. Water filling, pressure, Fantope program, frame and completion run
+unchanged on (W, u); trained models are measured in the same coordinates (`sweep_superposition.modes`,
+`geometry.whiten`). On raw features the relaxation charges twice for a shared component (a duplicated
+feature is the extreme case); on the modes it does not.
+
+Across the full grid, theory against the additive class's own optimum (mean over p, 5 seeds each):
+
+| ρ | β | leverage corr, d = 3 / 6 / 12 | theory CE ÷ additive KL, d = 3 / 6 / 12 | placement corr, d = 3 / 6 / 12 |
+|---|---|---|---|---|
+| 0.3 | 0.25 | 0.93 / 0.96 / 0.95 | 1.0 / 1.1 / 1.2 | −0.26 / 0.00 / +0.32 |
+| 0.3 | 0.5 | 0.96 / 0.97 / 0.97 | 1.1 / 1.1 / 1.2 | +0.12 / +0.25 / +0.26 |
+| 0.3 | 1.0 | 0.98 / 0.97 / 0.81 | 1.2 / 1.5 / 2.6 | +0.45 / +0.50 / +0.39 |
+| 0.6 | 0.25 | 0.92 / 0.98 / 0.98 | 1.0 / 1.0 / 1.1 | −0.26 / +0.11 / +0.28 |
+| 0.6 | 0.5 | 0.96 / 0.98 / 0.97 | 1.0 / 1.1 / 1.2 | −0.02 / +0.24 / +0.31 |
+| 0.6 | 1.0 | 0.98 / 0.92 / 0.70 | 1.2 / 1.8 / 3.9 | +0.81 / +0.55 / +0.32 |
+
+So for β ≤ 0.5 the theory reaches its class optimum to within 0–20% in CE at every ρ, p and d, with
+leverage correlations 0.92–0.98: shared-factor correlation is handled by the change of coordinates and
+nothing else. Orientation is weak where the ladder is flat (β = 0.25: no consistent orientation to
+predict) and modest otherwise. The failure is confined to the steep ladder β = 1 at d ≥ 6, growing
+with ρ and d (1.5× → 3.9×), and that is the regime analysed next.
+
+## Where the relaxation misses its own class (2026-09-06)
+
+Cell p = 0.3, β = 1, ρ = 0.6, d = 12, five seeds. The theory's allocation there is noisy across
+seeds while every trained model is not; the analysis below is what that noise means.
+
+| | excess CE / KL | feature-space leverage, features 0–15 | seed SD (features 4–15) |
+|---|---|---|---|
+| network (free state table) | 0.0022 | 1.0 × 12, then 0.87, 0.05, 0.07, 0.01 | ≤ 0.05 |
+| additive model (the theory's class) | 0.0022 | 1.0 × 12, then 0.79, 0.19, 0.05, 0.01 | ≤ 0.05 |
+| pairs model | 0.0023 | same hard profile | ≤ 0.07 |
+| theory, predictive modes | 0.0098 ± 0.0005 | 0.97 0.96 0.95 0.9 0.49 0.12 0.04 0.2 0.25 0.01 … 0.55 | 0.12 – 0.26 |
+| theory, raw features | 0.0220 | smooth decline 0.96 → 0.19 | |
+
+- **Not the solver.** Running the Fantope program 5000 instead of 1000 iterations moves the objective
+  by 1e-5 and the diagonal by 0.002; it does move the off-diagonals by 0.09 and η from 0.91 to 0.32, so
+  the orientation is a flat valley there and the reported η depends on the stopping point.
+- **Not the network's extra capacity.** The additive model is the theory's own class and reaches the
+  network's KL with the network's hard profile. The relaxation misses its class optimum by 4.5×.
+- **Not the basis alone.** Raw features order the features right but soften the cliff into a slope
+  (leverage corr 0.94 with the additive model, CE 0.022); the predictive modes give the lower CE but a
+  scrambled feature-space allocation (corr 0.50). A hard top-12 frame in *mode* space completes to
+  0.038, so the optimum is 12 features, not 12 modes.
+- **The noise itself.** Mode importances 6–20 are nearly tied (0.34–0.42), so the water filling splits a
+  fixed budget among ties and each seed's sample covariance decides which mode gets 0.3 and which 0.
+  The hard optimum has no such tie and is seed-stable.
+- **Where the theory stands.** Stage one minimises C(d), the tied predictor's CE, which counts the
+  benefit of leverage and none of its cost. Realising a fractional diagonal forces off-diagonal energy
+  Σ_j P_ij² = d_i(1 − d_i), whose interference cost is the B(h) = Σ h(1 − h) term of the two-term
+  theory. Dropping the projector constraint deletes B; that is right exactly when the completion refunds
+  it. At the reference cell free pairs refunded 78–84% of B, which is why C alone predicted the pairs
+  model and the network and why a priced allocation was worse there. Here the pairs model is as hard as
+  the additive one: the refund has collapsed. The standing assumption of the frame stage is therefore
+  "pairs cancel the forced interference", and this is the regime where it fails.
+- **Why the refund fails, two computable mechanisms.** (i) The CE cost of an interference logit
+  δℓ_i = α_i Σ_j P_ij (z_j − p̄_j) is, to second order, Σ_i q_i(1 − q_i) δℓ_i²; δℓ² is a pair term, so it
+  is refundable only while the Fisher weight q_i(1 − q_i) is nearly constant across states. A steep ladder
+  makes the softmax peaked and the weight swing with which head feature is on: the cost becomes third
+  order and higher in z, outside span{1, z, φ}. (ii) Correlation makes co-activation group-wise, so
+  interference events are no longer pairwise-sparse and more of the cost sits in the higher Walsh
+  levels.
+- **Proposed alteration.** Carry the *residual* price: β_eff(d) = the B-cost at the fractional predictor
+  minus its projection onto span{1, z, φ(z)}, computable from the Fisher curvature we already have, no
+  fitted constant. It reduces to plain water filling where pairs refund (the reference cell) and to a hard
+  allocation where they do not; the 540-cell sweep tests the predicted soft/hard boundary. The decisive
+  measurement first: repeat the reference-cell refund experiment (additive vs pairs biconvex oracles,
+  B-slope and refund fraction) at this cell; if the refund has collapsed to near zero, the residual price
+  is the theory of the boundary.
+
 ## What is open
 
 - **Soft/hard transition**: predict where the fractional allocation stops being the optimum
-  (dense p, steep β) — the appendix argument that additivity disfavours fractional allocation is
-  the starting point; the sweep gives the boundary empirically.
+  (dense p, steep β). Diagnosis and proposed residual-price alteration in the section above; the sweep
+  gives the boundary empirically.
 - **Optimizer check (SGD lr 2, 40k steps vs AdamW 8k, 5 seeds, d = 3 and 6; /tmp/sgd_seeds.py).** Losses
   match (SGD within ±0.005). Placement agreement between the two optimizers' 5-seed mean Grams
   (+0.46 / +0.49) equals their seed-to-seed self-agreement (Adam +0.46 / +0.38, SGD +0.53 / +0.53), and

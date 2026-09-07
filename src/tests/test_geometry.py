@@ -132,3 +132,22 @@ def test_log_conditional_floors_impossible_outcomes_not_merely_unlikely_ones():
     # a genuine zero still gets the floor
     Z = np.array([[0.5, 0.5, 0.0]])
     assert log_conditional(Z)[0, 2] == LOG_FLOOR
+
+
+def test_balance_is_a_gauge_that_equalizes_the_grams():
+    # a trained factorization keeps its init imbalance (E^T E - D^T D is conserved by gradient
+    # flow); balance() moves to the representative gradient flow from small init would reach,
+    # leaving the logits E D^T unchanged. Idempotent on an already balanced (SVD) split.
+    from src.code.geometry import balance
+    rng = np.random.default_rng(0)
+    E0, D0 = rng.normal(size=(21, 2)), rng.normal(size=(5, 2))
+    A = np.array([[1.0, 0.0], [0.7, 2.5]])                      # a GL(2) gauge: shear + scale
+    E, D = E0 @ A, D0 @ np.linalg.inv(A).T
+    Eb, Db = balance(E, D)
+    assert np.allclose(Eb @ Db.T, E @ D.T)
+    assert np.allclose(Eb.T @ Eb, Db.T @ Db)
+    Lc = factor_logcond(cooccur_logcond(ring(12)))[0]
+    _, Es, Ds, _ = factor_logcond(Lc)
+    Es, Ds = Es[:, :2], Ds[:2].T
+    Eb2, Db2 = balance(Es, Ds)
+    assert np.allclose(np.abs(Eb2), np.abs(Es)) and np.allclose(np.abs(Db2), np.abs(Ds))

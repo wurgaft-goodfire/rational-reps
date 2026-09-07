@@ -30,6 +30,16 @@ def factor_logcond(L, rank=None):
     return Lc, U * rootS, rootS[:, None] * Vt, S
 
 
+def balance(E, D):
+    """The balanced representative of a factorization ``E @ D.T``: the same logits with
+    ``E.T @ E == D.T @ D`` (``sqrt(S)`` on each side of the product's SVD), the split gradient
+    flow from small init converges to. ``E`` (n, d), ``D`` (m, d) -> the same shapes."""
+    E, D = np.asarray(E, dtype=np.float64), np.asarray(D, dtype=np.float64)
+    U, S, Vt = np.linalg.svd(E @ D.T, full_matrices=False)
+    k = E.shape[1]
+    return U[:, :k] * np.sqrt(S[:k]), Vt[:k].T * np.sqrt(S[:k])
+
+
 def fourier_basis(p):
     """Real DFT modes of ``Z_p`` as rows: cos/sin at each frequency, Nyquist once when p is even.
     The canonical gauge for group operations (modular add/mult), whose factorization is degenerate

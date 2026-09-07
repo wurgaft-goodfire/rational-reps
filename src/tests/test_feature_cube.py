@@ -93,6 +93,61 @@ def test_rho_correlates_features_and_preserves_marginals():
     assert abs(off(base["Z"])) < 0.05                            # baseline is not
 
 
+def _paired(m, decay=1.0, scale=2.0):
+    """The yes/no world: every bundle once, a (k+, k-) token pair per feature, columns
+    [1+, ..., m+, 1-, ..., m-]."""
+    return feature_cube(m=m, decay=decay, scale=scale, paired=True, all_bundles=True)
+
+
+def test_paired_kernel_is_alpha_z_and_alpha_one_minus_z():
+    # Lc(z, k+) = alpha_k z_k, Lc(z, k-) = alpha_k (1 - z_k); L = log softmax(Lc). The
+    # normalizer is the same for every word, so L differs from Lc by one global constant.
+    from src.code.data import cube_codes
+    m = 2
+    L, info = _paired(m)
+    Z, alpha = info["Z"], info["alpha"]
+    assert L.shape == (2 ** m, 2 * m) and Z.shape == (2 ** m, m)
+    assert np.array_equal(Z, cube_codes(m))
+    Lc = np.c_[Z * alpha, (1 - Z) * alpha]
+    assert np.allclose(L - Lc, (L - Lc)[0, 0])
+    # within-pair log-odds is that feature alone
+    assert np.allclose(L[:, :m] - L[:, m:], alpha * (2 * Z - 1))
+
+
+def test_paired_rank_is_one_dimension_per_feature():
+    # equal alpha: rank m; unequal alpha adds the pair-budget constant (rank m + 1);
+    # the single-token cube loses one dimension to the softmax gauge (rank m - 1)
+    rank = lambda L: int((factor_logcond(L)[3] > 1e-8).sum())
+    assert rank(_paired(2)[0]) == 2
+    assert rank(_paired(2, decay=0.9)[0]) == 3
+    assert rank(feature_cube(m=3, decay=1.0, all_bundles=True)[0]) == 2
+
+
+def test_paired_geometry_is_axes_and_corners():
+    # balanced factorization: the two decoders of a pair are antipodal, pairs are orthogonal,
+    # and a word is the sum of its chosen prototype per feature, scaled by 1/sqrt(2)
+    L, info = _paired(2)
+    _, E, D, S = factor_logcond(L)
+    E, D = E[:, :2], D[:2]                                        # the exact rank-2 code
+    d = {("+", k): D[:, k] for k in range(2)} | {("-", k): D[:, 2 + k] for k in range(2)}
+    for k in range(2):
+        assert np.allclose(d["+", k], -d["-", k])
+    assert abs(d["+", 0] @ d["+", 1]) < 1e-8
+    for z, e in zip(info["Z"], E):
+        proto = sum(d["+" if z[k] else "-", k] for k in range(2))
+        assert np.allclose(e, proto / np.sqrt(2))
+
+
+def test_single_token_cube_collapses_all_on_and_all_off():
+    # control: with one token per feature and equal alpha, the words 00 and 11 emit the
+    # same distribution, so the square is projected onto a line
+    L, info = feature_cube(m=2, decay=1.0, all_bundles=True)
+    Z = info["Z"]
+    i00 = np.flatnonzero((Z == 0).all(1))[0]; i11 = np.flatnonzero((Z == 1).all(1))[0]
+    assert np.allclose(L[i00], L[i11])
+    assert int((factor_logcond(L)[3] > 1e-8).sum()) == 1
+
+
 def test_blocks_give_within_block_correlation_only():
     # with blocks>1 each block shares its own factor, so within-block pairs correlate
     # and cross-block pairs do not.

@@ -569,27 +569,33 @@ def _tree_graph(n=2, k=2, parents=None, **_):
 
 
 def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
-                 spectrum="geometric", beta=1.5, rho=0.0, blocks=1):
+                 spectrum="geometric", beta=1.5, rho=0.0, blocks=1,
+                 paired=False, all_bundles=False):
     """Bipartite word -> feature structure: N words with i.i.d. Bernoulli(p) features
-    Z in {0, 1}, outcomes the m feature tokens, log p(i|x) = log_softmax_i(alpha_i Z_xi)
-    (p = sparsity, scale = sharpness). ``spectrum`` sets the importance ladder: "geometric"
-    gives alpha_i = scale*decay^i, "power" gives alpha_i = scale*(i+1)^-beta. ``rho`` > 0
-    correlates the features through a Gaussian copula, preserving the Bernoulli(p)
+    Z in {0, 1}, outcomes the m feature tokens, Lc(x, i) = alpha_i Z_xi and
+    L = log_softmax(Lc) (p = sparsity, scale = sharpness). ``spectrum`` sets the importance
+    ladder: "geometric" gives alpha_i = scale*decay^i, "power" gives alpha_i = scale*(i+1)^-beta.
+    ``rho`` > 0 correlates the features through a Gaussian copula, preserving the Bernoulli(p)
     marginals; ``blocks`` splits them into groups that each share their own factor
-    (blocks=1 is equicorrelation). Returns (L (N, m), {"Z" (N, m), "alpha" (m,)})."""
+    (blocks=1 is equicorrelation). ``all_bundles`` makes the words every bundle in {0,1}^m
+    once (N ignored). ``paired`` gives each feature a yes/no token pair, columns
+    [1+, ..., m+, 1-, ..., m-], with Lc(x, i+) = alpha_i Z_xi and Lc(x, i-) = alpha_i (1 - Z_xi).
+    Returns (L (n_words, m or 2m), {"Z" (n_words, m), "alpha" (m,)})."""
     from scipy.special import logsumexp
     alpha = scale * {"geometric": decay ** np.arange(m),
                      "power": (1.0 + np.arange(m)) ** -beta}[spectrum]
     rng = np.random.default_rng(seed)
-    if rho == 0.0:
+    if all_bundles:
+        Z = cube_codes(m)
+    elif rho == 0.0:
         Z = (rng.random((N, m)) < p).astype(float)
     else:                                          # one-factor Gaussian copula
         from scipy.stats import norm
         f = rng.normal(size=(N, blocks))[:, np.arange(m) * blocks // m]
         g = np.sqrt(rho) * f + np.sqrt(1 - rho) * rng.normal(size=(N, m))
         Z = (g > norm.ppf(1 - p)).astype(float)
-    G = Z * alpha
-    return G - logsumexp(G, axis=1, keepdims=True), {"Z": Z, "alpha": alpha}
+    Lc = np.c_[Z * alpha, (1 - Z) * alpha] if paired else Z * alpha
+    return Lc - logsumexp(Lc, axis=1, keepdims=True), {"Z": Z, "alpha": alpha}
 
 
 # One structure = one graph: it builds an adjacency (used by the HMM latent walk and by drawing)

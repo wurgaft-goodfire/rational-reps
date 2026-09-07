@@ -35,15 +35,15 @@ with logits
 Because all states use the same \(d\)-dimensional decoder geometry, the full logit
 matrix has rank at most \(d\).
 
-We study the model's first-order dependence on the features. Define
+We study the model's first-order dependence on the features. Define \(E_i\) as the
+first-order coefficients of the least-squares fit
 \[
-E_i
-=
-\mathbb E[E(z)\mid z_i=1]
--
-\mathbb E[E(z)\mid z_i=0],
+E(z)\approx \bar E+\sum_i E_i z_i ,
 \]
-and collect the vectors \(E_i^\top\) as the rows of
+which under independent features equals the conditional-mean difference
+\(\mathbb E[E(z)\mid z_i=1]-\mathbb E[E(z)\mid z_i=0]\) in population (the least-squares
+form is what we compute: it removes the other features' chance sample correlations and
+stays well defined under correlation). Collect the vectors \(E_i^\top\) as the rows of
 \[
 E^{(1)}\in\mathbb R^{m\times d}.
 \]
@@ -109,12 +109,15 @@ to feature \(i\).
 We first ask how the \(d\) available dimensions should be distributed among the
 features, before choosing their detailed orientation.
 
-The target logit contribution of feature \(i\) is \(\alpha_i z_i\). In the
-feature-aligned fractional relaxation, retaining dimensional share \(d_i\) gives
+The target logits are \(zW^\top\) with the logit map \(W=\operatorname{diag}(\alpha)\)
+for independent features (Section~\ref{sec:modes} gives the general \(W\)). In the
+feature-aligned fractional relaxation, retaining dimensional share \(d_i\) scales
+feature \(i\)'s contribution by \(d_i\):
 \[
-q_{\mathbf d}(i\mid z)
-\propto
-\exp(\alpha_i d_i z_i).
+q_{\mathbf d}(\cdot\mid z)
+=
+\operatorname{softmax}\!\big((z\odot\mathbf d)\,W^\top\big),
+\qquad\text{i.e. } q_{\mathbf d}(i\mid z)\propto\exp(\alpha_i d_i z_i)\ \text{when } W=\operatorname{diag}(\alpha).
 \]
 We predict the allocation by
 \begin{equation}
@@ -241,8 +244,11 @@ contributes the state-independent logit row \(e_0^\top D\), carried through the
 decoder — the model class has no per-output bias. We fix the softmax gauge by
 requiring
 \[
-D\mathbf 1=0.
+D\mathbf 1=0
 \]
+in the analysis; the implementation fixes the same invariance by row-centring every
+model's logit table over states before factorising it, which is the same gauge applied
+per state.
 For fixed \(E^{(1)}\), Equation~\eqref{eq:decoder-program} is convex in \(D\) at
 fixed \(e_0\) and in \(e_0\) at fixed \(D\); the pair is solved jointly.
 
@@ -296,7 +302,7 @@ D_{\mathrm{bal}}
 }
 \label{eq:balanced-factorization}
 \end{equation}
-The representation is then read off the balanced code by one estimator for all
+The representation is then read off the balanced representation by one estimator for all
 models: the first-order vectors \(E_i\) of the least-squares fit
 \(h(z)\approx\bar h+\sum_i E_i z_i\) to \(E_{\mathrm{bal}}\), with sizes
 \(\|E_i\|^2\) and Grams
@@ -339,13 +345,17 @@ structural change. Water filling, pressure, Fantope program, frame, and completi
 run unchanged on \((W, u)\); for a diagonal map they are the formulas of the previous
 sections, and for independent features \(C\propto I\) so the modes are the features.
 The trained networks are measured on the same coordinates (least squares of the
-balanced code on \([1, u]\)); feature-space vectors follow as \(E = C^{-1/2}\tilde E\).
+balanced representation on \([1, u]\)); feature-space vectors follow as \(E = C^{-1/2}\tilde E\).
 
-The choice is a modelling decision about the relaxation, not a theorem. On
-one-factor equicorrelated features the mode coordinates bring the theory to the exact
-optimum of the additive class where the raw coordinates do not (Section~\ref{sec:results}); on a
-mutually exclusive pair inside independent features both coordinates predict the
-antipodal arrangement, the raw ones with the lower CE.
+The choice is a modelling decision about the relaxation, not a theorem, and it is
+what makes correlated features work: across the sweep (\(\rho\in\{0.3,0.6\}\), every
+\(p\), \(d\)), for ladder slopes \(\beta\le 0.5\) the theory on the modes reaches the additive
+class's own optimum to within 0--20\% in CE with leverage correlations 0.92--0.98, where
+the raw coordinates charge twice for a shared component and fall short. The one regime it
+misses is the steep ladder \(\beta=1\) at \(d\ge 6\), by a factor growing with \(\rho\) and \(d\)
+(1.5 to 3.9); there the class optimum is hard and the refund assumption below fails
+(\texttt{notes/superposition\_results.md}). On a mutually exclusive pair inside independent
+features both coordinates predict the antipodal arrangement, the raw ones with the lower CE.
 
 \subsection{Orientation selection: which overlaps, with which signs}
 \label{sec:orientation}
@@ -375,32 +385,36 @@ to the uniform frame ensemble (whose mean cancels it), which is why neither pred
 signs.
 
 \paragraph{Prediction rule.}
-The predicted orientation is the compatible frame that follows the pressure
-furthest:
+The predicted orientation follows the pressure as far as the Fantope allows, with the
+diagonal free:
 \begin{equation}
 \boxed{
-E^\star
+P^\star
 =
-\arg\min_{\substack{\|E_i\|^2=d_i^\star\\ E^\top E=I_d}}
-\;\sum_{i<j}a_{ij}\,\langle E_i,E_j\rangle ,
+\arg\min_{P\in\mathcal F_d}\;
+C(\operatorname{diag}P)+\sum_{i<j}a_{ij}\,P_{ij},
+\qquad
+\mathcal F_d=\{0\preceq P\preceq I,\ \operatorname{tr}P=d\},
 }
 \label{eq:pressure-frame}
 \end{equation}
-a linear objective over compatible frames, needing no decoder solve. Computed as
-one convex program on the Fantope \(\{0\preceq P\preceq I,\ \operatorname{tr}P=d\}\)
-with the diagonal free,
-\[
-P^{(1)}=\arg\min_{P\in\mathcal F_d}\; C(\operatorname{diag}P)+\sum_{i<j}a_{ij}P_{ij},
-\]
-followed by a fixed-diagonal realization, it also produces the soft tail of the next
-paragraph. The rule is a statement about the optimum of the full class, not only
+the exact fractional-predictor CE of the diagonal plus the linearised interference of
+the off-diagonals: one convex program, no decoder solve. Its optimum is not a
+projector; \(\eta=\operatorname{tr}(P^\star-P^{\star2})\) measures the gap, and the
+frame \(E^\star\) is the rank-\(d\) projector with the same diagonal as \(P^\star\)
+nearest to it (alternating projections from \(P^\star\)), so the fractional leverages
+and the soft tail of the next paragraph survive realization while \(\eta\) is paid
+there. (The same program with the exact tied-map CE in place of the linearisation is
+also convex, but its optimum leaves the projectors, \(\eta\approx1\), and loses the
+orientation once realized; the linear off-diagonal term is what keeps the solution
+near the projectors.) The rule is a statement about the optimum of the full class, not only
 about its gradient: with the frame held fixed the class's loss is nearly flat across
 placements (decoder and pairs compensate), but when frame, decoder and pairs are
 optimized together the pressure-following placement wins clearly, and gradient
 descent started from the opposite sign pattern abandons it and ends at the pressure
 pattern at the same loss as every other start. Selecting frames by the
 additive class's cross-entropy fails because that class cannot repair the
-interference the pressure-following frames create. Evidence: results file, \S2.
+interference the pressure-following frames create. Evidence: \texttt{notes/superposition\_results.md}.
 
 \paragraph{The soft tail.}
 The same pressure gives every feature that water filling drops a second lever. A
@@ -417,13 +431,13 @@ d_j=\frac{\|a_{\cdot j}\|^2}{4\delta^2}
 \label{eq:soft-tail}
 \end{equation}
 with \(\|a_{\cdot j}\|\) the pressure norm onto the represented set. Trained tail
-leverage follows this law with no fitted constant at \(d=3,6\) (slope two in the
-log--log plot, correlation \(0.9\)), and the soft tail is where the trained
-interference beyond the predicted support lives: a third to a half of the trained
-off-diagonal energy sits on features the hard allocation zeroes. At \(d=12\) the
-dropped features' leverage is flat and uncorrelated with the pressure — a converged
-property (not undertraining) that the water level, twenty times smaller there, no
-longer sets; the second-order interference floor does (results file, \S3).
+leverage follows this law with no fitted constant where features are sparse and the
+rank low (\(p\le0.15\), \(d\le6\): log--log slope \(\approx2\)); elsewhere the slope is
+between 0.4 and 1.8, so the law is a sparse, low-rank statement. The soft tail is where
+the trained interference beyond the predicted support lives. At \(d=12\) the dropped
+features' leverage is flat and uncorrelated with the pressure — a converged property
+that the water level, twenty times smaller there, no longer sets
+(\texttt{notes/superposition\_results.md}).
 
 \paragraph{The hierarchy, and what is specific to softmax.}
 Three layers, each tested separately:
@@ -447,7 +461,7 @@ mutually negative arrangement among the fractional tail (a packing of near-equal
 features). It is not carried by pairs of non-represented features, not a
 head-versus-tail question, and not resolved by the second-order term; which tail
 partners pair off is decided by something neither pressure order contains
-(results file, \S2.3).
+(\texttt{notes/superposition\_results.md}).
 
 \subsection{Stage two: repair at the predicted frame}
 \label{sec:repair}
@@ -458,24 +472,25 @@ the additive-plus-pairs class at the fixed frame \(E^\star\): code
 \[
 E(z)=z^\top E^\star+\phi(z)^\top E_2+e_0^\top,
 \qquad
-\phi_{ij}(z)\propto(z_i-p)(z_j-p),
+\phi_{ij}(z)=\text{the product }(z_i-p_i)(z_j-p_j)\text{ residualised on }[1,z]\text{ and standardised},
 \]
-read through one decoder \(D\). The pair features are population-orthogonal to the
-first-order ones, so \(E^{(1)}\) is untouched by construction. The problem is convex
+for \(i<j\) among the top 18 features (153 pairs), read through one decoder \(D\). The
+residualisation makes the pair block exactly orthogonal to the first-order dictionary in
+the sample, so \(E^{(1)}\) is untouched by construction and the split remains well
+defined when the features are correlated. The problem is convex
 in \(E_2\) at fixed \((D,e_0)\) and in \((D,e_0)\) at fixed code; we alternate the
 two solves from the additive decoder (block-coordinate descent to a stationary point,
 not a certified optimum — the one non-certified step in the pipeline).
 
 \paragraph{What it predicts.}
-Two things the first-order theory could not: about three quarters of the
-cross-entropy gap to the trained network, and the head amplification of Figure~2.
-The mechanism is the one anticipated in the appendix: once the pair vectors absorb
-the interference the frame's overlaps create, the decoder can read the head harder
-without paying for it on co-active states. The completion has to be solved: a
-one-step quadratic in decoder resizing and pair vectors at the tied baseline is
-outside its radius, and the pair sector is conditional on the decoder as much as on
-the frame — the same Fisher/Newton step reproduces the trained pair maps given the
-network's own decoder and not given the additive-optimal one (results file, \S4).
+Two things the first-order theory could not: most of the cross-entropy gap to the
+trained network, and the head amplification. The mechanism is the one anticipated in
+the appendix: once the pair vectors absorb the interference the frame's overlaps
+create, the decoder can read the head harder without paying for it on co-active
+states. The completion has to be solved: a one-step quadratic in decoder resizing and
+pair vectors at the tied baseline is outside its radius, and the pair sector is
+conditional on the decoder as much as on the frame (numbers in
+\texttt{notes/superposition\_results.md}).
 
 \subsection{Status: validated, failed, and open}
 
@@ -486,21 +501,19 @@ experiments and numbers are recorded in \texttt{notes/superposition\_results.md}
 \paragraph{Validated.}
 \begin{itemize}
 \item \textbf{Allocation.} Water filling matches trained leverage at correlation
-\(0.977/0.993/0.989\) for \(d=3/6/12\), including the fractional head (no feature
-saturates at small \(d\)) and the position of the support edge (Figure~1 of the
-analysis notebook shows the full profiles, no threshold applied).
+\(0.83\)--\(1.00\) over the whole sweep (\(p\), \(\beta\), \(\rho\), \(d\)), including
+the fractional head where the regime is soft and the position of the support edge
+(Figure~1 of the analysis notebook shows the full profiles, no threshold applied).
 \item \textbf{Overlap magnitudes.} Per-row off-diagonal energy is fixed by
 Equation~\eqref{eq:forced-overlap}; realized frames satisfy it exactly.
-\item \textbf{The pair sector, conditional on the frame.} At a fixed first-order
-frame with the network's own decoder, one Fisher/Newton solve reproduces the trained
-pair maps at per-seed correlation \(0.82/0.80/0.81\) (results file, \S4.2).
-\item \textbf{Repair.} At \(E^\star\), the pair block closes about three quarters
-of the CE gap to trained and reproduces the head amplification
-(Section~\ref{sec:repair}).
-\item \textbf{Orientation.} The pressure frame \(E^\star\) of
-Equation~\eqref{eq:pressure-frame} reproduces the seed-averaged trained placement
-at \(d=3,6\) to within \(0.07/0.02\) of the pairs-class ceiling; the signed pressure
-predicts trained overlap signs at 90\%/82\%/64\% for \(d=3/6/12\).
+\item \textbf{Repair.} At \(E^\star\), the pair block closes most of the CE gap to
+trained and reproduces the head amplification (Section~\ref{sec:repair}).
+\item \textbf{Orientation.} The frame of Equation~\eqref{eq:pressure-frame} reproduces
+the seed-averaged trained placement (correlation of the leverage projectors'
+off-diagonals) at \(+0.60/+0.68/+0.25\) for \(d=3/6/12\) at the reference cell, at the
+level of the trained seed-to-seed agreement; orientation is a joint-optimum property
+(gradient descent from the anti-pressure frame returns to it) and is optimizer
+independent (Adam and SGD agree within seed noise).
 \end{itemize}
 
 \paragraph{Known failures.}
@@ -511,9 +524,22 @@ spectral mode short; the first-order theory alone under-predicts the whole
 represented block at \(d=3,6\).
 \item \textbf{Placement at \(d=12\).} The pressure frame predicts placement at
 \(d=3,6\) but not at \(d=12\), where both reference models do (Section~\ref{sec:orientation}).
-\item \textbf{Pricing the realization gap.} A certified toll on the allocation is
-consistent but does not improve it; superposition's interference cost is not needed
-to predict \(d_i\) (results file, \S1).
+\item \textbf{The refund assumption.} Stage one minimises the tied predictor's CE
+\(C(d)\), which counts the benefit of leverage and none of its cost: realising a fractional
+diagonal forces the off-diagonal energy of Equation~\eqref{eq:app-forced-overlap}, whose
+interference cost is the \(B(h)=\sum_i h_i(1-h_i)\) term of the two-term theory. Dropping
+the projector constraint deletes \(B\), and that is correct exactly when the completion
+refunds it. It does at the reference cell (free pairs return 78--84\% of the \(B\)-slope,
+so a priced allocation there is worse, not better), and it fails where the ladder is steep
+or the features correlated: there the additive class's own optimum is hard (about \(d\)
+features at full leverage), the theory misses it by a factor of four in CE, and the
+fractional allocation is decided by ties among near-equal tail importances. The
+refund fails because the Fisher weight \(q_i(1-q_i)\) of the interference cost varies with
+the state once the softmax is peaked, pushing the cost into Walsh levels the pair block
+cannot reach. The candidate repair is a \emph{residual} price, the \(B\)-cost minus its
+projection onto \(\operatorname{span}\{1,z,\phi(z)\}\), which is computable at the
+fractional predictor and reduces to plain water filling where pairs refund
+(\texttt{notes/superposition\_results.md}).
 \item \textbf{Tail edges.} Trained allocations hold small leverage past the
 water-filling cutoff; the soft-tail law of Equation~\eqref{eq:soft-tail} accounts
 for it at \(d=3,6\) but is not yet part of the predicted allocation.
@@ -578,15 +604,18 @@ The state embeddings are free, but every state must be decoded through the same
 
 \subsection{The first-order feature vectors}
 
-Define
+In general, and in the implementation, \(E_i\) are the first-order coefficients of the
+least-squares fit of \(E(z)\) on \([1,z]\). For independent features these coincide in
+population with
 \begin{equation}
 E_i
 =
 \mathbb E[E(z)\mid z_i=1]
 -
-\mathbb E[E(z)\mid z_i=0].
+\mathbb E[E(z)\mid z_i=0],
 \label{eq:app-feature-vector}
 \end{equation}
+which is the form the derivation below uses.
 Let
 \[
 \bar E=\mathbb E[E(z)]
@@ -633,6 +662,10 @@ Therefore
 \forall i.
 \label{eq:app-residual-orthogonal}
 \end{equation}
+Under correlated features this step fails, which is why the implementation defines the
+split by least squares on \([1,z]\) and residualises the pair block on the same
+dictionary: orthogonality then holds in the sample by construction rather than by
+independence.
 
 Thus
 \[
@@ -772,13 +805,20 @@ The hard geometry requires choosing all vectors \(E_i\) subject to
 Equation~\eqref{eq:app-tight-frame}. We first solve the simpler question of how their
 total squared norm should be divided among features.
 
-The target logit contribution of feature \(i\) is \(\alpha_i z_i\). In the
-feature-aligned fractional relaxation, retaining dimensional share \(d_i\) gives
+The target logits are \(zW^\top\), \(W=\operatorname{diag}(\alpha)\) for independent
+features and \(W=\operatorname{diag}(\alpha)C^{1/2}\) on the predictive modes. In the
+feature-aligned fractional relaxation, retaining dimensional share \(d_i\) scales
+coordinate \(i\)'s contribution by \(d_i\):
 \begin{equation}
+q_{\mathbf d}(\cdot\mid z)
+=
+\operatorname{softmax}\!\big((z\odot\mathbf d)W^\top\big),
+\qquad
 q_{\mathbf d}(i\mid z)
 =
 \frac{\exp(\alpha_i d_i z_i)}
-{\sum_j\exp(\alpha_jd_jz_j)}.
+{\sum_j\exp(\alpha_jd_jz_j)}
+\ \text{ for } W=\operatorname{diag}(\alpha).
 \label{eq:app-fractional-predictor}
 \end{equation}
 
@@ -1249,8 +1289,10 @@ identity. The exact result is the forced-overlap law in
 Equation~\eqref{eq:app-forced-overlap}. The approximation assumes that, in the iid
 setting, the leading predictive cost of those overlaps is approximately proportional
 to their total squared magnitude. The realization gap per unit of forced overlap measures \(\beta\)
-(\(\approx0.02\)--\(0.04\)); adding it to the allocation does not improve the
-prediction (\texttt{notes/superposition\_results.md}, \S1).
+(\(\approx0.02\)--\(0.04\) at the reference cell). Adding it to the allocation does
+not improve the prediction there, because the completion refunds it; it is the
+missing term where the pairs do not refund (steep ladders, correlated features), see
+the refund assumption under Status.
 
 \subsection{Why the full model can sustain fractional allocation}
 
@@ -1362,5 +1404,6 @@ and the unavoidable squared overlap
 d_i^\star(1-d_i^\star).
 \]
 
-Finally, the balanced SVD of \(L^{(1)}\) gives the predicted raw first-order feature
-and decoder Grams, under the additional balanced-factorization assumption.
+Finally, the balanced rank-\(d\) factorization of the completed model's logit table
+over states gives the predicted feature and readout Grams in the common gauge
+(Section~\ref{app:balanced}).
