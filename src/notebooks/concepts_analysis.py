@@ -28,8 +28,8 @@ def _(mo):
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
     from src.code.data import graph_conditional, cube_codes
     from src.code.geometry import factor_logcond, predicted_geometry
-    from src.code.eval import cka
-    from src.code.train import train_inline, graph_overrides
+    from src.code.analysis_utils import cka, load_run
+    from src.code.train import graph_overrides
     from src.code import plot_utils
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
@@ -59,11 +59,11 @@ def _(mo):
         graph_conditional,
         graph_overrides,
         hue,
+        load_run,
         mpatches,
         np,
         plot_utils,
         plt,
-        train_inline,
     )
 
 
@@ -453,15 +453,14 @@ def _(factor_logcond, gauge, graph_conditional):
 
 
 @app.cell
-def _(WORLDS, cka, gauge, graph_overrides, np, oracle, train_inline):
+def _(WORLDS, cka, gauge, graph_overrides, load_run, np, oracle):
     learned = {}
     for _name, _sp in WORLDS.items():
         # every centered kernel is rank 2, so a 2-D code loses nothing; SGD from small init
         # conserves E'E - D'D ~ 0, so the trained split is the balanced one
-        _model, _ds, _ev, _, _ = train_inline(graph_overrides(_sp) +
-                                              ["runner=linear", "training_kwargs.optimizer=sgd", "training_kwargs.learning_rate=0.5", "model_kwargs.model_config.embed_dim=2"])
-        _E = _ev.representation(_model, project=False)     # the raw 2-D plane: D is drawn in it too
-        _D = _model.readout.detach().cpu().numpy()
+        _run = load_run(graph_overrides(_sp) +
+                        ["runner=linear", "training_kwargs.optimizer=sgd", "training_kwargs.learning_rate=0.5", "model_kwargs.model_config.embed_dim=2"])
+        _E, _D = _run["representation"], _run["readout"]   # the raw 2-D plane: D is drawn in it too
         _imb = np.abs(_E.T @ _E - _D.T @ _D).max() / np.abs(_D.T @ _D).max()
         print(f"{_name:8s} CKA={cka(_E, oracle[_name][0]):.3f}   |E'E - D'D| / |D'D| = {_imb:.4f}")
         learned[_name] = gauge(_name, _E, _D)

@@ -21,10 +21,10 @@ def _graph_overrides(structure, kw):
 
 
 def _check(history, dataset, model, evaluator):
-    from src.code.eval import rsa as _rsa
+    from src.code.analysis_utils import rsa as _rsa
     from src.code.geometry import predicted_geometry
     assert "loss" in history.columns and len(history) >= 1
-    rep = evaluator.evaluate(model)[1]["representation"].numpy()
+    rep = evaluator.evaluate(model)["representation"]
     score = _rsa(rep, predicted_geometry(np.asarray(dataset.conditional, float)))
     assert isinstance(score, float) and not math.isnan(score)   # produced a real geometry score
     # the embedding table must cover the item tokens (distinct from outcome classes when rectangular)
@@ -61,7 +61,7 @@ def test_relational_training_runs(tmp_path):
         ["setting=relational", "relation=modular_add", "+relation_kwargs.p=7", "runner=linear"] + _QUICK,
         name="grid_relational", cache_dir=str(tmp_path))
     assert dataset.arity == 2
-    assert evaluator.evaluate(model)[1]["representation"] is None         # a bilinear readout has no representation
+    assert evaluator.evaluate(model)["representation"] is None            # a bilinear readout has no representation
     assert history.iloc[-1]["loss"] < 1.0
 
 

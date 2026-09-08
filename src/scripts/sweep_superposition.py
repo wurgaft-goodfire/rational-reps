@@ -67,25 +67,24 @@ def overrides(p, beta, rho, d, seed, runner="linear"):
 def cached(p, beta, rho, d, seed, runner="linear"):
     """Whether one cell's run of `runner` is on disk with its saved final evaluation."""
     import os
+    from src.code.config import EVAL_FILE
     from src.code.train import resolve_config
     config = resolve_config(overrides(p, beta, rho, d, seed, runner),
                             name=run_name(p, beta, rho, d, seed, runner))
     steps = [int(x) for x in os.listdir(config.output_dir) if x.isdigit()] if os.path.isdir(config.output_dir) else []
-    return bool(steps) and os.path.exists(os.path.join(config.output_dir, str(max(steps)), "metrics.pt"))
+    return bool(steps) and os.path.exists(os.path.join(config.output_dir, str(max(steps)), EVAL_FILE))
 
 
 def train_cell(p, beta, rho, d, seed, runner="linear"):
     """One cell's network (the linear network or a reference class, `RUNNERS`): trains it if
-    absent, evaluates and saves if the run predates saved evaluations (`train_inline` does
-    both), and returns the saved logit table over states (N, M) — never the model."""
-    from src.code.analysis_utils import run_extras
-    from src.code.train import resolve_config, train_inline
-    config = resolve_config(overrides(p, beta, rho, d, seed, runner),
-                            name=run_name(p, beta, rho, d, seed, runner))
+    absent, then returns the saved logit table over states (N, M) — never the model."""
+    from src.code.analysis_utils import load_run
+    from src.code.train import train_inline
     if not cached(p, beta, rho, d, seed, runner):
         train_inline(overrides(p, beta, rho, d, seed, runner),
                      name=run_name(p, beta, rho, d, seed, runner))
-    return run_extras(config.run_dir)["extras"]["logits"]
+    return load_run(overrides(p, beta, rho, d, seed, runner),
+                    name=run_name(p, beta, rho, d, seed, runner))["logits"]
 
 
 def theory_cell(p, beta, rho, d, seed, n_frames=8):
@@ -105,9 +104,10 @@ def theory_cell(p, beta, rho, d, seed, n_frames=8):
 
 def sweep_cell(p, beta, rho, d, runners=("linear",)):
     """One cell of the sweep for the notebook: per seed, the theory and each trained runner
-    measured on the cell's coordinates (`geometry.measure`), plus the theory's solution ('o').
-    Reads each run's saved evaluation, so no model is constructed."""
-    from src.code.geometry import measure, theory_table
+    measured on the cell's coordinates (`analysis_utils.measure`), plus the theory's solution
+    ('o'). Reads each run's saved evaluation, so no model is constructed."""
+    from src.code.analysis_utils import measure
+    from src.code.geometry import theory_table
     alpha = SCALE * (1.0 + np.arange(M)) ** -beta
     rows = []
     for seed in GRID["seed"]:

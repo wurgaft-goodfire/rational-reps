@@ -9,7 +9,7 @@ from omegaconf import OmegaConf
 from src.code.config import Config
 from src.code.data import HMMDataset
 from src.code.geometry import predicted_geometry
-from src.code.eval import cka
+from src.code.analysis_utils import cka
 
 
 def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0, structure="ring",

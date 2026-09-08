@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 
 from src.code import geometry
-from src.code.geometry import allocate_d, decoder_map, feature_vectors, tight_frame
+from src.code.analysis_utils import feature_vectors, leverage, logit_map, measure
+from src.code.geometry import allocate_d, decoder_map, tight_frame
 
 LADDER = 8.0 * (1.0 + np.arange(64)) ** -0.5          # the standard power-law importance ladder
 
@@ -115,7 +116,7 @@ def test_predicted_map_uses_exactly_the_allocated_subspace():
     a, _ = allocate_d(LADDER, Z, 6)
     E1 = tight_frame(a, seed=3)
     L1, _ = decoder_map(LADDER, Z, E1)
-    h = geometry.leverage(L1)[0]
+    h = leverage(L1)[0]
     assert np.corrcoef(h, a)[0, 1] > 0.999
 
 
@@ -180,7 +181,7 @@ def test_repair_lowers_the_ce_monotonically_and_keeps_the_frame():
     out = geometry.repair(alpha, Z, E1, n_top=10, rounds=4)
     assert (np.diff(out["ce"]) < 1e-9).all()
     assert out["ce"][-1] < 0.8 * out["ce_additive"]
-    assert np.corrcoef(geometry.leverage(out["L1"])[0], np.diag(P))[0, 1] > 0.999
+    assert np.corrcoef(leverage(out["L1"])[0], np.diag(P))[0, 1] > 0.999
     assert out["E2"].shape == (45, 3)
 
 
@@ -222,13 +223,13 @@ def test_feature_vectors_recover_an_additive_code_exactly():
 def test_leverage_gives_full_scores_to_an_orthogonal_frame_and_satisfies_the_packing_identity():
     W = np.zeros((5, 8))
     W[np.arange(5), np.arange(5)] = [3.0, 2.0, 1.5, 1.0, 0.5]
-    h, P = geometry.leverage(W)
+    h, P = leverage(W)
     assert np.allclose(h, 1.0)
     assert np.allclose(P - np.diag(np.diag(P)), 0.0)
 
     rng = np.random.default_rng(0)
     W = rng.normal(size=(12, 3))
-    h, P = geometry.leverage(W)
+    h, P = leverage(W)
     assert np.all(h > -1e-12) and np.all(h < 1 + 1e-12)
     assert abs(h.sum() - 3) < 1e-9
     off = (P ** 2).sum(1) - np.diag(P) ** 2
@@ -239,7 +240,7 @@ def test_leverage_is_invariant_to_any_invertible_transform_of_the_code():
     rng = np.random.default_rng(1)
     W = rng.normal(size=(10, 4))
     A = rng.normal(size=(4, 4)) + 4 * np.eye(4)
-    assert np.allclose(geometry.leverage(W)[1], geometry.leverage(W @ A)[1], atol=1e-8)
+    assert np.allclose(leverage(W)[1], leverage(W @ A)[1], atol=1e-8)
 
 
 def test_logit_map_recovers_a_planted_additive_map_exactly():
@@ -249,7 +250,7 @@ def test_logit_map_recovers_a_planted_additive_map_exactly():
     b0 = rng.normal(size=6)
     shift = rng.normal(size=(256, 1))                 # softmax gauge: per-row constant
     L = Z @ R0 + b0 + shift
-    R, b, r2 = geometry.logit_map(L, Z)
+    R, b, r2 = logit_map(L, Z)
     J = np.eye(6) - 1.0 / 6
     assert np.allclose(R, R0 @ J, atol=1e-9)
     assert abs(r2 - 1.0) < 1e-12
@@ -265,7 +266,7 @@ def test_measure_recovers_a_planted_rank_d_table():
     E = np.zeros((m, d))
     E[0, 0], E[1, 1], E[2, 2] = 2.0, 1.5, 1.0
     L = (Z - Z.mean(0)) @ (E @ E.T)
-    h, G, S, GD, P = geometry.measure(L, Z, d)
+    h, G, S, GD, P = measure(L, Z, d)
     assert np.allclose(h[:3], 1.0, atol=1e-6) and h[3:].max() < 1e-6
     assert np.allclose(np.diag(G)[3:], 0.0, atol=1e-9) and np.all(np.diff(np.diag(G)[:3]) < 0)
     assert np.allclose(S, np.linalg.svd(L - L.mean(1, keepdims=True), compute_uv=False)[:d] / np.sqrt(n))

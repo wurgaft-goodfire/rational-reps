@@ -79,8 +79,8 @@ $CACHE_DIR/{setting}/{override_dirname}/{name}/
   history.csv              # the training curve
   checkpoints/
     {step}/
-      model/               # saved weights
-      metrics.pt           # {metrics, extras, step}: KL plus logits, representation, readout
+      model/               # saved weights (torch)
+      eval.npz             # the saved evaluation: loss, logits, representation, readout, step, kernel
 ```
 
 ## Notebooks
@@ -107,9 +107,12 @@ cannot assign the same variable; marimo rejects the notebook if they do. Give th
 The setup cell resolves the project root and `chdir`s to it, so notebooks find `conf/` and `src/`
 regardless of the working directory.
 
-Notebooks train through `train.train_inline(overrides)`, which returns
-`(model, dataset, evaluator, history_df, config)` and transparently reuses a cached run when one
-exists with the same config.
+Notebooks read runs through `analysis_utils.load_run(overrides)`, which returns the run's config,
+its dataset and the final checkpoint's saved evaluation as numpy arrays (`loss`, `logits`,
+`representation`, `readout`). It never trains or loads a model: a missing run raises with the
+training command, and a run whose saved kernel differs from the task the config now builds raises
+too. Train from the CLI (above); `train.train_inline(overrides)` exists for tests and for the one
+notebook that needs the live model.
 
 **Figures** are written to the gitignored cache via `plot_utils.figure_path(config, name)`; promote
 a figure to git by hand only when it is paper-final:
@@ -131,14 +134,16 @@ running a job.
 
 ## Analysis
 
-`load_eval_results` returns the same wide schema from disk (default) or wandb: one row per
-(run, step), a `config` column, and one column per flat metric.
+Three layers, each doing one thing:
 
-```python
-from src.code.analysis_utils import load_eval_results
-
-df = load_eval_results(setting="graph-cooccurrence", experiment_name="word_attribute")
-```
+- `eval.Evaluator.evaluate(model)` is the only forward pass analysis depends on. It returns the
+  model's own objects over every input, untransformed: the KL, the logits, the last hidden state
+  at the outcome slot and the readout rows that read it. `Evaluator.save` writes them to `eval.npz`.
+- `analysis_utils.load_run(overrides)` reads that file back. No model, no transform.
+- Transforms are explicit functions a notebook applies and names in the cell above:
+  `readout_projection` (onto the readout's row space), `feature_vectors` (least-squares
+  feature directions), gauge fixes in `geometry.py`, and the comparison metrics `cka`, `cca`,
+  `rsa` with their nulls. Identity is the default at every layer.
 
 wandb is optional throughout: `wandb.enabled=false` (the default) skips `wandb.init` and all
 online logging.
@@ -154,8 +159,8 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 - `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
 - `src/code/train.py` — Hydra entry point + `train_inline` for notebooks. Sizes the model from the dataset, runs the HF `Trainer` with custom callbacks.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.
-- `src/code/eval.py` — `EvalComponents` (fixed eval batches, built once) + `Evaluator` (`evaluate(model) -> (metrics, extras)`). `Evaluator.from_cache` reuses a prior run's batches so online and standalone eval score identically.
-- `src/code/analysis_utils.py` — `load_eval_results(..., source="local"|"wandb")`.
+- `src/code/eval.py` — `Evaluator`: `evaluate(model)` scores every input against its exact target and returns the loss, logits, representation and readout as numpy; `save` writes them to a checkpoint's `eval.npz`. Also the standalone eval entry point.
+- `src/code/analysis_utils.py` — the array side: `load_run` / `load_evaluation`, explicit transforms (`readout_projection`, `feature_vectors`, `leverage`, `measure`), and the similarity metrics (`cka`, `cca`, `rsa`, nulls).
 - `src/code/plot_utils.py` — figure styling, `figure_path`, `save_figure`.
 - `notes/` — derivations and setting write-ups.
 
@@ -169,4 +174,4 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 
 - **Evaluate as a pure function.** Every model is scored on every input the task defines against its exact outcome distribution, so `evaluate(model)` is a pure function of the model, reproducible across checkpoints and architectures.
 - **Config-driven, no hardcoding.** All knobs live in `conf/`. Derive model I/O dims from the dataset; never hardcode them.
-- **Reproducible artifacts.** Each run writes `config_resolved.yaml` and, at the end of training, `metrics.pt` with the model's logits, representation and readout over every input — so analysis reads a run without constructing the model (`analysis_utils.run_extras`).
+- **Reproducible artifacts.** Each run writes `config_resolved.yaml` and, at the end of training, `eval.npz` with the model's loss, logits, representation and readout over every input plus the task's kernel hash — so analysis reads a run without constructing the model (`analysis_utils.load_run`) and notices when the task changed under it.

@@ -9,7 +9,8 @@ from omegaconf import OmegaConf
 from src.code.config import Config
 from src.code.data import KernelDataset
 from src.code.models import init_model
-from src.code.eval import Evaluator, rsa
+from src.code.analysis_utils import rsa
+from src.code.eval import Evaluator
 from src.code.geometry import predicted_geometry
 
 pytestmark = pytest.mark.slow
@@ -37,9 +38,9 @@ def _train_and_score(model_type, steps=500, lr=0.01, n=12):
         batch = dataset.__getitem__()
         out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward(); opt.step()
-    metrics, extras = Evaluator(config, dataset).evaluate(model)
-    return metrics | {"rsa": rsa(extras["representation"].numpy(),
-                                predicted_geometry(np.asarray(dataset.conditional, float)))}
+    ev = Evaluator(config, dataset).evaluate(model)
+    return {"loss": ev["loss"], "rsa": rsa(ev["representation"],
+                                           predicted_geometry(np.asarray(dataset.conditional, float)))}
 
 
 @pytest.mark.parametrize("model_type", ["linear", "mlp", "rnn"])
@@ -72,9 +73,9 @@ def _train_features(steps=600, lr=0.01):
         batch = dataset.__getitem__()
         out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward(); opt.step()
-    metrics, extras = Evaluator(config, dataset).evaluate(model)
-    return metrics | {"rsa": rsa(extras["representation"].numpy(),
-                                 predicted_geometry(np.asarray(dataset.conditional, float)))}
+    ev = Evaluator(config, dataset).evaluate(model)
+    return {"loss": ev["loss"], "rsa": rsa(ev["representation"],
+                                           predicted_geometry(np.asarray(dataset.conditional, float)))}
 
 
 def test_linear_converges_to_features_geometry():

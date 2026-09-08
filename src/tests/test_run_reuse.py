@@ -84,7 +84,7 @@ def test_the_digest_tracks_the_training_target_not_the_oracle_s_view():
     """Runs train on the outcome distribution ``P``; ``conditional`` is the log-space object the
     geometry oracle factors. Changing how the oracle reads the task must not invalidate weights
     fit to an identical target."""
-    from src.code.train import _kernel
+    from src.code.data import kernel_hash
 
     @dataclass
     class _DS2:
@@ -93,5 +93,5 @@ def test_the_digest_tracks_the_training_target_not_the_oracle_s_view():
 
     P = np.array([[0.5, 0.5], [0.25, 0.75]])
     same_task_new_oracle = _DS2(np.log(P) * 3.0, P)          # oracle rescaled, target untouched
-    assert _kernel(_DS2(np.log(P), P)) == _kernel(same_task_new_oracle)
-    assert _kernel(_DS2(np.log(P), P)) != _kernel(_DS2(np.log(P), P[::-1]))
+    assert kernel_hash(_DS2(np.log(P), P)) == kernel_hash(same_task_new_oracle)
+    assert kernel_hash(_DS2(np.log(P), P)) != kernel_hash(_DS2(np.log(P), P[::-1]))

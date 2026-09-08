@@ -25,7 +25,6 @@ def _(mo):
 def _(mo):
     import os, sys
     import numpy as np
-    import torch
 
     # Project root, independent of the working directory (a headless run can start outside
     # the repo). chdir so Hydra resolves conf/, and add it to sys.path.
@@ -35,8 +34,8 @@ def _(mo):
     from src.code.data import apply_lapse, graph_conditional
     from src.code.geometry import (predicted_geometry, factor_logcond, canonical_gauge,
                                    log_conditional, fourier_basis, class_means)
-    from src.code.eval import cka, cka_null, cka_shuffle_null, rsa
-    from src.code.train import train_inline, graph_overrides
+    from src.code.analysis_utils import cka, cka_null, cka_shuffle_null, load_run, rsa
+    from src.code.train import graph_overrides
     from src.code import plot_utils           # importing this applies the house plotting style
 
     FIGURES = ROOT / "outputs" / "figures"     # one flat dir: {structure}_{figure}.png
@@ -53,11 +52,11 @@ def _(mo):
         fourier_basis,
         graph_conditional,
         graph_overrides,
+        load_run,
         log_conditional,
         np,
         plot_utils,
         predicted_geometry,
-        train_inline,
     )
 
 
@@ -68,29 +67,28 @@ def _(
     cka_null,
     cka_shuffle_null,
     class_means,
+    load_run,
     np,
     plot_utils,
     predicted_geometry,
-    train_inline,
 ):
-    from src.code.analysis_utils import representation
-
     ITEM_CMAP = plot_utils.FIG.item_cmap           # twilight minus its grey ends (house item map)
 
     def geometry_panel(name, runs, spec=None, classes=None):
         """Draw the predicted code beside each run's, and score them against it.
 
-        ``runs`` maps a column label to that run's Hydra overrides. ``classes``, when given, is the
-        answer class of each row: all rows sharing an answer sit on one point of E*, so the panels
-        show one point per answer while CKA is still scored over every row, where a random code has
-        far less room to match.
+        ``runs`` maps a column label to that run's Hydra overrides; each run is read from its saved
+        evaluation, and its representation is the raw last hidden state. ``classes``, when given, is
+        the answer class of each row: all rows sharing an answer sit on one point of E*, so the
+        panels show one point per answer while CKA is still scored over every row, where a random
+        code has far less room to match.
         """
         codes, oracle = {}, None
         for label, overrides in runs.items():
-            model, dataset, _, _, _ = train_inline(overrides)
-            codes[label] = representation(model, dataset)
+            run = load_run(overrides)
+            codes[label] = run["representation"]
             if oracle is None:
-                oracle = np.asarray(predicted_geometry(np.asarray(dataset.conditional, float)), float)
+                oracle = np.asarray(predicted_geometry(np.asarray(run["dataset"].conditional, float)), float)
         scores = {label: cka(code, oracle) for label, code in codes.items()}
         print(f"{name:26s} rand {cka_null(oracle):.2f} shuf {cka_shuffle_null(oracle):.2f}  "
               + "  ".join(f"{label} {s:.2f}" for label, s in scores.items()), flush=True)

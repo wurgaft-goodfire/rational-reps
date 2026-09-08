@@ -1,5 +1,4 @@
 import os
-import torch
 from transformers import TrainerCallback
 import wandb
 
@@ -44,16 +43,15 @@ class StepMetricsCallback(TrainerCallback):
         final = state.global_step >= state.max_steps
         if not final and (self.step_interval is None or state.global_step % self.step_interval):
             return
-        metrics, extras = self.evaluator.evaluate(self.trainer.model)
-        self.history.append({"step": state.global_step, **metrics})
+        result = self.evaluator.evaluate(self.trainer.model)
+        self.history.append({"step": state.global_step, "loss": result["loss"]})
         if self.use_wandb:
-            wandb.log({f"eval/{k}": v for k, v in metrics.items()}, step=state.global_step)
+            wandb.log({"eval/loss": result["loss"]}, step=state.global_step)
 
         if self.config.training_kwargs.save_online_eval:
             checkpoint_save_dir = os.path.join(self.config.output_dir, str(state.global_step))
             os.makedirs(checkpoint_save_dir, exist_ok=True)
-            torch.save({"metrics": metrics, "extras": extras, "step": state.global_step},
-                       os.path.join(checkpoint_save_dir, "metrics.pt"))
+            self.evaluator.save(result, checkpoint_save_dir, step=state.global_step)
 
         self.trainer.model.train()
 

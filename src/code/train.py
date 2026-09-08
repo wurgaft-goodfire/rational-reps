@@ -1,7 +1,5 @@
-import hashlib
 import os
 import shutil
-import numpy as np
 import pandas as pd
 from transformers import TrainingArguments, Trainer
 import torch
@@ -13,8 +11,8 @@ from dotenv import load_dotenv
 from pyprojroot import here
 from omegaconf import DictConfig, OmegaConf, open_dict
 from .models import init_model, load_model, MODEL_CLASSES
-from .config import Config, clean_dirname
-from .data import init_dataset
+from .config import Config, EVAL_FILE, clean_dirname
+from .data import init_dataset, kernel_hash
 from .eval import Evaluator
 from .train_utils import (
     CustomSaveCallback,
@@ -128,12 +126,11 @@ def train(config, dataset):
     history = pd.DataFrame(metrics_callback.history)
     history.to_csv(os.path.join(config.run_dir, "history.csv"), index=False)
 
-    # The final evaluation — KL plus the representation (logits, code, readout over every
-    # input) — is saved next to the final checkpoint so analysis never needs the model.
-    metrics, extras = metrics_callback.evaluator.evaluate(trainer.model)
+    # The final evaluation (KL, logits, representation and readout over every input) is saved next
+    # to the final checkpoint so analysis never needs the model.
+    evaluator = metrics_callback.evaluator
     last = max(int(d) for d in os.listdir(config.output_dir) if d.isdigit())
-    torch.save({"metrics": metrics, "extras": extras, "step": last},
-               os.path.join(config.output_dir, str(last), "metrics.pt"))
+    evaluator.save(evaluator.evaluate(trainer.model), os.path.join(config.output_dir, str(last)), step=last)
 
     # Return the trained artifacts so callers (notebooks) can use them in-process; the CLI
     # entry point ignores the return value.
@@ -157,27 +154,13 @@ def _run_key(cfg):
     return c
 
 
-def _kernel(dataset):
-    """Fingerprint of the kernel ``P``, the outcome distribution a run is fit to. The run dir is
-    keyed by the override string, so a code change to a builder moves the task while leaving the
-    config identical; this catches that. Shapes and values both enter the hash.
-
-    Deliberately not ``conditional``, which is the log-space object the geometry oracle factors:
-    changing how the oracle reads a task must not invalidate weights trained on the same kernel."""
-    target = getattr(dataset, "P", None)
-    if target is None:
-        target = dataset.conditional
-    T = np.ascontiguousarray(np.asarray(getattr(target, "cpu", lambda: target)(), dtype=np.float64))
-    return hashlib.sha1(repr(T.shape).encode() + T.tobytes()).hexdigest()[:16]
-
-
 def _run_exists(config, dataset):
     """Write config_resolved and report whether a completed run of the *same resolved config and
     task tensor* is already on disk; a stale or ``overwrite=true`` run is wiped so training
     re-runs."""
     resolved_path = os.path.join(config.run_dir, "config_resolved.yaml")
     with open_dict(config.cfg):
-        config.cfg.kernel = _kernel(dataset)
+        config.cfg.kernel = kernel_hash(dataset)
     stale = os.path.exists(resolved_path) and _run_key(OmegaConf.load(resolved_path)) != _run_key(config.cfg)
     config.to_yaml(resolved_path)
     if os.path.exists(config.output_dir) and len(os.listdir(config.output_dir)) > 0:
@@ -191,16 +174,16 @@ def _run_exists(config, dataset):
 
 
 def _load_run(config, dataset, device=None):
-    """Load a finished run's final checkpoint + rebuild its evaluator (on the run's cached eval
-    batches) and history — the reuse counterpart to `train()`, returning the same artifacts."""
+    """Load a finished run's final checkpoint, rebuild its evaluator and read its history — the
+    reuse counterpart to `train()`, returning the same artifacts. A run saved before evaluations
+    were written gets its ``eval.npz`` here."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     evaluator = Evaluator(config, dataset)
     last = max(int(d) for d in os.listdir(config.output_dir) if d.isdigit())
-    model, _ = load_model(config, os.path.join(config.output_dir, str(last), "model"), device=device)
-    saved = os.path.join(config.output_dir, str(last), "metrics.pt")
-    if not os.path.exists(saved):                 # a run from before the evaluation was saved
-        metrics, extras = evaluator.evaluate(model)
-        torch.save({"metrics": metrics, "extras": extras, "step": last}, saved)
+    checkpoint_dir = os.path.join(config.output_dir, str(last))
+    model, _ = load_model(config, os.path.join(checkpoint_dir, "model"), device=device)
+    if not os.path.exists(os.path.join(checkpoint_dir, EVAL_FILE)):
+        evaluator.save(evaluator.evaluate(model), checkpoint_dir, step=last)
     history = pd.read_csv(os.path.join(config.run_dir, "history.csv"))
     return model, dataset, evaluator, history
 

@@ -1,9 +1,12 @@
-"""In-process notebook training: train_inline composes the CLI config and returns the live model
-plus an in-memory geometry-metric history. Marked slow (runs the real Trainer path)."""
+"""In-process notebook training and reading: train_inline composes the CLI config and returns the
+live model plus an in-memory history; load_run reads the saved evaluation back without a model.
+Marked slow (runs the real Trainer path)."""
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from src.code.analysis_utils import load_run
 from src.code.train import train_inline
 
 pytestmark = pytest.mark.slow
@@ -26,11 +29,35 @@ def test_train_inline_returns_live_model_and_geometry_history(tmp_path):
     assert len(history) >= 2
     # the live model can be re-scored through the returned evaluator, and its saved representation
     # matches the closed-form circle
-    from src.code.eval import rsa
+    from src.code.analysis_utils import rsa
     from src.code.geometry import predicted_geometry
-    import numpy as np
-    _, extras = evaluator.evaluate(model)
-    assert rsa(extras["representation"].numpy(), predicted_geometry(np.asarray(dataset.conditional, float))) > 0.6
+    rep = evaluator.evaluate(model)["representation"]
+    assert rsa(rep, predicted_geometry(np.asarray(dataset.conditional, float))) > 0.6
+
+
+def test_load_run_reads_the_saved_evaluation_without_a_model(tmp_path):
+    model, dataset, evaluator, history, config = train_inline(TINY, name="read", cache_dir=str(tmp_path))
+    live = evaluator.evaluate(model)
+
+    run = load_run(TINY, name="read", cache_dir=str(tmp_path))
+    assert run["config"].run_dir == config.run_dir
+    assert run["step"] == 200 and run["loss"] == pytest.approx(history["loss"].iloc[-1], abs=1e-4)
+    for key in ("logits", "representation", "readout"):        # the arrays the live model gives
+        assert np.allclose(run[key], live[key], atol=1e-5)
+    assert np.allclose(np.asarray(run["dataset"].conditional, float), np.asarray(dataset.conditional, float))
+
+    # a run that was never trained: fail with the command that would train it, train nothing
+    with pytest.raises(FileNotFoundError, match="src.code.train"):
+        load_run(TINY, name="never", cache_dir=str(tmp_path))
+    assert not (Path(config.run_dir).parent / "never").exists()
+
+    # the same run dir, but the task changed under it (a builder edit leaves the override string,
+    # hence the dir, untouched): the saved kernel no longer matches the one the config now builds
+    path = Path(config.output_dir) / "200" / "eval.npz"
+    saved = dict(np.load(path))
+    np.savez(path, **{**saved, "kernel": "0000000000000000"})
+    with pytest.raises(RuntimeError, match="kernel"):
+        load_run(TINY, name="read", cache_dir=str(tmp_path))
 
 
 def test_train_inline_is_config_keyed_and_reuses_without_retraining(tmp_path):
@@ -51,5 +78,4 @@ def test_train_inline_is_config_keyed_and_reuses_without_retraining(tmp_path):
     assert {p: p.stat().st_mtime_ns for p in model_files} == mtimes   # checkpoints untouched -> reused
     assert list(h2["step"]) == list(h1["step"])                       # identical history returned
     # the loaded model is the trained final checkpoint: its score matches the last logged step
-    metrics2, _ = ev2.evaluate(m2)
-    assert metrics2["loss"] == pytest.approx(h1["loss"].iloc[-1], abs=1e-4)
+    assert ev2.evaluate(m2)["loss"] == pytest.approx(h1["loss"].iloc[-1], abs=1e-4)

@@ -11,7 +11,8 @@ from omegaconf import OmegaConf
 
 from src.code.config import Config
 from src.code.data import KernelDataset
-from src.code.eval import Evaluator, cka, rsa
+from src.code.analysis_utils import cca, cka, cka_null, cka_shuffle_null, rsa
+from src.code.eval import Evaluator
 from src.code.geometry import factor_logcond, predicted_geometry
 
 
@@ -57,15 +58,14 @@ def test_saved_representation_of_the_predicted_geometry_scores_one_and_shuffled_
 
     vocab, d = dataset.vocab_size, E.shape[1]
     weight = np.zeros((vocab, d)); weight[dataset.item_tokens.numpy()] = E
-    metrics, extras = evaluator.evaluate(_EmbModel(weight, D.T, dataset.device))
-    assert metrics["loss"] < 1e-6                                       # the exact factorization
-    rep = extras["representation"].numpy()
-    assert cka(rep, E_pred) > 0.99 and rsa(rep, E_pred) > 0.99
+    ev = evaluator.evaluate(_EmbModel(weight, D.T, dataset.device))
+    assert ev["loss"] < 1e-6                                            # the exact factorization
+    assert cka(ev["representation"], E_pred) > 0.99 and rsa(ev["representation"], E_pred) > 0.99
 
     shuffled = weight.copy()
     shuffled[dataset.item_tokens.numpy()] = E[np.random.default_rng(0).permutation(16)]
-    _, ex2 = evaluator.evaluate(_EmbModel(shuffled, D.T, dataset.device))
-    assert rsa(ex2["representation"].numpy(), E_pred) < 0.99
+    ev2 = evaluator.evaluate(_EmbModel(shuffled, D.T, dataset.device))
+    assert rsa(ev2["representation"], E_pred) < 0.99
 
 
 def test_no_representation_is_saved_when_the_readout_reads_none():
@@ -77,16 +77,14 @@ def test_no_representation_is_saved_when_the_readout_reads_none():
         def __call__(self, input_ids, output_hidden_states=False):
             return {"logits": torch.zeros(input_ids.shape[0], dataset.num_dims)}
 
-    metrics, extras = Evaluator(config, dataset).evaluate(_NoCode())
-    assert set(metrics) == {"loss"} and extras["representation"] is None and extras["readout"] is None
+    ev = Evaluator(config, dataset).evaluate(_NoCode())
+    assert ev["representation"] is None and ev["readout"] is None and ev["logits"].shape == (16, dataset.num_dims)
 
 
 def test_cca_is_blind_to_an_invertible_map_where_cka_is_not():
     """The loss pins the code only up to X -> XA, W -> WA^-T. CCA cannot see that map at all, so it
     tests subspace agreement only; CKA does see it, which is what makes it the measure of the
     balanced-sqrt(S) split."""
-    from src.code.eval import cca
-
     rng = np.random.default_rng(0)
     X = rng.standard_normal((60, 4))
     A = np.diag([8.0, 1.0, 0.4, 0.05]) @ np.linalg.qr(rng.standard_normal((4, 4)))[0]
@@ -99,8 +97,6 @@ def test_cca_is_blind_to_an_invertible_map_where_cka_is_not():
 def test_cca_is_not_dominated_by_directions_that_carry_no_variance():
     """An almost-null direction of the target carries almost no loss, so nothing constrains it.
     CCA weights every direction equally, so it needs a variance cutoff to stay meaningful."""
-    from src.code.eval import cca
-
     rng = np.random.default_rng(0)
     X = rng.standard_normal((60, 3))
     Y = np.c_[X[:, :2], 1e-3 * rng.standard_normal(60)]      # two shared dims + a near-empty one
@@ -112,8 +108,6 @@ def test_cca_is_not_dominated_by_directions_that_carry_no_variance():
 def test_cka_null_is_the_floor_a_score_has_to_clear_and_rises_with_fewer_rows():
     """A random code is not at zero: with only a handful of rows it already matches well, so every
     score needs its own null beside it. Four rows sit far above thirty."""
-    from src.code.eval import cka_null
-
     rng = np.random.default_rng(0)
     few, many = rng.standard_normal((4, 3)), rng.standard_normal((60, 3))
     assert cka_null(few) > 3 * cka_null(many)
@@ -125,8 +119,6 @@ def test_cka_shuffle_null_keeps_the_spectrum_and_destroys_only_the_correspondenc
     """Shuffling the oracle's rows is the leakage control: same Gram spectrum, wrong assignment.
     A regular simplex is permutation-symmetric, so its shuffle null is exactly 1 (the geometry
     alone scores perfectly); a line's collapses, because which row sits where is the content."""
-    from src.code.eval import cka_shuffle_null
-
     simplex = np.eye(8) - 1 / 8                                # 8 equidistant points, centered
     assert cka_shuffle_null(simplex) == pytest.approx(1.0)
 

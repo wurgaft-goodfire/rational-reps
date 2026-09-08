@@ -1,12 +1,13 @@
 """Unit tests for the Evaluator: every input once against its exact target, the saved
-representation, and the collator dropping eval-only keys. Uses the graph dataset."""
+representation, the eval.npz artifact, and the collator dropping eval-only keys. Uses the graph
+dataset."""
 import numpy as np
 import torch
 from omegaconf import OmegaConf
 
 from src.code.config import Config
 from src.code.data import KernelDataset
-from src.code.eval import Evaluator, cca
+from src.code.eval import Evaluator
 from src.code.train_utils import PreBatchedDataCollator
 
 
@@ -36,29 +37,46 @@ def test_evaluate_scores_every_input_once_against_its_exact_row():
         output_key = "logits"
         def __call__(self, input_ids, output_hidden_states=False):
             return {"logits": ev.targets.log()}
-    assert abs(Evaluator(config, dataset).evaluate(_Bayes())[0]["loss"]) < 1e-6
+    assert abs(Evaluator(config, dataset).evaluate(_Bayes())["loss"]) < 1e-6
 
     class _Uniform(_Bayes):
         def __call__(self, input_ids, output_hidden_states=False):
             return {"logits": torch.zeros(n, dataset.num_dims)}
     kl_uniform = (ev.targets * (ev.targets.clamp_min(1e-30).log() + np.log(dataset.num_dims))).sum(1).mean()
-    assert abs(Evaluator(config, dataset).evaluate(_Uniform())[0]["loss"] - kl_uniform.item()) < 1e-5
+    assert abs(Evaluator(config, dataset).evaluate(_Uniform())["loss"] - kl_uniform.item()) < 1e-5
 
 
-def test_evaluate_saves_the_representation_the_readout_reads():
-    # extras: logits over the inputs, the representation (last hidden state) and the readout, such that
-    # code @ readout.T reproduces the logits
+def test_evaluate_returns_the_loss_logits_representation_and_readout_as_arrays():
+    # one flat dict: the KL, the logits over the inputs, the representation (last hidden state)
+    # and the readout as numpy arrays, such that representation @ readout.T reproduces the logits
     from src.code.models import LinearModel, ModelConfig
     config = _config()
     dataset = KernelDataset(config)
     model = LinearModel(ModelConfig(vocab_size=dataset.vocab_size, num_classes=dataset.num_dims,
                                     embed_dim=3, arity=1))
-    metrics, extras = Evaluator(config, dataset).evaluate(model.to("cuda" if torch.cuda.is_available() else "cpu"))
+    ev = Evaluator(config, dataset).evaluate(model.to("cuda" if torch.cuda.is_available() else "cpu"))
     n = len(dataset.input_tuples())
-    assert set(metrics) == {"loss"} and set(extras) == {"logits", "representation", "readout"}
-    assert extras["logits"].shape == (n, dataset.num_dims) and extras["representation"].shape == (n, 3)
-    assert extras["readout"].shape == (dataset.num_dims, 3)
-    assert np.allclose(extras["representation"].numpy() @ extras["readout"].T, extras["logits"].numpy(), atol=1e-5)
+    assert set(ev) == {"loss", "logits", "representation", "readout"}
+    assert all(isinstance(ev[k], np.ndarray) for k in ("logits", "representation", "readout"))
+    assert ev["logits"].shape == (n, dataset.num_dims) and ev["representation"].shape == (n, 3)
+    assert ev["readout"].shape == (dataset.num_dims, 3)
+    assert np.allclose(ev["representation"] @ ev["readout"].T, ev["logits"], atol=1e-5)
+
+
+def test_save_writes_one_npz_that_load_evaluation_reads_back(tmp_path):
+    # eval.npz holds the arrays plus the step and the task's kernel hash; an absent array (a
+    # readout that reads no vector) is omitted on disk and comes back as None
+    from src.code.analysis_utils import load_evaluation
+    from src.code.data import kernel_hash
+    config = _config()
+    dataset = KernelDataset(config)
+    result = {"loss": 0.25, "logits": np.arange(20.0).reshape(5, 4), "representation": None, "readout": None}
+    path = Evaluator(config, dataset).save(result, str(tmp_path), step=300)
+    assert path == str(tmp_path / "eval.npz")
+    back = load_evaluation(path)
+    assert back["loss"] == 0.25 and back["step"] == 300 and back["kernel"] == kernel_hash(dataset)
+    assert np.array_equal(back["logits"], result["logits"])
+    assert back["representation"] is None and back["readout"] is None
 
 
 def test_collator_unwraps_the_prebatched_dict_and_drops_what_the_model_rejects():
@@ -67,19 +85,3 @@ def test_collator_unwraps_the_prebatched_dict_and_drops_what_the_model_rejects()
     assert PreBatchedDataCollator()([batch]) == batch
     lm = PreBatchedDataCollator(drop=("distribution_labels",))([batch])
     assert set(lm) == {"input_ids", "labels"}                  # a causal LM never sees the row
-
-
-def test_cca_ignores_float32_scale_junk_directions():
-    # features computed in float32 with an exact affine constraint (e.g. probabilities summing
-    # to 1) carry a junk singular direction at ~1e-6 of the top; the basis tolerance must reject
-    # it, or the mean canonical correlation is silently dragged down by a noise dimension
-    rng = np.random.default_rng(0)
-    Z = rng.standard_normal((500, 7))
-    W = np.exp(np.concatenate([Z, np.zeros((500, 1))], 1))
-    W = W / W.sum(1, keepdims=True)                                # exact rank 7
-    H = np.tanh(Z @ rng.standard_normal((7, 32))) + 0.05 * rng.standard_normal((500, 32))
-    s0 = np.linalg.svd(W - W.mean(0), compute_uv=False)[0]
-    u = rng.standard_normal(500); u /= np.linalg.norm(u)
-    v = rng.standard_normal(8); v /= np.linalg.norm(v)
-    W_noisy = W + 1.5e-6 * s0 * np.outer(u, v)                     # junk direction at float32 scale
-    assert abs(cca(H, W) - cca(H, W_noisy)) < 0.02

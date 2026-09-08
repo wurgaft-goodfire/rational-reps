@@ -59,7 +59,7 @@ seeds coupled. Numbers below are 5-seed means at d = 3 / 6 / 12 unless stated.
 ## Figures (notebook `superposition_analysis.py`)
 
 Every figure has its own p / β / ρ selectors and reads the sweep grid (540 cells × linear, pairs,
-additive) lazily from each run's saved evaluation (`metrics.pt`: logits, representation, readout);
+additive) lazily from each run's saved evaluation (`eval.npz`: logits, representation, readout);
 no model is constructed in the notebook.
 
 Every model is put in one gauge: its logit table over states Λ = E Dᵀ (theory: [Z, φ(Z), 1]·map_rep),

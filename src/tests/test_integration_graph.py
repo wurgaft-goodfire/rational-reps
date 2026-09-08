@@ -8,7 +8,6 @@ import subprocess
 import sys
 
 import pytest
-import torch
 from pyprojroot import here
 
 pytestmark = pytest.mark.slow
@@ -35,17 +34,19 @@ def _run(module, cache_dir, *overrides):
 def test_ring_transformer_converges_to_predicted_circle(tmp_path):
     _run("src.code.train", tmp_path)
     ckpts = tmp_path / "graph-cooccurrence" / "single" / "checkpoints"
-    saved = torch.load(ckpts / "200" / "metrics.pt", weights_only=False)
-    # the saved representation (last hidden state per item) should match the closed-form circle
-    from src.code.eval import cka, rsa
+    from src.code.analysis_utils import cka, load_evaluation, rsa
     from src.code.geometry import predicted_geometry
     from src.code.train import init_dataset, resolve_config
+    saved = load_evaluation(ckpts / "200" / "eval.npz")
+    # the saved representation (last hidden state per item) should match the closed-form circle
     dataset = init_dataset(resolve_config(["setting=graph", "structure_kwargs.n=12"]))
     E_pred = predicted_geometry(np.asarray(dataset.conditional, float))
-    rep = saved["extras"]["representation"].numpy()
-    assert rsa(rep, E_pred) > 0.7 and cka(rep, E_pred) > 0.7
+    assert rsa(saved["representation"], E_pred) > 0.7 and cka(saved["representation"], E_pred) > 0.7
 
-    # the standalone eval path writes the same artifacts
+    # the standalone eval path (model reloaded from its checkpoint) writes the same artifacts, up to
+    # the float32 noise of a reloaded transformer's kernels
+    (ckpts / "200" / "eval.npz").unlink()
     _run("src.code.eval", tmp_path)
-    reval = torch.load(ckpts / "200" / "metrics.pt", weights_only=False)
-    assert set(reval["extras"]) == {"logits", "representation", "readout"}
+    reval = load_evaluation(ckpts / "200" / "eval.npz")
+    for key in ("loss", "logits", "representation", "readout"):
+        assert np.allclose(reval[key], saved[key], atol=1e-3), key

@@ -556,46 +556,6 @@ def biconvex_pairs(alpha, Z, d, n_top=18, rounds=10, seed=0, init=None):
     return dict(B=B, D=D, ce=trace[-1], ce_trace=np.array(trace))
 
 
-def feature_vectors(H, Z):
-    """Least-squares additive fit H ~ Z V + 1 v0: the vector each feature writes into the
-    code. Returns (V (m, d), v0 (d,))."""
-    Z = np.asarray(Z, float)
-    X = np.column_stack([Z, np.ones(len(Z))])
-    V = np.linalg.lstsq(X, np.asarray(H, float), rcond=None)[0]
-    return V[:-1], V[-1]
-
-
-def logit_map(L, Z):
-    """Additive fit of the row-centred logits, L_c ~ Z R + 1 b^T: the gauge-invariant
-    feature -> output map. Returns (R (m, m), b (m,), r2)."""
-    L = np.asarray(L, float)
-    L = L - L.mean(1, keepdims=True)
-    X = np.column_stack([np.asarray(Z, float), np.ones(len(L))])
-    C = np.linalg.lstsq(X, L, rcond=None)[0]
-    r2 = 1.0 - ((L - X @ C) ** 2).sum() / (L ** 2).sum()
-    return C[:-1], C[-1], float(r2)
-
-
-def leverage(W):
-    """Hat matrix of the rows of W: P = W (W^T W)^+ W^T. Invariant to any invertible
-    transform of the columns; diag in [0, 1] sums to rank(W). Returns (diag (m,), P)."""
-    W = np.asarray(W, float)
-    P = W @ np.linalg.pinv(W.T @ W) @ W.T
-    return np.diag(P).copy(), P
-
-
-def measure(L, X, d):
-    """One model's geometry from its logit table over states L (n, m), in the coordinates X
-    (n, r) — features, or predictive modes: balanced rank-d code H and readout D
-    (`factor_logcond`), first-order vectors E1 of H by least squares on [X, 1]. Returns
-    (leverage (r,), feature Gram E1 E1^T (r, r), top-d singular values of the row-centred
-    table per state (d,), readout Gram D^T D (m, m), leverage projector (r, r))."""
-    _, H, D, S = factor_logcond(L, rank=d)
-    E1 = feature_vectors(H, X)[0]
-    h, P = leverage(E1)
-    return h, E1 @ E1.T, S / np.sqrt(len(L)), D.T @ D, P
-
-
 def theory_table(out, X, n_top=18):
     """The completed model's logit table over states from `predict_geometry`'s output:
     [x, phi(x), 1] @ map_rep. (n, m)."""

@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 import itertools
 from collections import namedtuple
@@ -9,6 +10,21 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 from .config import Config
 from .geometry import log_conditional
+
+
+def kernel_hash(dataset):
+    """Fingerprint of the kernel ``P``, the outcome distribution a run is fit to. Run dirs are
+    keyed by the override string, so a code change to a builder moves the task while leaving the
+    config identical; this catches that. Shapes and values both enter the hash.
+
+    Deliberately not ``conditional``, which is the log-space object the geometry oracle factors:
+    changing how the oracle reads a task must not invalidate weights trained on the same kernel."""
+    target = getattr(dataset, "P", None)
+    if target is None:
+        target = dataset.conditional
+    T = np.ascontiguousarray(np.asarray(getattr(target, "cpu", lambda: target)(), dtype=np.float64))
+    return hashlib.sha1(repr(T.shape).encode() + T.tobytes()).hexdigest()[:16]
+
 
 def apply_lapse(P, lapse=0.05):
     """Mix a conditional with the uniform distribution: ``(1 - lapse) p + lapse / C``. A target with

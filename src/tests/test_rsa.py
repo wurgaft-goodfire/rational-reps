@@ -11,7 +11,7 @@ import numpy as np
 
 from src.code.data import graph_conditional
 from src.code.geometry import predicted_geometry
-from src.code.eval import rsa
+from src.code.analysis_utils import rsa
 
 TREE = {"structure": "tree", "n": 3, "k": 2}          # ultrametric: few distinct, heavily-tied distances
 RING = {"structure": "ring", "n": 12}

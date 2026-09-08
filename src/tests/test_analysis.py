@@ -1,33 +1,39 @@
-"""Unit test for the offline (local) eval-results loader."""
-import torch
-from omegaconf import OmegaConf
-
-from src.code.analysis_utils import load_eval_results
+"""Unit tests for the array-side analysis: the readout projection, the comparison metrics, and
+the alignment / decoding helpers."""
 
 
-def _write_run(root, override, steps):
-    run_dir = root / "graph-cooccurrence" / override / "my_run"
-    run_dir.mkdir(parents=True)
-    OmegaConf.save(OmegaConf.create({"random_seed": 0, "name": "my_run"}),
-                   run_dir / "config_resolved.yaml")
-    for step in steps:
-        ckpt = run_dir / "checkpoints" / str(step)
-        ckpt.mkdir(parents=True)
-        torch.save({"metrics": {"loss": 0.1 * step}, "extras": {}, "step": step},
-                   ckpt / "metrics.pt")
+def test_readout_projection_keeps_exactly_what_the_readout_reads():
+    # H = a signal in the centered readout's row space + a component the readout cannot read: the
+    # projection has rank(D_c) coordinates, lifts back to the signal alone, and zeroes the rest
+    import numpy as np
+    from src.code.analysis_utils import readout_basis, readout_projection
+    rng = np.random.default_rng(0)
+    D = np.c_[rng.normal(size=(6, 2)), np.ones((6, 1)), np.zeros((6, 2))]   # reads dims 0-1; dim 2 is a
+    signal = np.c_[rng.normal(size=(50, 2)), np.zeros((50, 3))]             # common offset, centered away
+    junk = np.c_[np.zeros((50, 2)), rng.normal(size=(50, 3))]
+    B = readout_basis(D)
+    Hp = readout_projection(signal + junk, D)
+    assert B.shape == (2, 5) and Hp.shape == (50, 2)
+    assert np.allclose(Hp @ B, signal, atol=1e-10)
+    assert np.allclose(readout_projection(junk, D), 0.0, atol=1e-10)
 
 
-def test_load_local_spreads_metrics_and_sweep_params(tmp_path, monkeypatch):
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path))
-    _write_run(tmp_path, "structure=ring", steps=[10, 20])
-
-    df = load_eval_results("graph-cooccurrence", "my_run", source="local")
-
-    assert len(df) == 2
-    assert set(["structure", "step", "config", "loss"]).issubset(df.columns)
-    assert df["structure"].tolist() == ["ring", "ring"]
-    assert sorted(df["step"].tolist()) == [10, 20]
-    assert df.sort_values("step")["loss"].tolist() == [1.0, 2.0]
+def test_cca_ignores_float32_scale_junk_directions():
+    # features computed in float32 with an exact affine constraint (e.g. probabilities summing
+    # to 1) carry a junk singular direction at ~1e-6 of the top; the basis tolerance must reject
+    # it, or the mean canonical correlation is silently dragged down by a noise dimension
+    import numpy as np
+    from src.code.analysis_utils import cca
+    rng = np.random.default_rng(0)
+    Z = rng.standard_normal((500, 7))
+    W = np.exp(np.concatenate([Z, np.zeros((500, 1))], 1))
+    W = W / W.sum(1, keepdims=True)                                # exact rank 7
+    H = np.tanh(Z @ rng.standard_normal((7, 32))) + 0.05 * rng.standard_normal((500, 32))
+    s0 = np.linalg.svd(W - W.mean(0), compute_uv=False)[0]
+    u = rng.standard_normal(500); u /= np.linalg.norm(u)
+    v = rng.standard_normal(8); v /= np.linalg.norm(v)
+    W_noisy = W + 1.5e-6 * s0 * np.outer(u, v)                     # junk direction at float32 scale
+    assert abs(cca(H, W) - cca(H, W_noisy)) < 0.02
 
 
 def test_align_representations_rotation_separates_what_linear_cannot():

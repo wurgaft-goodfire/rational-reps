@@ -6,6 +6,8 @@ import torch
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
+EVAL_FILE = "eval.npz"     # a checkpoint's saved evaluation: loss, logits, representation, readout
+
 
 def clean_dirname(override_dirname, structure=None, relation=None):
     """Turn Hydra's raw ``override_dirname`` into a tidy, config-keyed run/figure dir name: drops
