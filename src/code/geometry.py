@@ -430,6 +430,19 @@ def predict_geometry(alpha, Z, d, n_frames=32, n_top=18, seed=0):
                 spectra_mean=spectra.mean(0), spectra_sd=spectra.std(0))
 
 
+def theory_solution(alpha, Z, d, correlated, seed, path, n_frames=8, n_top=18):
+    """`predict_geometry` on the coordinates `modes` gives the task, cached at ``path`` (npz of
+    its array outputs): solved once, read back afterwards."""
+    from pathlib import Path
+    path = Path(path)
+    if not path.exists():
+        W, X = modes(alpha, Z, correlated)
+        out = predict_geometry(W, X, d, n_frames=n_frames, n_top=n_top, seed=seed)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, **{k: np.asarray(v) for k, v in out.items() if not isinstance(v, dict)})
+    return dict(np.load(path))
+
+
 def _realize_frame(alpha, Z, E1, d):
     """A compatible tight frame with its decoder: (excess CE, feature Gram
     U Sigma U^T of L1, top-d spectrum, decoder Gram V Sigma V^T, offset row o)."""

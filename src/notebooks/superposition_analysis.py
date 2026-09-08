@@ -39,8 +39,8 @@ def _(mo):
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
     from hydra.core.override_parser.overrides_parser import OverridesParser
     from omegaconf import OmegaConf
-    from src.code.analysis_utils import has_run, load_run, measure, theory_solution
-    from src.code.geometry import factor_logcond, modes, pair_features, theory_table
+    from src.code.analysis_utils import has_run, load_run, measure
+    from src.code.geometry import factor_logcond, modes, pair_features, theory_solution, theory_table
     from src.code.train import resolve_config
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -102,19 +102,22 @@ def _(
     theory_solution,
     theory_table,
 ):
+    from pathlib import Path
     # measured cells, filled on demand the first time a figure asks for one
     SW = {}
 
     def sweep_rows(p, b, r, d, runners):
         """One cell, per seed: the theory ('th') and each model class measured on the cell's
-        coordinates X (`measure`), plus the theory's solution ('o'), X, the ladder alpha and the
-        logit tables the measurements came from."""
+        coordinates X (`measure`), plus the theory's solution ('o', solved once and cached as
+        theory.npz in the cell's directory), X, the ladder alpha and the logit tables the
+        measurements came from."""
         _rows = []
         for _s in SEEDS:
             _runs = {_run: load_run(cell_overrides(_run, p, b, r, d, _s)) for _run in runners}
             _ds = _runs["linear"]["dataset"]
             _, _X = modes(_ds.info["alpha"], _ds.features, float(r))
-            _o = theory_solution(_runs["linear"])
+            _o = theory_solution(_ds.info["alpha"], _ds.features, int(d), float(r), int(_s),
+                                 Path(_runs["linear"]["config"].run_dir).parent / "theory.npz")
             _row = dict(th=measure(theory_table(_o, _X), _X, int(d)), o=_o, X=_X, alpha=_ds.info["alpha"],
                         logits={_run: _runs[_run]["logits"] for _run in runners})
             for _run in runners:

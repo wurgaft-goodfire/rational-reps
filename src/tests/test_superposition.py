@@ -420,22 +420,22 @@ def test_superposition_setting_declares_the_grid_and_couples_the_seeds():
         assert os.path.basename(config.run_dir) == runner                  # the model class is the leaf
 
 
-def test_theory_solution_is_solved_once_per_cell_and_shared_by_the_model_classes(tmp_path):
-    from src.code.analysis_utils import has_run, theory_solution
-    from src.code.data import init_dataset
-    from src.code.train import resolve_config
-    small = ["setting=superposition", "structure_kwargs.N=128", "structure_kwargs.m=6",
-             "model_kwargs.model_config.embed_dim=2", "random_seed=1"]
-    runs = {r: resolve_config(small + [f"runner={r}"], cache_dir=str(tmp_path)) for r in ("linear", "paired_features")}
-    assert not has_run(small + ["runner=linear"], cache_dir=str(tmp_path))
-    run = dict(config=runs["linear"], dataset=init_dataset(runs["linear"]))
-    out = theory_solution(run, n_frames=2, n_top=4)
-    path = pathlib.Path(runs["linear"].run_dir).parent / "theory.npz"
-    assert path.exists() and path == pathlib.Path(runs["paired_features"].run_dir).parent / "theory.npz"
+def test_theory_solution_is_solved_once_and_read_back(tmp_path):
+    from src.code.data import feature_cube
+    Z = feature_cube(128, 6, 0.3, scale=8.0, seed=1, spectrum="power", beta=0.5)[1]["Z"]
+    path = tmp_path / "cell" / "theory.npz"
+    out = geometry.theory_solution(LADDER[:6], Z, 2, 0.0, 1, path, n_frames=2, n_top=4)
     assert out["map_rep"].shape[1] == 6 and out["E_star"].shape == (6, 2)
     mtime = path.stat().st_mtime_ns
-    theory_solution(run, n_frames=2, n_top=4)
+    again = geometry.theory_solution(LADDER[:6], Z, 2, 0.0, 1, path, n_frames=2, n_top=4)
     assert path.stat().st_mtime_ns == mtime                                # read, not re-solved
+    assert np.array_equal(again["E_star"], out["E_star"])
+
+
+def test_has_run_is_false_before_training(tmp_path):
+    from src.code.analysis_utils import has_run
+    assert not has_run(["setting=superposition", "runner=linear"], cache_dir=str(tmp_path))
+    assert not (tmp_path / "graph-cooccurrence").exists()                  # and looking created nothing
 
 
 # ── correlated features: predictive modes ──────────────────────────────────────────────────

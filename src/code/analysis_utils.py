@@ -2,13 +2,12 @@
 and compare them with a predicted geometry. Nothing here constructs a model; `eval.Evaluator`
 wrote every array this module reads."""
 import os
-from pathlib import Path
 
 import numpy as np
 from omegaconf import OmegaConf, open_dict
 
 from .config import run_key
-from .geometry import factor_logcond, modes, predict_geometry
+from .geometry import factor_logcond
 
 
 #########################
@@ -57,21 +56,6 @@ def load_run(overrides, name=None, cache_dir=None):
         raise RuntimeError(f"{config.run_dir} was trained under a different resolved config or task "
                            f"than the overrides now build; retrain it with\n  {command} overwrite=true")
     return dict(config=config, dataset=dataset, **load_evaluation(path))
-
-
-def theory_solution(run, n_frames=8, n_top=18):
-    """`predict_geometry` for a loaded feature-cube run's task at its rank, on the coordinates
-    `modes` gives it; cached as ``theory.npz`` beside the cell's runs, which every model class
-    trained on that cell shares."""
-    config, dataset = run["config"], run["dataset"]
-    path = Path(config.run_dir).parent / "theory.npz"
-    if not path.exists():
-        W, X = modes(dataset.info["alpha"], dataset.features, config.cfg.structure_kwargs.get("rho", 0.0))
-        out = predict_geometry(W, X, config.cfg.model_kwargs.model_config.embed_dim,
-                               n_frames=n_frames, n_top=n_top, seed=config.cfg.random_seed)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(path, **{k: np.asarray(v) for k, v in out.items() if not isinstance(v, dict)})
-    return dict(np.load(path))
 
 
 #########################
