@@ -177,13 +177,13 @@ def _(
     plot_utils,
     plt,
 ):
-    # the same ring under the diffusion kernel: every harmonic present, geometrically decaying
-    from src.code.geometry import canonical_gauge, fourier_basis
+    # the same ring under the diffusion kernel: every harmonic present, geometrically decaying.
+    # Each harmonic pair shares a singular value, so the SVD fixes it only up to a phase: the
+    # columns are cos(k theta + phi_k), sin(k theta + phi_k) with an arbitrary phi_k per pair
     N2 = N
     SPEC2 = {"structure": "ring", "n": N2, "gamma": 0.8, "cooccurrence": "diffusion"}
     L2 = graph_conditional(SPEC2)
     _, E2, D2, S2 = factor_logcond(L2)
-    E2g, _ = canonical_gauge(E2, D2, fourier_basis(N2))            # degenerate pairs -> literal cos/sin
     _rank = int((S2 > 1e-8 * S2[0]).sum())
     _ratio = S2[2] / S2[0]
     print(f"diffusion ring: centered rank {_rank} of {N2 - 1}; harmonic pairs decay by x{_ratio:.2f} "
@@ -201,10 +201,10 @@ def _(
     _gs = _figC.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.3)
     _axc = _figC.add_subplot(_gs[0, 0])                            # the harmonics over the input
     for _k in range(_KD):
-        _axc.plot(E2g[:, _k], color=str(0.15 + 0.2 * (_k // 2)), lw=1.5, ls="-" if _k % 2 == 0 else "--")
+        _axc.plot(E2[:, _k], color=str(0.15 + 0.2 * (_k // 2)), lw=1.5, ls="-" if _k % 2 == 0 else "--")
     _axc.set_xlim(-0.5, N2 - 0.5)
     _axc.set_xlabel(r"input $z$  (angle $\theta$)")
-    _axc.set_title(r"$\theta \to$ harmonic pairs $\cos k\theta,\ \sin k\theta$ ($k = 1$ dark to $3$ light)", fontsize=12)
+    _axc.set_title(r"$\theta \to$ harmonic pairs at $k = 1$ (dark) to $3$ (light), each up to a phase", fontsize=12)
     plot_utils.FIG.style_axes(_axc)
     _axs = _figC.add_subplot(_gs[0, 1])                            # the spectrum: one bar per dimension
     _axs.bar(np.arange(1, N2), S2[:N2 - 1], color=["0.25" if _k % 4 < 2 else "0.6" for _k in range(N2 - 1)], width=0.8)

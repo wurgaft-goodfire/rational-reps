@@ -32,8 +32,7 @@ def _(mo):
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
 
     from src.code.data import apply_lapse, graph_conditional
-    from src.code.geometry import (predicted_geometry, factor_logcond, canonical_gauge,
-                                   log_conditional, fourier_basis, class_means)
+    from src.code.geometry import predicted_geometry, factor_logcond, log_conditional, class_means
     from src.code.analysis_utils import cka, cka_null, cka_shuffle_null, load_run, rsa
     from src.code.train import graph_overrides
     from src.code import plot_utils           # importing this applies the house plotting style
@@ -43,13 +42,11 @@ def _(mo):
     return (
         FIGURES,
         apply_lapse,
-        canonical_gauge,
         cka,
         cka_null,
         cka_shuffle_null,
         class_means,
         factor_logcond,
-        fourier_basis,
         graph_conditional,
         graph_overrides,
         load_run,
@@ -188,9 +185,9 @@ def _(mo):
     whole log-conditional — without it, KL puts no weight on a zero-probability outcome and $E^{*}$
     asserts structure the loss never constrains. Panels show one point per distinct answer.
 
-    The factorization below reads modular addition's conditional directly: degenerate frequencies
-    leave the SVD basis arbitrary, so it is shown in the DFT gauge, where the frequency-1 pair is
-    the circle.
+    The factorization below reads `pitch_transpose`'s conditional directly. It is exactly rank
+    four: height and the curvature that bends the height line into an arc (the Gaussian's linear
+    and quadratic terms), plus the chroma pair.
 
     | relation | answer | predicted geometry |
     | --- | --- | --- |
@@ -204,28 +201,16 @@ def _(mo):
 
 
 @app.cell
-def _(
-    FIGURES,
-    apply_lapse,
-    canonical_gauge,
-    factor_logcond,
-    fourier_basis,
-    log_conditional,
-    plot_utils,
-):
+def _(FIGURES, apply_lapse, log_conditional, plot_utils):
     from src.code.data import relation_tensor
 
-    P_MOD = 11                                        # prime: every frequency has full period p
-    modular = relation_tensor({"relation": "modular_add", "p": P_MOD}).reshape(P_MOD**2, P_MOD)
-    modular_log = log_conditional(apply_lapse(modular))
-
-    # degenerate frequencies leave the SVD basis arbitrary: re-express in the DFT gauge, then show
-    # the f1 cos/sin pair -- the two dimensions that draw the circle. Four a-blocks, not all 121 rows.
-    code, decoder = canonical_gauge(*factor_logcond(modular_log)[1:3], fourier_basis(P_MOD))
-    rows = slice(0, 4 * P_MOD)
+    # the helix relation's conditional, every (note, interval) pair as a row; the first four
+    # note blocks, not all 144 rows, so the columns stay readable
+    pitch = relation_tensor({"relation": "pitch_transpose"})
+    pitch_log = log_conditional(apply_lapse(pitch.reshape(-1, pitch.shape[-1])))
+    rows = slice(0, 4 * pitch.shape[1])
     fig_fact_rel, _ = plot_utils.plot_factorization(
-        modular_log[rows], k=2, factors=(code[rows], decoder),
-        item_label=r"inputs  $(a,b)$", outcome_label=r"outputs  $c$",
+        pitch_log[rows], k=4, item_label=r"inputs  $(a,b)$", outcome_label=r"outputs  $c$",
         figsize=(16, 5.6), embedding_width=0.1, decoder_height=0.15, conditional_aspect=0.5)
     plot_utils.save_figure(fig_fact_rel, FIGURES / "relational_factorization.png")
     return

@@ -54,40 +54,6 @@ def test_factor_logcond_is_the_plain_svd_of_the_row_centered_log_conditional():
     assert np.allclose(np.linalg.norm(E, axis=0), np.linalg.norm(D, axis=1))
 
 
-def test_canonical_gauge_recovers_the_dft_on_modular_addition():
-    """Within a degenerate singular block the SVD basis is an arbitrary rotation. Rotating onto a
-    target basis (here the DFT modes of Z_p) recovers structured factors without changing E @ D."""
-    from src.code.data import relation_tensor
-    from src.code.geometry import canonical_gauge, factor_logcond, fourier_basis
-
-    p = 12
-    M = relation_tensor({"relation": "modular_add", "p": p}).reshape(p * p, p)
-    Lc, E, D, S = factor_logcond(M)
-    Eg, Dg = canonical_gauge(E, D, fourier_basis(p))
-
-    assert np.allclose(Eg @ Dg, E @ D, atol=1e-9)              # same factorization
-    F = fourier_basis(p)
-    for row in Dg[:p - 1]:                                     # every gauged row is one DFT mode
-        corr = np.abs(F @ row) / (np.linalg.norm(F, axis=1) * np.linalg.norm(row) + 1e-12)
-        assert corr.max() > 0.99
-    # the item code inherits the same modes: the frequency-1 pair is cos/sin of s = (a + b) mod p
-    s = (np.arange(p * p) // p + np.arange(p * p) % p) % p
-    target = np.c_[np.cos(2 * np.pi * s / p), np.sin(2 * np.pi * s / p)]
-    fit = Eg[:, :2] @ np.linalg.lstsq(Eg[:, :2], target, rcond=None)[0]
-    assert np.corrcoef(fit.ravel(), target.ravel())[0, 1] > 0.99
-
-
-def test_canonical_gauge_leaves_a_nondegenerate_factorization_alone():
-    """Distinct singular values already pin the basis: the gauge must be (nearly) the identity."""
-    from src.code.geometry import canonical_gauge, factor_logcond
-
-    rng = np.random.default_rng(0)
-    L = rng.normal(size=(20, 6)) @ np.diag([5.0, 3.0, 2.0, 1.0, 0.5, 0.2])
-    _, E, D, _ = factor_logcond(L)
-    Eg, Dg = canonical_gauge(E, D, rng.normal(size=(6, 6)))
-    assert np.allclose(np.abs(Dg), np.abs(D), atol=1e-8)       # up to sign, unchanged
-
-
 def _circle_code(p, k, d=32, seed=0, squash=1.0):
     """Codes for all (a, b) pairs carrying exactly frequency k of s = (a+b) mod p, lifted into d
     dimensions by a random rotation. ``squash`` shrinks the sine axis to a known circularity."""
