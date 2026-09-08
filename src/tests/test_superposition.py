@@ -147,11 +147,11 @@ def test_signed_pressure_is_the_covariance_form_and_points_head_against_tail():
 
 
 @pytest.mark.slow
-def test_ce_optimal_representation_is_the_completed_model_at_the_pressure_frame():
+def test_predicted_rank_constrained_geometry_is_the_completed_model_at_the_pressure_frame():
     # H = z E* + phi(z) E2 + e0 with E* the fixed-diagonal realization of the Fantope solution
     # and (E2, e0, D) the completion at E*; the logits are H D^T
     alpha, Z, d = LADDER[:16], _bernoulli(16, n=4096), 3
-    H, D = geometry.ce_optimal_representation(alpha, Z, d, n_top=8)
+    H, D = geometry.predicted_rank_constrained_geometry(alpha, Z, d, n_top=8)
     d_wf, _ = allocate_d(alpha, Z, d)
     P, _ = geometry.fantope_geometry(alpha, Z, d, geometry.signed_pressure(alpha, Z, d_wf))
     E_star = tight_frame(np.diag(P), init=P)
@@ -527,7 +527,7 @@ def test_whitening_brings_the_theory_to_the_class_optimum_on_correlated_features
     G, P, _ = geometry._softmax_stats(alpha, Z)
     scores = {}
     for name, correlated in [("raw", 0.0), ("white", 0.6)]:
-        H, D = geometry.ce_optimal_representation(*geometry.modes(alpha, Z, correlated), d)
+        H, D = geometry.predicted_rank_constrained_geometry(*geometry.modes(alpha, Z, correlated), d)
         h_th, P_th = leverage(feature_vectors(H, Z)[0])
         scores[name] = (geometry._excess_ce(H @ D.T, G, P), np.corrcoef(h_th, h_opt)[0, 1],
                         np.corrcoef(P_th[:k, :k][iu], P_opt[:k, :k][iu])[0, 1])
@@ -546,7 +546,7 @@ def test_mutually_exclusive_features_are_predicted_antipodal_in_both_bases():
     Z = np.column_stack([c == 0, c == 1, rng.random((n, m - 2)) < 0.3]).astype(float)
     alpha = LADDER[:m]
     for correlated in (0.0, 1.0):
-        H, _ = geometry.ce_optimal_representation(*geometry.modes(alpha, Z, correlated), d)
+        H, _ = geometry.predicted_rank_constrained_geometry(*geometry.modes(alpha, Z, correlated), d)
         P = leverage(feature_vectors(H, Z)[0])[1]
         assert P[0, 1] < -0.02, P[0, 1]
 

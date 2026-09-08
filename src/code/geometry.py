@@ -17,15 +17,14 @@ def log_conditional(P):
     return np.where(P > 0, np.log(np.where(P > 0, P, 1.0)), LOG_FLOOR)
 
 
-def factor_logcond(L, rank=None):
+def factor_logcond(L):
     """SVD of the row-centered log-conditional ``L[theta, x]`` (dropping the per-row
-    log-partition a softmax ignores), truncated to ``rank`` modes if given. Returns
-    ``(Lc, E, D, S)``, the scale split as ``sqrt(S)`` on each factor (the balanced split
-    gradient descent learns), so ``E @ D = Lc`` (at full rank)."""
+    log-partition a softmax ignores). Returns ``(Lc, E, D, S)``, the scale split as ``sqrt(S)``
+    on each factor (the balanced split gradient descent learns), so ``E @ D = Lc``; slice the
+    leading columns of ``E`` and rows of ``D`` to show the top modes."""
     L = np.asarray(L, dtype=np.float64)
     Lc = L - L.mean(1, keepdims=True)
     U, S, Vt = np.linalg.svd(Lc, full_matrices=False)
-    U, S, Vt = U[:, :rank], S[:rank], Vt[:rank]
     rootS = np.sqrt(S)                                        # split the scale symmetrically
     return Lc, U * rootS, rootS[:, None] * Vt, S
 
@@ -90,10 +89,11 @@ def class_means(X, labels, n=None):
     return M.T @ X / count[:, None], count
 
 
-def predicted_geometry(log_cond, rank=None):
-    """Predicted code ``E``, one row per input, for a log-conditional ``L[input, outcome]``;
-    ``rank`` truncates to the leading modes."""
-    return factor_logcond(log_cond, rank)[1]
+def predicted_geometry(log_cond):
+    """The representation the loss pins down when capacity suffices: ``E``, one row per input,
+    the balanced factor of the log-conditional ``L[input, outcome]``. For the rank-constrained
+    case see `predicted_rank_constrained_geometry`."""
+    return factor_logcond(log_cond)[1]
 
 
 ##### Superposition: first-order geometry of a rank-limited softmax (notes/superposition.tex) #####
@@ -384,11 +384,11 @@ def top_eigenspace(P, d):
     return U[:, -d:]
 
 
-def ce_optimal_representation(alpha, Z, d, n_top=18):
-    """The theory's model of a task at rank d (notes/superposition.tex), the optimum of the
-    softmax cross-entropy under the rank constraint (not an SVD truncation): the representation
-    of every state H = z E* + phi(z) E2 + e0, (n, d), and the readout D, (m, d), so the logits
-    are H D^T. Allocation: water filling (`allocate_d`). Orientation: the linearised Fantope
+def predicted_rank_constrained_geometry(alpha, Z, d, n_top=18):
+    """The representation the loss pins down at rank d < the task's rank (notes/superposition.tex):
+    the optimum of the softmax cross-entropy under the rank constraint, not an SVD truncation.
+    Returns the representation of every state H = z E* + phi(z) E2 + e0, (n, d), and the readout
+    D, (m, d), so the logits are H D^T. Allocation: water filling (`allocate_d`). Orientation: the linearised Fantope
     program on the signed pressure with the diagonal free (`fantope_geometry`), realized as the
     fixed-diagonal frame E* (`tight_frame`). Completion: decoder and pair block solved at E* by
     convex block alternation (`repair`). Pass the coordinates `modes` gives the task."""

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from src.code.analysis_utils import load_run
-from src.code.geometry import ce_optimal_representation, modes
+from src.code.geometry import predicted_rank_constrained_geometry, modes
 from src.code.train import resolve_config, train_inline
 
 pytestmark = pytest.mark.slow
@@ -18,7 +18,7 @@ CELL = ["setting=superposition", "structure_kwargs.N=256", "structure_kwargs.m=8
 THEORY = CELL + ["runner=theory"]
 
 
-def test_theory_runner_stores_the_ce_optimal_model_as_a_linear_run(tmp_path):
+def test_theory_runner_stores_the_rank_constrained_geometry_as_a_linear_run(tmp_path):
     model, dataset, evaluator, history, config = train_inline(THEORY, cache_dir=str(tmp_path))
     run = load_run(THEORY, cache_dir=str(tmp_path))
 
@@ -26,7 +26,7 @@ def test_theory_runner_stores_the_ce_optimal_model_as_a_linear_run(tmp_path):
     # since n_top=18 > m), the saved logits their product. Tolerance: a second solve of the
     # same cell reproduces the first to ~1e-3 of scale (iterative solvers on multithreaded BLAS).
     W, X = modes(dataset.info["alpha"], dataset.features, 0.0)
-    H, D = ce_optimal_representation(W, X, 3, n_top=config.cfg.solver.n_top)
+    H, D = predicted_rank_constrained_geometry(W, X, 3, n_top=config.cfg.solver.n_top)
     tol = 1e-3 * np.abs(H @ D.T).max()
     assert np.allclose(run["representation"], H, atol=tol), np.abs(run["representation"] - H).max()
     assert np.allclose(run["readout"], D, atol=tol), np.abs(run["readout"] - D).max()

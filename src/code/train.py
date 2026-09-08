@@ -14,7 +14,7 @@ from .models import init_model, load_model, MODEL_CLASSES
 from .config import Config, clean_dirname, run_key
 from .data import init_dataset, kernel_hash
 from .eval import Evaluator
-from .geometry import ce_optimal_representation, modes
+from .geometry import predicted_rank_constrained_geometry, modes
 from .train_utils import (
     CustomSaveCallback,
     StepMetricsCallback,
@@ -69,15 +69,15 @@ def _size_model(config, dataset):
 
 
 def solve(config, dataset):
-    """The theory as a run: the task's CE-optimal model at rank d
-    (`geometry.ce_optimal_representation` on the coordinates `modes` gives it), its
+    """The theory as a run: the task's rank-constrained geometry
+    (`geometry.predicted_rank_constrained_geometry` on the coordinates `modes` gives it), its
     representation H and readout D stored as they come in a linear model, with the checkpoint,
     history and evaluation files `train` writes. Returns the same artifacts as `train`."""
     _size_model(config, dataset)
     model = init_model(config)
     W, X = modes(dataset.info["alpha"], dataset.features, config.cfg.structure_kwargs.get("rho", 0.0))
-    H, D = ce_optimal_representation(W, X, config.cfg.model_kwargs.model_config.embed_dim,
-                                     n_top=config.cfg.solver.n_top)
+    H, D = predicted_rank_constrained_geometry(W, X, config.cfg.model_kwargs.model_config.embed_dim,
+                                               n_top=config.cfg.solver.n_top)
     weight = model.embedding.weight
     with torch.no_grad():
         weight[dataset.item_tokens.to(weight.device)] = torch.as_tensor(H, dtype=weight.dtype, device=weight.device)
