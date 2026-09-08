@@ -60,12 +60,12 @@ def test_saved_representation_of_the_predicted_geometry_scores_one_and_shuffled_
     weight = np.zeros((vocab, d)); weight[dataset.item_tokens.numpy()] = E
     ev = evaluator.evaluate(_EmbModel(weight, D.T, dataset.device))
     assert ev["loss"] < 1e-6                                            # the exact factorization
-    assert cka(ev["representation"], E_pred) > 0.99 and rsa(ev["representation"], E_pred) > 0.99
+    assert cka(ev["hidden_states"][-1][:, 0], E_pred) > 0.99 and rsa(ev["hidden_states"][-1][:, 0], E_pred) > 0.99
 
     shuffled = weight.copy()
     shuffled[dataset.item_tokens.numpy()] = E[np.random.default_rng(0).permutation(16)]
     ev2 = evaluator.evaluate(_EmbModel(shuffled, D.T, dataset.device))
-    assert rsa(ev2["representation"], E_pred) < 0.99
+    assert rsa(ev2["hidden_states"][-1][:, 0], E_pred) < 0.99
 
 
 def test_no_representation_is_saved_when_the_readout_reads_none():
@@ -78,7 +78,7 @@ def test_no_representation_is_saved_when_the_readout_reads_none():
             return {"logits": torch.zeros(input_ids.shape[0], dataset.num_dims)}
 
     ev = Evaluator(config, dataset).evaluate(_NoCode())
-    assert ev["representation"] is None and ev["readout"] is None and ev["logits"].shape == (16, dataset.num_dims)
+    assert ev["hidden_states"] is None and ev["readout"] is None and ev["logits"].shape == (16, dataset.num_dims)
 
 
 def test_cca_is_blind_to_an_invertible_map_where_cka_is_not():

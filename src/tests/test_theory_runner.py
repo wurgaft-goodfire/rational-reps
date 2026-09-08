@@ -20,7 +20,7 @@ THEORY = CELL + ["runner=theory"]
 
 def test_theory_runner_stores_the_rank_constrained_geometry_as_a_linear_run(tmp_path):
     model, dataset, evaluator, history, config = train_inline(THEORY, cache_dir=str(tmp_path))
-    run = load_run(THEORY, cache_dir=str(tmp_path))
+    run = load_run(THEORY, cache_dir=str(tmp_path), project=False)
 
     # the saved representation and readout are the theory's own (pairs among all 8 features,
     # since n_top=18 > m), the saved logits their product. Tolerance: a second solve of the

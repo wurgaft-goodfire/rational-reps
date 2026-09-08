@@ -506,7 +506,7 @@ def test_whitening_brings_the_theory_to_the_class_optimum_on_correlated_features
          "random_seed=0"], cache_dir=str(tmp_path))
     alpha, Z = dataset.info["alpha"], np.asarray(dataset.features, float)
     iu = np.triu_indices(k, 1)
-    h_opt, P_opt = leverage(feature_vectors(evaluator.evaluate(model)["representation"], Z)[0])
+    h_opt, P_opt = leverage(feature_vectors(evaluator.evaluate(model)["hidden_states"][-1][:, 0], Z)[0])
     G, P, _ = geometry._softmax_stats(alpha, Z)
     scores = {}
     for name, correlated in [("raw", 0.0), ("white", 0.6)]:

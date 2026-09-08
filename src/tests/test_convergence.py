@@ -39,8 +39,15 @@ def _train_and_score(model_type, steps=500, lr=0.01, n=12):
         out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward(); opt.step()
     ev = Evaluator(config, dataset).evaluate(model)
-    return {"loss": ev["loss"], "rsa": rsa(ev["representation"],
-                                           predicted_geometry(np.asarray(dataset.conditional, float)))}
+    if sample_mode == "sequence":
+        # a chained stream: the next token depends on the current one alone, so an item's
+        # representation is the mean hidden state over the stream positions that carry it
+        H = ev["hidden_states"][-1][:, 1:].reshape(-1, mc["hidden_size"])
+        tokens = ev["inputs"][:, 1:].ravel()
+        rep = np.stack([H[tokens == i].mean(0) for i in range(n)])
+    else:
+        rep = ev["hidden_states"][-1][:, 0]
+    return {"loss": ev["loss"], "rsa": rsa(rep, predicted_geometry(np.asarray(dataset.conditional, float)))}
 
 
 @pytest.mark.parametrize("model_type", ["linear", "mlp", "rnn"])
@@ -74,7 +81,7 @@ def _train_features(steps=600, lr=0.01):
         out = model(**batch)          # the whole batch, as the trainer passes it
         opt.zero_grad(); out["loss"].backward(); opt.step()
     ev = Evaluator(config, dataset).evaluate(model)
-    return {"loss": ev["loss"], "rsa": rsa(ev["representation"],
+    return {"loss": ev["loss"], "rsa": rsa(ev["hidden_states"][-1][:, 0],
                                            predicted_geometry(np.asarray(dataset.conditional, float)))}
 
 

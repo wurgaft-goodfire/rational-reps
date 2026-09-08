@@ -30,8 +30,8 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.train import train_inline, graph_overrides, resolve_config
-    from src.code.data import init_dataset
+    from src.code.train import graph_overrides
+    from src.code.analysis_utils import load_run
     from src.code.geometry import factor_logcond, predicted_inference_geometry
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -43,19 +43,17 @@ def _(mo):
         FIGURES,
         factor_logcond,
         graph_overrides,
-        init_dataset,
+        load_run,
         logsumexp,
         np,
         plot_utils,
         plt,
         predicted_inference_geometry,
-        resolve_config,
-        train_inline,
     )
 
 
 @app.cell
-def _(graph_overrides, init_dataset, logsumexp, np, plot_utils, plt, resolve_config):
+def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt):
     # the two hidden-input worlds of the concepts notebook: a fine latent (13 temperatures, 28 times
     # of week) emitting coarse mentions (5 adjectives, 7 days), bipartite so the input is hidden
     # kernels calibrated so the log-posterior spans about 8 nats at the end of the context: every
@@ -73,8 +71,10 @@ def _(graph_overrides, init_dataset, logsumexp, np, plot_utils, plt, resolve_con
             "training_kwargs.train_steps=30000", "model_kwargs.model_config.hidden_size=64",
             "model_kwargs.model_config.num_hidden_layers=1"]
 
-    def world(spec, infer):
-        return init_dataset(resolve_config(overrides(spec, infer)))
+    def world(spec, infer, extra=()):
+        """The saved run of a world: its dataset, the streams the evaluator scored (`inputs`) and
+        the forward pass on them, hidden states in the readout's row space."""
+        return load_run(overrides(spec, infer) + list(extra))
 
     def log_posteriors(ds, obs):
         """Normalized log p(z | x_{1:t}) for t = 0..L, in float64 log space. obs (B, L) -> (B, L+1, n_z)."""
@@ -138,12 +138,12 @@ def _(mo):
 def _(WORLDS, factor_logcond, log_posteriors, np, world):
     hist = {}
     for _name, _spec in WORLDS.items():
-        _ds = world(_spec, infer=True)
-        _obs = _ds[0]["input_ids"][:, 1:].cpu().numpy()              # (B, T) observations
+        _run = world(_spec, infer=True)
+        _ds, _obs = _run["dataset"], _run["inputs"][:, 1:]           # the evaluator's streams: (B, T) observations
         _LP = log_posteriors(_ds, _obs)                               # (B, T+1, n_z)
         _Lc, _E, _D, _S = factor_logcond(_LP.reshape(-1, _LP.shape[-1]))
         _E, _D, _S = _E[:, :3], _D[:3], _S[:3]                        # the top three modes
-        hist[_name] = dict(ds=_ds, obs=_obs, LP=_LP, E=_E.reshape(*_LP.shape[:2], -1), D=_D, S=_S)
+        hist[_name] = dict(run=_run, ds=_ds, obs=_obs, LP=_LP, E=_E.reshape(*_LP.shape[:2], -1), D=_D, S=_S)
         print(_name, "history spectrum / top:", np.round(_S / _S[0], 4))
     return (hist,)
 
@@ -212,40 +212,27 @@ def _(mo):
 
 
 @app.cell
-def _(WORLDS, overrides, train_inline):
-    import torch
-
-    runs = {_name: train_inline(overrides(_spec, infer=True))[:2] for _name, _spec in WORLDS.items()}
-    return runs, torch
-
-
-@app.cell
-def _(B, T, hist, logsumexp, np, predicted_inference_geometry, runs, torch):
-    from src.code.analysis_utils import readout_basis, decoder_weights, align_representations
-    from src.code.analysis_utils import cka, cka_null
+def _(B, T, hist, logsumexp, np, predicted_inference_geometry):
+    from src.code.analysis_utils import align_representations, cka, cka_null
 
     fits = {}
-    for _name, (_model, _ds) in runs.items():
-        _h = hist[_name]
-        _ids = torch.cat([torch.full((B, 1), int(_ds.start_token)), torch.as_tensor(_h["obs"])], 1)
-        with torch.no_grad():
-            _out = _model(_ids.to(_ds.device), output_hidden_states=True)
-        _Bq = readout_basis(_model, _ds)                                # (k, width) readout row space
-        _Hall = np.stack([_h_[:, :T].float().cpu().numpy() for _h_ in _out["hidden_states"]])  # (layers+1, B, T, width)
-        _Hp = _Hall[-1] @ _Bq.T                                         # (B, T, k)
+    for _name, _h in hist.items():
+        _run, _ds = _h["run"], _h["ds"]
+        _Hall = _run["hidden_states"][:, :, :T]                         # (layers+1, B, T, k): every layer, in the readout's row space
+        _Hp = _Hall[-1]                                                 # (B, T, k): what the readout reads
         _LP = _h["LP"][:, :T]                                           # Bayes rows at scored positions
         _Ep = predicted_inference_geometry(_LP.reshape(-1, _LP.shape[-1]), _h["D"][:2]).reshape(B, T, 2)
         _fit, _r2 = align_representations(_Ep.reshape(-1, 2), _Hp.reshape(-1, _Hp.shape[-1]), "linear")
-        _lg = _out["logits"][:, :T][..., _ds.label_tokens].double().cpu().numpy()
+        _lg = _run["logits"][:, :T].astype(float)
         _lq = _lg - logsumexp(_lg, -1, keepdims=True)
         _lp0 = np.log(_ds.prior.cpu().numpy())
-        fits[_name] = dict(H=_Hp, Hall=_Hall, E=_Ep, Hfit=_fit.reshape(B, T, -1), Bq=_Bq, r2=_r2,
+        fits[_name] = dict(H=_Hp, Hall=_Hall, E=_Ep, Hfit=_fit.reshape(B, T, -1), r2=_r2,
                            kl_prior=(np.exp(_LP) * (_LP - _lp0)).sum(-1).mean(0),
                            cka=cka(_Hp.reshape(-1, _Hp.shape[-1]), _Ep.reshape(-1, 2)),
                            null=cka_null(_Ep.reshape(-1, 2)),
-                           W=decoder_weights(_model, _ds) @ _Bq.T,      # readout rows in the k-space
+                           W=_run["readout"],                            # readout rows in the k-space
                            kl=(np.exp(_LP) * (_LP - _lq)).sum(-1).mean(0))
-        print(f"{_name}: readout rank {len(_Bq)} | affine R2 predicted->hidden {_r2:.3f} | "
+        print(f"{_name}: readout rank {_run['readout'].shape[1]} | affine R2 predicted->hidden {_r2:.3f} | "
               f"CKA {fits[_name]['cka']:.3f} (null {fits[_name]['null']:.3f}) | KL(Bayes||model) mean {fits[_name]['kl'].mean():.4f}")
     return (fits,)
 
@@ -343,19 +330,14 @@ def _(mo):
 
 
 @app.cell
-def _(WORLDS, overrides, train_inline):
-    runs_next = {_name: train_inline(overrides(_spec, infer=False))[:2] for _name, _spec in WORLDS.items()}
-    return (runs_next,)
-
-
-@app.cell
-def _(B, T, factor_logcond, hist, log_posteriors, logsumexp, np, predicted_inference_geometry, runs_next, torch):
-    from src.code.analysis_utils import readout_basis as _rb, align_representations as _align
+def _(B, T, WORLDS, factor_logcond, hist, log_posteriors, logsumexp, np, predicted_inference_geometry, world):
+    from src.code.analysis_utils import align_representations as _align
     from src.code.analysis_utils import cka as _cka
 
     fits_next = {}
-    for _name, (_model, _ds) in runs_next.items():
-        _obs = _ds[0]["input_ids"][:, 1:].cpu().numpy()
+    for _name, _spec in WORLDS.items():
+        _run = world(_spec, infer=False)
+        _ds, _obs = _run["dataset"], _run["inputs"][:, 1:]
         _LP = log_posteriors(_ds, _obs)                                 # (B, T+1, n_z)
         _ll = np.asarray(_ds.conditional)                               # (n_z, m)
         _LX = logsumexp(_LP[..., None] + _ll[None, None], axis=2)       # (B, T+1, m): log p(x | x_{1:t})
@@ -363,16 +345,12 @@ def _(B, T, factor_logcond, hist, log_posteriors, logsumexp, np, predicted_infer
         _Lc, _E, _D, _S = factor_logcond(_LX.reshape(-1, _m))
         _E, _D, _S = _E[:, :_m - 1], _D[:_m - 1], _S[:_m - 1]
         _S_static = factor_logcond(_ll)[3]
-        _ids = torch.cat([torch.full((B, 1), int(_ds.start_token)), torch.as_tensor(_obs)], 1)
-        with torch.no_grad():
-            _out = _model(_ids.to(_ds.device), output_hidden_states=True)
-        _Bq = _rb(_model, _ds)
-        _H = (_out["hidden_states"][-1][:, :T].float().cpu().numpy() @ _Bq.T).reshape(B * T, -1)
+        _H = _run["hidden_states"][-1][:, :T].reshape(B * T, -1)       # the readout's input, in its row space
         _cands = {"log-predictive code": predicted_inference_geometry(_LX[:, :T].reshape(-1, _m), _D),
                   "log-posterior code": predicted_inference_geometry(_LP[:, :T].reshape(-1, _LP.shape[-1]), hist[_name]["D"][:2]),
                   "belief simplex": np.exp(_LP[:, :T]).reshape(B * T, -1)}
         _scores = {_k: (_align(_v, _H, "linear")[1], _cka(_H, _v)) for _k, _v in _cands.items()}
-        _lg = _out["logits"][:, :T][..., _ds.label_tokens].double().cpu().numpy()
+        _lg = _run["logits"][:, :T].astype(float)
         _lq = _lg - logsumexp(_lg, -1, keepdims=True)
         _kl = (np.exp(_LX[:, :T]) * (_LX[:, :T] - _lq)).sum(-1).mean()
         fits_next[_name] = dict(scores=_scores, S=_S / _S[0], S_static=_S_static / _S_static[0], kl=_kl)
@@ -443,15 +421,15 @@ def _(factor_logcond, log_posteriors, logsumexp, np, world):
 
     hyp = {}
     for _name, (_spec, _infer) in HYP.items():
-        _ds = world(_spec, infer=_infer)
-        _obs = _ds[0]["input_ids"][:, 1:].cpu().numpy()
+        _run = world(_spec, _infer, HYP_EXTRA.get(_name, []))
+        _ds, _obs = _run["dataset"], _run["inputs"][:, 1:]
         _R = target_rows(_ds, _obs, _infer)                            # (B, T+1, C)
         _S_all = factor_logcond(_R.reshape(-1, _R.shape[-1]))[3]
         _rank = int((_S_all > 1e-8 * _S_all[0]).sum())
         _Lc, _E, _D, _S = factor_logcond(_R.reshape(-1, _R.shape[-1]))
         _E, _D, _S = _E[:, :_rank], _D[:_rank], _S[:_rank]
         _S_static = factor_logcond(np.asarray(_ds.conditional))[3]
-        hyp[_name] = dict(ds=_ds, obs=_obs, R=_R, E=_E.reshape(*_R.shape[:2], -1), D=_D, S=_S,
+        hyp[_name] = dict(run=_run, ds=_ds, obs=_obs, R=_R, E=_E.reshape(*_R.shape[:2], -1), D=_D, S=_S,
                           S_static=_S_static, infer=_infer)
         print(f"{_name}: rows {_R.shape[-1]} | rank {_rank} | history sv {np.round(_S[:6] / _S[0], 3)} | "
               f"static sv {np.round(_S_static[:6] / _S_static[0], 3)}")
@@ -502,37 +480,26 @@ def _(mo):
 
 
 @app.cell
-def _(HYP, HYP_EXTRA, overrides, train_inline):
-    runs_hyp = {_name: train_inline(overrides(_spec, infer=_infer) + HYP_EXTRA.get(_name, []))[:2]
-                for _name, (_spec, _infer) in HYP.items()}
-    return (runs_hyp,)
-
-
-@app.cell
-def _(B, FIGURES, T, hyp, logsumexp, np, plot_utils, plt, predicted_inference_geometry, runs_hyp, torch):
-    from src.code.analysis_utils import readout_basis as _rb, align_representations as _align
+def _(B, FIGURES, T, hyp, logsumexp, np, plot_utils, plt, predicted_inference_geometry):
+    from src.code.analysis_utils import align_representations as _align
     from src.code.analysis_utils import cka as _cka, cka_null as _cka_null
 
     fits_hyp = {}
     fig_hyp_learned, _axs = plt.subplots(1, 4, figsize=(19, 4.2))
-    for _j, (_name, (_model, _ds)) in enumerate(runs_hyp.items()):
-        _h = hyp[_name]
-        _ids = torch.cat([torch.full((B, 1), int(_ds.start_token)), torch.as_tensor(_h["obs"])], 1)
-        with torch.no_grad():
-            _out = _model(_ids.to(_ds.device), output_hidden_states=True)
-        _Bq = _rb(_model, _ds)
-        _H = (_out["hidden_states"][-1][:, :T].float().cpu().numpy() @ _Bq.T).reshape(B * T, -1)
+    for _j, (_name, _h) in enumerate(hyp.items()):
+        _run, _ds = _h["run"], _h["ds"]
+        _H = _run["hidden_states"][-1][:, :T].reshape(B * T, -1)       # the readout's input, in its row space
         _R = _h["R"][:, :T]
         _Ep = predicted_inference_geometry(_R.reshape(-1, _R.shape[-1]), _h["D"])
         _r2 = _align(_Ep, _H, "linear")[1]; _c, _n = _cka(_H, _Ep), _cka_null(_Ep)
-        _lg = _out["logits"][:, :T][..., _ds.label_tokens].double().cpu().numpy()
+        _lg = _run["logits"][:, :T].astype(float)
         _lq = _lg - logsumexp(_lg, -1, keepdims=True)
         _kl = (np.exp(_R) * (_R - _lq)).sum(-1).mean(0)
         _lp0 = np.log(_ds.prior.cpu().numpy())
         _base = _lp0 if _h["infer"] else logsumexp(_lp0[:, None] + np.asarray(_ds.conditional), axis=0)
         _kl0 = (np.exp(_R) * (_R - _base)).sum(-1).mean(0)
-        fits_hyp[_name] = dict(r2=_r2, cka=_c, null=_n, kl=_kl, model=_model, ds=_ds)
-        print(f"{_name}: readout rank {len(_Bq)} | affine R2 {_r2:.3f} | CKA {_c:.3f} (null {_n:.3f}) | KL mean {_kl.mean():.4f}")
+        fits_hyp[_name] = dict(r2=_r2, cka=_c, null=_n, kl=_kl, ds=_ds)
+        print(f"{_name}: readout rank {_run['readout'].shape[1]} | affine R2 {_r2:.3f} | CKA {_c:.3f} (null {_n:.3f}) | KL mean {_kl.mean():.4f}")
         _a = _axs[_j]
         _a.plot(np.arange(T), _kl0, color="0.6", lw=1.2, ls="--", label="prior")
         _a.plot(np.arange(T), _kl, color="0.15", lw=1.8, label="model")
@@ -558,20 +525,26 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, fits_hyp, hyp, logsumexp, np, plot_utils, plt, target_rows, torch):
+def _(FIGURES, HYP, HYP_EXTRA, hyp, logsumexp, np, overrides, plot_utils, plt, target_rows):
+    # a handcrafted probe stream, which the evaluator's fixed batch cannot hold: the one place the
+    # live model is read (train_inline loads the saved run)
+    import torch
+    from src.code.train import train_inline
+
     fig_size, _axs = plt.subplots(1, 2, figsize=(13, 4.4))
     _ns = [2, 4, 8, 12]
     _cols = plt.cm.viridis(np.linspace(0.1, 0.9, len(_ns)))
     _spans = {"intervals": [3, 6, 4, 5], "rectangles": [(2, 2), (4, 4), (2, 4), (4, 2), (3, 3), (2, 3), (4, 3), (3, 2), (3, 4)]}
     for _a, _name, _pair in zip(_axs, ["intervals", "rectangles"], [(3, 6), ((2, 2), (4, 4))]):
-        _f, _ds = fits_hyp[_name], fits_hyp[_name]["ds"]
+        _spec, _infer = HYP[_name]
+        _model, _ds, *_ = train_inline(overrides(_spec, _infer) + HYP_EXTRA.get(_name, []))
         _n = hyp[_name]["ds"].info["hypotheses"].max()               # grid side / line length
         _tok = lambda it: it - 1 if _name == "intervals" else (it[0] - 1) * _n + (it[1] - 1)
         _cyc = _spans[_name]
         _stream = np.array([_tok(_cyc[i % len(_cyc)]) for i in range(12)])   # the span's items, in turn
         _ids = torch.tensor([[int(_ds.start_token), *_stream]], device=_ds.device)
         with torch.no_grad():
-            _lg = _f["model"](_ids)["logits"][0][..., _ds.label_tokens].double().cpu().numpy()
+            _lg = _model(_ids)["logits"][0][..., _ds.label_tokens].double().cpu().numpy()
         _lq = _lg - logsumexp(_lg, -1, keepdims=True)
         _bayes = target_rows(_ds, _stream[None], infer=False)[0]      # (13, items), row n = after n examples
         for _c, _k in zip(_cols, _ns):

@@ -88,7 +88,7 @@ $CACHE_DIR/{setting}/{task}/{overrides}/{name}/
   checkpoints/
     {step}/
       model/               # saved weights (torch)
-      eval.npz             # the saved evaluation (conf eval_file): loss, logits, representation, readout, step
+      eval.npz             # the saved evaluation (conf eval_file): step, loss, inputs, targets, logits, hidden_states, readout
 ```
 
 ## Notebooks
@@ -117,7 +117,7 @@ regardless of the working directory.
 
 Notebooks read runs through `analysis_utils.load_run(overrides)`, which returns the run's config,
 its dataset and the final checkpoint's saved evaluation as numpy arrays (`loss`, `logits`,
-`representation`, `readout`). It never trains or loads a model: a missing run raises with the
+`hidden_states`, `readout`, plus the derived `representation`). It never trains or loads a model: a missing run raises with the
 training command, and a run whose recorded resolved config or task kernel differs from what the
 overrides now build raises too. Train from the CLI (above); `train.train_inline(overrides)` exists
 for tests and for the one notebook that needs the live model.
@@ -144,14 +144,18 @@ running a job.
 
 Three layers, each doing one thing:
 
-- `eval.Evaluator.evaluate(model)` is the only forward pass analysis depends on. It returns the
-  model's own objects over every input, untransformed: the KL, the logits, the last hidden state
-  at the outcome slot and the readout rows that read it. `Evaluator.save` writes them to `eval.npz`.
-- `analysis_utils.load_run(overrides)` reads that file back. No model, no transform.
-- Transforms are explicit functions a notebook applies and names in the cell above:
-  `readout_projection` (onto the readout's row space), `feature_vectors` (least-squares
-  feature directions), gauge fixes in `geometry.py`, and the comparison metrics `cka`, `cca`,
-  `rsa` with their nulls. Identity is the default at every layer.
+- `eval.Evaluator.evaluate(model)` is the only forward pass analysis depends on: one batch, every
+  input once for a static task or a fixed seeded batch of streams for a sequence task, scored
+  against the exact Bayes targets. It returns the pass whole and untransformed: `loss`, `inputs`,
+  `targets` (target t pairs with output t), `logits` over the outcome tokens, `hidden_states` for
+  every layer at every position, and the `readout` rows. `Evaluator.save` writes them to `eval.npz`.
+- `analysis_utils.load_run(overrides)` reads that file back and adds `representation`, the last
+  layer at the positions the readout reads. By default it expresses the width-dimensional arrays in
+  the readout's row space (`readout_basis`), the directions the loss constrains; `project=False`
+  gives the raw arrays. No model is constructed.
+- Everything else is an explicit function a notebook applies and names in the cell above:
+  `feature_vectors` (least-squares feature directions), `leverage`, gauge fixes in `geometry.py`,
+  and the comparison metrics `cka`, `cca`, `rsa` with their nulls.
 
 wandb is optional throughout: `wandb.enabled=false` (the default) skips `wandb.init` and all
 online logging.
@@ -168,7 +172,7 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 - `src/code/train.py` — Hydra entry point + `train_inline` for tests. `train` sizes the model from the dataset and runs the HF `Trainer` with custom callbacks; `solve` fills a run dir from the theory instead (`runner=theory`). Both write the same checkpoint, history and evaluation files.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.
 - `src/code/eval.py` — `Evaluator`: `evaluate(model)` scores every input against its exact target and returns the loss, logits, representation and readout as numpy; `save` writes them to a checkpoint's `eval.npz`. Also the standalone eval entry point.
-- `src/code/analysis_utils.py` — the array side: `load_run` / `load_evaluation`, explicit transforms (`readout_projection`, `feature_vectors`, `leverage`, `logit_map`), and the similarity metrics (`cka`, `cca`, `rsa`, nulls).
+- `src/code/analysis_utils.py` — the array side: `load_run` / `load_evaluation` (with `readout_basis` and `representation`), explicit transforms (`feature_vectors`, `leverage`, `logit_map`), and the similarity metrics (`cka`, `cca`, `rsa`, nulls).
 - `src/code/plot_utils.py` — figure styling, `figure_path`, `save_figure`.
 - `notes/` — derivations and setting write-ups.
 

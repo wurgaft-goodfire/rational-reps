@@ -2,20 +2,31 @@
 the alignment / decoding helpers."""
 
 
-def test_readout_projection_keeps_exactly_what_the_readout_reads():
-    # H = a signal in the centered readout's row space + a component the readout cannot read: the
-    # projection has rank(D_c) coordinates, lifts back to the signal alone, and zeroes the rest
+def test_readout_basis_spans_exactly_what_the_readout_reads():
+    # H = a signal in the centered readout's row space + a component the readout cannot read: in
+    # the basis' coordinates the signal has rank(D_c) components and lifts back exactly, the rest
+    # vanishes
     import numpy as np
-    from src.code.analysis_utils import readout_basis, readout_projection
+    from src.code.analysis_utils import readout_basis
     rng = np.random.default_rng(0)
     D = np.c_[rng.normal(size=(6, 2)), np.ones((6, 1)), np.zeros((6, 2))]   # reads dims 0-1; dim 2 is a
     signal = np.c_[rng.normal(size=(50, 2)), np.zeros((50, 3))]             # common offset, centered away
     junk = np.c_[np.zeros((50, 2)), rng.normal(size=(50, 3))]
     B = readout_basis(D)
-    Hp = readout_projection(signal + junk, D)
-    assert B.shape == (2, 5) and Hp.shape == (50, 2)
-    assert np.allclose(Hp @ B, signal, atol=1e-10)
-    assert np.allclose(readout_projection(junk, D), 0.0, atol=1e-10)
+    assert B.shape == (2, 5) and np.allclose(B @ B.T, np.eye(2))
+    assert np.allclose(((signal + junk) @ B.T) @ B, signal, atol=1e-10)
+    assert np.allclose(junk @ B.T, 0.0, atol=1e-10)
+
+
+def test_representation_is_the_last_layer_at_the_positions_the_readout_reads():
+    # static task: the last position, whatever the model's input length (a readout reads one row,
+    # a sequence model reads [start, item] or [start, a, b]); sequence task: every position
+    import numpy as np
+    from src.code.analysis_utils import representation
+    H = np.arange(2 * 4 * 3 * 5.0).reshape(2, 4, 3, 5)                  # (layers, B, T, width)
+    assert np.array_equal(representation(H, static=True), H[-1][:, -1])
+    assert np.array_equal(representation(H, static=False), H[-1])
+    assert representation(None, static=True) is None
 
 
 def test_cca_ignores_float32_scale_junk_directions():

@@ -13,13 +13,27 @@ from .config import run_key
 # Reading a run
 #########################
 
+def representation(hidden_states, static):
+    """What the readout reads: the last layer at the last position for a static task, (n, width),
+    the position that predicts the outcome; at every position for a sequence task, (B, T, width).
+    None for a model without a vector representation."""
+    if hidden_states is None:
+        return None
+    return hidden_states[-1][:, -1] if static else hidden_states[-1]
+
+
 def load_evaluation(path):
-    """One saved evaluation as a dict: ``step``, ``loss``, ``logits`` (n, C), ``representation``
-    (n, width) and ``readout`` (C, width); the last two None when absent."""
+    """One saved evaluation as a dict of arrays (see `Evaluator.evaluate`): ``step``, ``loss``,
+    ``inputs``, ``targets``, ``logits``, ``hidden_states``, ``readout``, plus the derived
+    ``representation``; ``hidden_states``, ``readout`` and ``representation`` are None when the
+    model has no vector representation."""
     with np.load(path) as z:
         saved = {k: z[k] for k in z.files}
-    return {"step": int(saved["step"]), "loss": float(saved["loss"]), "logits": saved["logits"],
-            "representation": saved.get("representation"), "readout": saved.get("readout")}
+    saved["step"], saved["loss"] = int(saved["step"]), float(saved["loss"])
+    saved.setdefault("hidden_states", None)
+    saved.setdefault("readout", None)
+    saved["representation"] = representation(saved["hidden_states"], static=saved["targets"].ndim == 2)
+    return saved
 
 
 def _evaluation_path(config):
@@ -35,11 +49,16 @@ def has_run(overrides, name=None, cache_dir=None):
     return _evaluation_path(resolve_config(overrides, name=name, cache_dir=cache_dir)) is not None
 
 
-def load_run(overrides, name=None, cache_dir=None):
+def load_run(overrides, name=None, cache_dir=None, project=True):
     """The run a list of Hydra overrides names, read from disk: its ``config``, ``dataset`` (the
     task) and the final checkpoint's `load_evaluation`. Never trains or loads a model: a missing
     run raises FileNotFoundError with the training command, and a run whose recorded resolved
-    config or task kernel differs from what the overrides now build raises RuntimeError."""
+    config or task kernel differs from what the overrides now build raises RuntimeError.
+
+    ``project`` (the default) expresses ``hidden_states``, ``representation`` and ``readout`` in
+    the coordinates of `readout_basis`: the directions of the width-dimensional space the readout
+    reads, hence the ones the loss constrains. The logits are unchanged by it. ``project=False``
+    returns the arrays as the model produced them."""
     from .data import init_dataset, kernel_hash
     from .train import resolve_config
     config = resolve_config(overrides, name=name, cache_dir=cache_dir)
@@ -54,7 +73,12 @@ def load_run(overrides, name=None, cache_dir=None):
     if run_key(OmegaConf.load(os.path.join(config.run_dir, "config_resolved.yaml")), exclude) != run_key(config.cfg, exclude):
         raise RuntimeError(f"{config.run_dir} was trained under a different resolved config or task "
                            f"than the overrides now build; retrain it with\n  {command} overwrite=true")
-    return dict(config=config, dataset=dataset, **load_evaluation(path))
+    run = dict(config=config, dataset=dataset, **load_evaluation(path))
+    if project and run["readout"] is not None:
+        B = readout_basis(run["readout"])
+        for key in ("hidden_states", "representation", "readout"):
+            run[key] = run[key] @ B.T
+    return run
 
 
 #########################
@@ -67,11 +91,6 @@ def readout_basis(D, tol=1e-4):
     Dc = np.asarray(D, float)
     Dc = Dc - Dc.mean(0)
     return np.linalg.svd(Dc, full_matrices=False)[2][:np.linalg.matrix_rank(Dc, tol=tol)]
-
-
-def readout_projection(H, D, tol=1e-4):
-    """The representation H (n, width) in the coordinates of `readout_basis`: (n, rank)."""
-    return np.asarray(H, float) @ readout_basis(D, tol).T
 
 
 def feature_vectors(H, Z):

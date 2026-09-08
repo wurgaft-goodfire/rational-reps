@@ -31,7 +31,7 @@ def test_train_inline_returns_live_model_and_geometry_history(tmp_path):
     # matches the closed-form circle
     from src.code.analysis_utils import rsa
     from src.code.geometry import predicted_geometry
-    rep = evaluator.evaluate(model)["representation"]
+    rep = evaluator.evaluate(model)["hidden_states"][-1][:, 0]
     assert rsa(rep, predicted_geometry(np.asarray(dataset.conditional, float))) > 0.6
 
 
@@ -39,12 +39,21 @@ def test_load_run_reads_the_saved_evaluation_without_a_model(tmp_path):
     model, dataset, evaluator, history, config = train_inline(TINY, name="read", cache_dir=str(tmp_path))
     live = evaluator.evaluate(model)
 
-    run = load_run(TINY, name="read", cache_dir=str(tmp_path))
+    run = load_run(TINY, name="read", cache_dir=str(tmp_path), project=False)
     assert run["config"].run_dir == config.run_dir
     assert run["step"] == 200 and run["loss"] == pytest.approx(history["loss"].iloc[-1], abs=1e-4)
-    for key in ("logits", "representation", "readout"):        # the arrays the live model gives
-        assert np.allclose(run[key], live[key], atol=1e-5)
+    for key in ("inputs", "targets", "logits", "hidden_states", "readout"):   # the arrays the live model gives
+        assert np.allclose(run[key], live[key], atol=1e-5), key
+    assert np.array_equal(run["representation"], run["hidden_states"][-1][:, -1])   # static task: the last position
     assert np.allclose(np.asarray(run["dataset"].conditional, float), np.asarray(dataset.conditional, float))
+
+    # by default every width-dimensional array is expressed in the readout's row space
+    from src.code.analysis_utils import readout_basis
+    proj = load_run(TINY, name="read", cache_dir=str(tmp_path))
+    B = readout_basis(run["readout"])
+    assert proj["representation"].shape[-1] == len(B) <= run["representation"].shape[-1]
+    assert np.allclose(proj["representation"], run["representation"] @ B.T)
+    assert np.allclose(proj["readout"], run["readout"] @ B.T) and np.allclose(proj["hidden_states"], run["hidden_states"] @ B.T)
 
     # a run that was never trained: fail with the command that would train it, train nothing
     with pytest.raises(FileNotFoundError, match="src.code.train"):
