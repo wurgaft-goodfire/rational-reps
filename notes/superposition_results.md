@@ -120,6 +120,11 @@ a full map, pair-block orthogonality, oracle test at ρ = 0.6 (m = 16, d = 3), a
   0.254 (oracle 0.216), placement −0.21 vs +0.42. Modes win clearly on shared-factor correlation.
 - **Caveat.** A mutually exclusive pair inside iid features (m = 16, d = 3): both coordinates
   predict the antipodal sign, but raw is closer to the oracle (CE 0.269 vs 0.297; oracle 0.237).
+- **Full theory vs the pairs class (2026-09-08, test oracle = trained `paired_features`, ρ = 0.6,
+  m = 16, d = 3).** The completed theory on the modes still wins on CE (0.206 vs 0.268 raw) and
+  leverage (corr 0.98 vs 0.84), but its placement is uncorrelated with the pairs optimum (0.03)
+  while raw features give 0.29. The additive-stage claim above does not carry through the
+  completion in this cell. Open: whether the pair block on the modes is the culprit.
   The relaxation is basis-dependent; modes are the right basis for shared-factor correlation,
   which the ρ sweep uses. Open: a basis choice that covers both (e.g. pick the lower completed CE).
 - **Runs (Fig 10a/b): ρ ∈ {0.3, 0.6} at the reference cell, d ∈ {3, 6, 12}, 5 seeds, theory on the
