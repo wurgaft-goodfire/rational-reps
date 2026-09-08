@@ -384,19 +384,20 @@ def top_eigenspace(P, d):
     return U[:, -d:]
 
 
-def rank_optimal_logits(alpha, Z, d, n_top=18):
-    """The theory's logit table over states at rank d, (n, m) (notes/superposition.tex).
-    Allocation: water filling (`allocate_d`). Orientation: the linearised Fantope program on
-    the signed pressure with the diagonal free (`fantope_geometry`), realized as the
-    fixed-diagonal frame E* (`tight_frame`). Completion: decoder and pair block solved at E*
-    by convex block alternation (`repair`). The table is (z E* + phi(z) E2 + e0) D; pass the
-    coordinates `modes` gives the task (features, or predictive modes with their map)."""
+def ce_optimal_representation(alpha, Z, d, n_top=18):
+    """The theory's model of a task at rank d (notes/superposition.tex), the optimum of the
+    softmax cross-entropy under the rank constraint (not an SVD truncation): the representation
+    of every state H = z E* + phi(z) E2 + e0, (n, d), and the readout D, (m, d), so the logits
+    are H D^T. Allocation: water filling (`allocate_d`). Orientation: the linearised Fantope
+    program on the signed pressure with the diagonal free (`fantope_geometry`), realized as the
+    fixed-diagonal frame E* (`tight_frame`). Completion: decoder and pair block solved at E* by
+    convex block alternation (`repair`). Pass the coordinates `modes` gives the task."""
     Z = np.asarray(Z, float)
     d_wf, _ = allocate_d(alpha, Z, d)
     P_star, _ = fantope_geometry(alpha, Z, d, signed_pressure(alpha, Z, d_wf))
     E_star = tight_frame(np.diag(P_star), init=P_star)
     rep = repair(alpha, Z, E_star, n_top=n_top)
-    return (Z @ E_star + pair_features(Z, n_top) @ rep["E2"] + rep["e0"]) @ rep["D"]
+    return Z @ E_star + pair_features(Z, n_top) @ rep["E2"] + rep["e0"], rep["D"].T
 
 
 def pair_features(Z, n_top):

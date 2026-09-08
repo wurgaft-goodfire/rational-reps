@@ -19,13 +19,15 @@ def _(mo):
     Trained networks (blue), the additive and additive-plus-pairs reference models (green,
     purple), and the theory of `notes/superposition.tex` (black dashed): water filling →
     pressure-driven orientation on the Fantope → completion by decoder and pairs at the
-    predicted frame. Every model is reduced to its logit table over states (trained: code
-    table times readout; theory: $(z E^\star + \phi(z) E_2 + e_0)\,D$), factored at rank $d$
-    into a balanced code and readout (`predicted_geometry`), and measured by the first-order
-    vectors $E_i$ of the least-squares fit $h(z) \approx \bar h + \sum_i E_i z_i$ to that code;
-    correlated cells use the predictive modes $z\,C^{-1/2}$. Five runs per cell, task and
-    training seeds coupled. Each figure has its own setting selectors; results and open items
-    in `notes/superposition_results.md`.
+    predicted frame, stored as a run of its own (`runner=theory`, representation
+    $z E^\star + \phi(z) E_2 + e_0$ and readout $D$). Every model is read from its saved
+    representation $h(z)$ and readout $D$ and measured by the first-order vectors $E_i$ of the
+    least-squares fit $h(z) \approx \bar h + \sum_i E_i z_i$; correlated cells use the predictive
+    modes $z\,C^{-1/2}$. Leverage, the spectrum and the leverage projector are gauge-invariant;
+    the Grams are in each model's own gauge (the loss is flat along $E \to EA$, $D \to DA^{-\top}$,
+    and AdamW does not balance the two). Five runs per cell, task and training seeds coupled.
+    Each figure has its own setting selectors; results and open items in
+    `notes/superposition_results.md`.
     """)
     return
 
@@ -39,8 +41,8 @@ def _(mo):
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
     from hydra.core.override_parser.overrides_parser import OverridesParser
     from omegaconf import OmegaConf
-    from src.code.analysis_utils import has_run, load_run, measure
-    from src.code.geometry import factor_logcond, modes, pair_features
+    from src.code.analysis_utils import feature_vectors, has_run, leverage, load_run
+    from src.code.geometry import modes, pair_features
     from src.code.train import resolve_config
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -78,10 +80,10 @@ def _(mo):
         R_KEY,
         SEEDS,
         cell_overrides,
-        factor_logcond,
+        feature_vectors,
         has_run,
+        leverage,
         load_run,
-        measure,
         modes,
         np,
         pair_features,
@@ -91,27 +93,27 @@ def _(mo):
 
 
 @app.cell
-def _(CLASSES, SEEDS, cell_overrides, has_run, load_run, measure, modes):
-    # measured cells, filled on demand the first time a figure asks for one
+def _(CLASSES, SEEDS, cell_overrides, feature_vectors, has_run, load_run, modes):
+    # loaded cells, filled on demand the first time a figure asks for one
     SW = {}
 
     def sweep_rows(p, b, r, d, classes):
-        """One cell, per seed: the saved logit table over states of every model class present
-        (the theory included), each measured on the cell's coordinates X (`measure`), plus X
-        and the ladder alpha."""
+        """One cell, per seed: the cell's coordinates X (features, or predictive modes), the
+        ladder alpha, and for every model class present (the theory included) its saved
+        representation and readout ('model') and the first-order vectors E_i of the least-squares
+        fit h(z) ~ h_bar + sum_i E_i x_i ('E')."""
         _rows = []
         for _s in SEEDS:
             _runs = {_c: load_run(cell_overrides(_c, p, b, r, d, _s)) for _c in classes}
             _ds = _runs["linear"]["dataset"]
             _, _X = modes(_ds.info["alpha"], _ds.features, float(r))
-            _row = dict(X=_X, alpha=_ds.info["alpha"], logits={_c: _runs[_c]["logits"] for _c in classes})
-            for _c, _L in _row["logits"].items():
-                _row[_c] = measure(_L, _X, int(d))
-            _rows.append(_row)
+            _model = {_c: (_runs[_c]["representation"], _runs[_c]["readout"]) for _c in classes}
+            _rows.append(dict(X=_X, alpha=_ds.info["alpha"], model=_model,
+                              E={_c: feature_vectors(_H, _X)[0] for _c, (_H, _D) in _model.items()}))
         return _rows
 
     def load_cell(p, b, r, d):
-        """One measured cell, cached in SW: every model class whose seeds are all saved; None
+        """One loaded cell, cached in SW: every model class whose seeds are all saved; None
         until the trained linear network and the theory are."""
         if (p, b, r, d) not in SW:
             _have = [_c for _c in CLASSES if all(has_run(cell_overrides(_c, p, b, r, d, _s)) for _s in SEEDS)]
@@ -138,7 +140,7 @@ def _(B_KEY, D_GRID, GRID, P_KEY, R_KEY, load_cell, mo):
         _rows = {_d: load_cell(_p, _b, _r, _d) for _d in D_GRID}
         if any(_v is None for _v in _rows.values()):
             _rows = None
-        _runs = set.intersection(*[set(_rows[_d][0]["logits"]) - {"theory"} for _d in D_GRID]) if _rows else set()
+        _runs = set.intersection(*[set(_rows[_d][0]["model"]) - {"theory"} for _d in D_GRID]) if _rows else set()
         return dict(rows=_rows, title=rf"$p$ = {_p}, $\beta$ = {_b}, $\rho$ = {_r}",
                     p=float(_p), b=float(_b), rho=float(_r), runners=_runs)
 
@@ -154,8 +156,9 @@ def _(B_KEY, D_GRID, GRID, P_KEY, R_KEY, load_cell, mo):
 def _(mo):
     mo.md(r"""
     ## Figure 1 — allocation
-    Leverage $d_i = \|E_i\|^2$ of the whitened first-order frame: per-seed trained dots,
-    reference means $\pm$ se, and the predicted allocation (water filling plus the soft tail).
+    Leverage $d_i$ of the first-order vectors (diagonal of the hat matrix $E (E^\top E)^{+} E^\top$,
+    gauge-invariant): per-seed trained dots, reference means $\pm$ se, and the predicted
+    allocation (water filling plus the soft tail).
     """)
     return
 
@@ -174,6 +177,7 @@ def _(
     NOT_YET,
     RUNNERS,
     SEL_F1,
+    leverage,
     mo,
     np,
     plot_utils,
@@ -183,20 +187,21 @@ def _(
 ):
     _sel = rows_for(SEL_F1.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
+    _lev = lambda _row, _c: leverage(_row["E"][_c])[0][:24]
     _fig, _axes = plt.subplots(1, 3, figsize=(15, 4.2), sharey=True)
     for _ax, _d in zip(_axes, D_GRID):
         _x = np.arange(24)
         for _row in _sel["rows"][_d]:
-            _ax.plot(_x, _row["linear"][0][:24], "o", ms=4, alpha=0.45, color=COL["blue"], label="trained" if _row is _sel["rows"][_d][0] else None)
+            _ax.plot(_x, _lev(_row, "linear"), "o", ms=4, alpha=0.45, color=COL["blue"], label="trained" if _row is _sel["rows"][_d][0] else None)
         for _run, (_lbl, _col) in RUNNERS.items():
             if _run not in _sel["runners"]:
                 continue
-            _rm = np.array([_row[_run][0][:24] for _row in _sel["rows"][_d]])
+            _rm = np.array([_lev(_row, _run) for _row in _sel["rows"][_d]])
             _mu, _se = _rm.mean(0), _rm.std(0) / np.sqrt(len(_rm))
             if _run != "linear":
                 _ax.plot(_x, _mu, "-", lw=1.8, color=_col, label=_lbl)
                 _ax.fill_between(_x, _mu - _se, _mu + _se, color=_col, alpha=0.25, lw=0)
-        _pr = np.array([_row["theory"][0][:24] for _row in _sel["rows"][_d]])
+        _pr = np.array([_lev(_row, "theory") for _row in _sel["rows"][_d]])
         _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
         _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
         _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
@@ -215,8 +220,7 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 2 — feature sizes
-    $\|E_i\|^2$ of the first-order vectors in the balanced gauge of the state table; the
-    dotted line is $\alpha_i$ in the same units.
+    $\|E_i\|^2$ of the first-order vectors, each model in its own gauge.
     """)
     return
 
@@ -243,24 +247,21 @@ def _(
 ):
     _sel = rows_for(SEL_F2.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
-    _alpha, _n = _sel["rows"][D_GRID[0]][0]["alpha"], len(_sel["rows"][D_GRID[0]][0]["X"])
+    _sizes = lambda _row, _c: (_row["E"][_c] ** 2).sum(1)[:24]
     _fig, _axes = plt.subplots(1, 3, figsize=(15, 4.2), sharey=True)
     for _ax, _d in zip(_axes, D_GRID):
         _x = np.arange(24)
         for _run, (_lbl, _col) in RUNNERS.items():
             if _run not in _sel["runners"]:
                 continue
-            _rm = np.array([np.diag(_row[_run][1])[:24] for _row in _sel["rows"][_d]])
+            _rm = np.array([_sizes(_row, _run) for _row in _sel["rows"][_d]])
             _mu, _se = _rm.mean(0), _rm.std(0) / np.sqrt(len(_rm))
             _ax.plot(_x, _mu, "o-" if _run == "linear" else "-", ms=4, lw=1.2 if _run == "linear" else 1.8, color=_col, label=_lbl)
             _ax.fill_between(_x, _mu - _se, _mu + _se, color=_col, alpha=0.25, lw=0)
-        _pr = np.array([np.diag(_row["theory"][1])[:24] for _row in _sel["rows"][_d]])
+        _pr = np.array([_sizes(_row, "theory") for _row in _sel["rows"][_d]])
         _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
         _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
         _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
-        if _sel["rho"] == 0.0:
-            _ax.plot(_x, _alpha[:24] / np.sqrt(_n * _sel["p"] * (1 - _sel["p"])), ":", lw=1.2, color="0.6",
-                     label=r"$\alpha_i / \sqrt{Np(1-p)}$")
         _ax.set_title(f"d = {_d}")
         _ax.set_xlabel("feature $i$" if _sel["rho"] == 0.0 else "mode $k$")
         plot_utils.FIG.style_axes(_ax)
@@ -304,12 +305,13 @@ def _(
     _sel = rows_for(SEL_F3.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
     _K = 16
+    _gram = lambda _row, _c: (_row["E"][_c] @ _row["E"][_c].T)[:_K, :_K]
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
     _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False)
     for _c, _d in enumerate(D_GRID):
-        _panels = [(np.mean([_row["linear"][1][:_K, :_K] for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
-                   (np.mean([_row["theory"][1][:_K, :_K] for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
-        _panels += [(np.mean([_row[_run][1][:_K, :_K] for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
+        _panels = [(np.mean([_gram(_row, "linear") for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
+                   (np.mean([_gram(_row, "theory") for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
+        _panels += [(np.mean([_gram(_row, _run) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
         _v = max(np.abs(_Gm).max() for _Gm, _lbl in _panels)
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]
@@ -327,7 +329,7 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 4 — spectrum
-    Top-$d$ singular values of the row-centred logit table over states, per state ($\sigma_k(\Lambda)/\sqrt{n}$).
+    Singular values of the row-centred logits $h(z) D^\top$ over states, per state ($\sigma_k(\Lambda)/\sqrt{n}$); gauge-invariant.
     """)
     return
 
@@ -354,17 +356,23 @@ def _(
 ):
     _sel = rows_for(SEL_F4.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
+
+    def _spectrum(_row, _c):
+        _H, _D = _row["model"][_c]
+        _L = _H @ _D.T
+        return np.linalg.svd(_L - _L.mean(1, keepdims=True), compute_uv=False)[:_H.shape[1]] / np.sqrt(len(_L))
+
     _fig, _axes = plt.subplots(1, 3, figsize=(15, 4.0))
     for _ax, _d in zip(_axes, D_GRID):
         _x = 1 + np.arange(int(_d))
         for _run, (_lbl, _col) in RUNNERS.items():
             if _run not in _sel["runners"]:
                 continue
-            _rm = np.array([_row[_run][2] for _row in _sel["rows"][_d]])
+            _rm = np.array([_spectrum(_row, _run) for _row in _sel["rows"][_d]])
             _mu, _se = _rm.mean(0), _rm.std(0) / np.sqrt(len(_rm))
             _ax.plot(_x, _mu, "o-" if _run == "linear" else "-", ms=4, lw=1.2 if _run == "linear" else 1.8, color=_col, label=_lbl)
             _ax.fill_between(_x, _mu - _se, _mu + _se, color=_col, alpha=0.25, lw=0)
-        _pr = np.array([_row["theory"][2] for _row in _sel["rows"][_d]])
+        _pr = np.array([_spectrum(_row, "theory") for _row in _sel["rows"][_d]])
         _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
         _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
         _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
@@ -383,7 +391,7 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 5 — readout Grams
-    $D^\top D$ of the balanced readout, top 16 outcomes, seed means.
+    $D D^\top$ of the saved readout over outcomes, top 16, seed means; each model in its own gauge.
     """)
     return
 
@@ -411,12 +419,13 @@ def _(
     _sel = rows_for(SEL_F5.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
     _K = 16
+    _gram = lambda _row, _c: (_row["model"][_c][1] @ _row["model"][_c][1].T)[:_K, :_K]
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
     _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False)
     for _c, _d in enumerate(D_GRID):
-        _panels = [(np.mean([_row["linear"][3][:_K, :_K] for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
-                   (np.mean([_row["theory"][3][:_K, :_K] for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
-        _panels += [(np.mean([_row[_run][3][:_K, :_K] for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
+        _panels = [(np.mean([_gram(_row, "linear") for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
+                   (np.mean([_gram(_row, "theory") for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
+        _panels += [(np.mean([_gram(_row, _run) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
         _v = max(np.abs(_Gm).max() for _Gm, _lbl in _panels)
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]
@@ -434,7 +443,7 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 6 — features and pairs together
-    Gram of the regression vectors of the balanced code on $[1, z - \bar z, \phi(z)]$: the top 16 features
+    Gram of the regression vectors of the saved representation on $[1, z - \bar z, \phi(z)]$: the top 16 features
     and the 15 pairs among the top 6, colour scale set by the pair blocks (the feature block
     saturates).
     """)
@@ -469,10 +478,9 @@ def _(
     _pairs_all = list(_it.combinations(range(18), 2))
     _pairsel = [_pairs_all.index(p) for p in _it.combinations(range(_TOP), 2)]   # 15 pairs among the top 6
 
-    def _ext_gram(_L, _X, _d):
-        """Gram of the regression vectors of the balanced code on [1, x, phi(x)]: top-K features
+    def _ext_gram(_H, _X):
+        """Gram of the regression vectors of the representation on [1, x, phi(x)]: top-K features
         and the selected pairs."""
-        _H = factor_logcond(_L, rank=_d)[1]
         _A = np.column_stack([np.ones(len(_X)), _X - _X.mean(0), pair_features(_X, 18)])
         _B = np.linalg.lstsq(_A, _H, rcond=None)[0]
         _E = np.vstack([_B[1:1 + _K], _B[1 + 64:][_pairsel]])
@@ -481,11 +489,11 @@ def _(
     _has_pairs = "paired_features" in _sel["runners"]
     _fig, _axes = plt.subplots(3 if _has_pairs else 2, 3, figsize=(13.2, 12.4 if _has_pairs else 8.4), squeeze=False)
     for _c, _d in enumerate(D_GRID):
-        _rows, _d = _sel["rows"][_d], int(_d)
-        _panels = [(np.mean([_ext_gram(_row["logits"]["linear"], _row["X"], _d) for _row in _rows], 0), "trained (5-seed mean)"),
-                   (np.mean([_ext_gram(_row["logits"]["theory"], _row["X"], _d) for _row in _rows], 0), "theory (5-draw mean)")]
+        _rows = _sel["rows"][_d]
+        _panels = [(np.mean([_ext_gram(_row["model"]["linear"][0], _row["X"]) for _row in _rows], 0), "trained (5-seed mean)"),
+                   (np.mean([_ext_gram(_row["model"]["theory"][0], _row["X"]) for _row in _rows], 0), "theory (5-draw mean)")]
         if _has_pairs:
-            _panels.append((np.mean([_ext_gram(_row["logits"]["paired_features"], _row["X"], _d) for _row in _rows], 0), "pairs model (5-seed mean)"))
+            _panels.append((np.mean([_ext_gram(_row["model"]["paired_features"][0], _row["X"]) for _row in _rows], 0), "pairs model (5-seed mean)"))
         _v = max(np.abs(_Gm[_K:, :]).max() for _Gm, _lbl in _panels)   # scale to the pair blocks; the feature block saturates
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]

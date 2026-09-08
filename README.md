@@ -160,12 +160,12 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 - `conf/config.yaml` — base defaults (setting + model + train + runner), wandb toggle, run-dir layout.
 - `src/code/config.py` — `Config` wraps the resolved `DictConfig`; seeds all RNGs; turns `save_steps_method` into a concrete checkpoint schedule.
 - `src/code/data.py` — `init_dataset` + three dataset classes (co-occurrence, relational, HMM), plus the structure gallery (graphs and co-occurrence kernels). Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
-- `src/code/geometry.py` — the rational-code oracles: the spectral factorization `factor_logcond` (row-centred, balanced split, exposed as `predicted_geometry`), floored logs, gauge fixing against a target basis (`canonical_gauge`, `fourier_basis`), `class_means`, and the superposition theory (`allocate_d`, `fantope_geometry`, `tight_frame`, `repair`, composed in `rank_optimal_logits`, from `notes/superposition.tex`).
+- `src/code/geometry.py` — the rational-code oracles: the spectral factorization `factor_logcond` (row-centred, balanced split, exposed as `predicted_geometry`), floored logs, gauge fixing against a target basis (`canonical_gauge`, `fourier_basis`), `class_means`, and the superposition theory (`allocate_d`, `fantope_geometry`, `tight_frame`, `repair`, composed in `ce_optimal_representation`, from `notes/superposition.tex`).
 - `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
 - `src/code/train.py` — Hydra entry point + `train_inline` for tests. `train` sizes the model from the dataset and runs the HF `Trainer` with custom callbacks; `solve` fills a run dir from the theory instead (`runner=theory`). Both write the same checkpoint, history and evaluation files.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.
 - `src/code/eval.py` — `Evaluator`: `evaluate(model)` scores every input against its exact target and returns the loss, logits, representation and readout as numpy; `save` writes them to a checkpoint's `eval.npz`. Also the standalone eval entry point.
-- `src/code/analysis_utils.py` — the array side: `load_run` / `load_evaluation`, explicit transforms (`readout_projection`, `feature_vectors`, `leverage`, `measure`), and the similarity metrics (`cka`, `cca`, `rsa`, nulls).
+- `src/code/analysis_utils.py` — the array side: `load_run` / `load_evaluation`, explicit transforms (`readout_projection`, `feature_vectors`, `leverage`, `logit_map`), and the similarity metrics (`cka`, `cca`, `rsa`, nulls).
 - `src/code/plot_utils.py` — figure styling, `figure_path`, `save_figure`.
 - `notes/` — derivations and setting write-ups.
 

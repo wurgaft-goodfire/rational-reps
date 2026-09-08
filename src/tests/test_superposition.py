@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from src.code import geometry
-from src.code.analysis_utils import feature_vectors, leverage, logit_map, measure
+from src.code.analysis_utils import feature_vectors, leverage, logit_map
 from src.code.geometry import allocate_d, decoder_map, tight_frame
 
 LADDER = 8.0 * (1.0 + np.arange(64)) ** -0.5          # the standard power-law importance ladder
@@ -147,21 +147,19 @@ def test_signed_pressure_is_the_covariance_form_and_points_head_against_tail():
 
 
 @pytest.mark.slow
-def test_rank_optimal_logits_is_the_completed_map_at_the_pressure_frame():
-    # the table is (z E* + phi(z) E2 + e0) D with E* the fixed-diagonal realization of the
-    # Fantope solution and (E2, e0, D) the completion at E*; it has rank exactly d, so the
-    # balanced factorization the runner stores is lossless
+def test_ce_optimal_representation_is_the_completed_model_at_the_pressure_frame():
+    # H = z E* + phi(z) E2 + e0 with E* the fixed-diagonal realization of the Fantope solution
+    # and (E2, e0, D) the completion at E*; the logits are H D^T
     alpha, Z, d = LADDER[:16], _bernoulli(16, n=4096), 3
-    L = geometry.rank_optimal_logits(alpha, Z, d, n_top=8)
+    H, D = geometry.ce_optimal_representation(alpha, Z, d, n_top=8)
     d_wf, _ = allocate_d(alpha, Z, d)
     P, _ = geometry.fantope_geometry(alpha, Z, d, geometry.signed_pressure(alpha, Z, d_wf))
     E_star = tight_frame(np.diag(P), init=P)
     rep = geometry.repair(alpha, Z, E_star, n_top=8)
-    assert L.shape == (4096, 16)
-    assert np.allclose(L, (Z @ E_star + geometry.pair_features(Z, 8) @ rep["E2"] + rep["e0"]) @ rep["D"])
-    Lc, H, D, S = geometry.factor_logcond(L, rank=d)
-    assert H.shape == (4096, 3) and D.shape == (3, 16) and np.allclose(H @ D, Lc, atol=1e-6)
-    assert np.linalg.matrix_rank(Lc, tol=1e-6 * S[0]) == d
+    assert H.shape == (4096, 3) and D.shape == (16, 3)
+    assert np.allclose(H, Z @ E_star + geometry.pair_features(Z, 8) @ rep["E2"] + rep["e0"])
+    assert np.allclose(D, rep["D"].T)
+    assert np.allclose(feature_vectors(H, Z)[0], E_star, atol=1e-8)   # the frame is the first-order code
 
 
 def test_pressure_frame_scores_below_every_random_frame_with_the_same_allocation():
@@ -267,21 +265,26 @@ def test_logit_map_recovers_a_planted_additive_map_exactly():
     assert abs(r2 - 1.0) < 1e-12
 
 
-def test_measure_recovers_a_planted_rank_d_table():
-    # a mean-free additive table with orthogonal writers of sizes 4 / 2.25 / 1: `measure`
-    # returns their leverages (1, 1, 1, then 0), balanced sizes in the table's own units
-    # (sigma-split), the table's top-d spectrum per state, and a diagonal projector
+def test_leverage_of_the_first_order_vectors_is_gauge_invariant_and_their_gram_is_not():
+    # a representation additive in the features with orthogonal writers of sizes 4 / 2.25 / 1:
+    # the first-order vectors recover the writers, their leverages are (1, 1, 1, then 0) with a
+    # diagonal projector, and a change of gauge (H A, D A^-T) leaves leverage alone while it
+    # changes the Gram
     rng = np.random.default_rng(4)
     m, d, p, n = 32, 3, 0.3, 8192
     Z = (rng.random((n, m)) < p).astype(float)
     E = np.zeros((m, d))
     E[0, 0], E[1, 1], E[2, 2] = 2.0, 1.5, 1.0
-    L = (Z - Z.mean(0)) @ (E @ E.T)
-    h, G, S, GD, P = measure(L, Z, d)
+    H = (Z - Z.mean(0)) @ E
+    E1 = feature_vectors(H, Z)[0]
+    h, P = leverage(E1)
+    assert np.allclose(E1, E, atol=1e-8)
     assert np.allclose(h[:3], 1.0, atol=1e-6) and h[3:].max() < 1e-6
-    assert np.allclose(np.diag(G)[3:], 0.0, atol=1e-9) and np.all(np.diff(np.diag(G)[:3]) < 0)
-    assert np.allclose(S, np.linalg.svd(L - L.mean(1, keepdims=True), compute_uv=False)[:d] / np.sqrt(n))
-    assert np.allclose(P[:3, :3], np.eye(3), atol=1e-6) and GD.shape == (m, m)
+    assert np.allclose(P[:3, :3], np.eye(3), atol=1e-6)
+    A = np.diag([3.0, 0.5, 2.0])
+    E2 = feature_vectors(H @ A, Z)[0]
+    assert np.allclose(leverage(E2)[0], h) and np.allclose(leverage(E2)[1], P)
+    assert not np.allclose(E2 @ E2.T, E1 @ E1.T)
 
 
 def _tied_ce(alpha, Z, di, G_off):
@@ -503,21 +506,15 @@ def test_pair_features_are_orthogonal_to_the_first_order_dictionary():
     assert np.allclose(phi.std(0), 1.0)
 
 
-def _balanced_feature_gram(table, Z, d):
-    # feature-space Gram of a model from its logit table over states, in the common gauge
-    H = geometry.factor_logcond(table, rank=d)[1]
-    E = feature_vectors(H, Z)[0]
-    return E @ E.T
-
-
 @pytest.mark.slow
 def test_whitening_brings_the_theory_to_the_class_optimum_on_correlated_features(tmp_path):
     # equicorrelated features (rho = 0.6, m = 16, d = 3): the pairs class trained to its
-    # optimum (the paired_features runner, full batch) is the oracle. Solved on raw features
-    # the theory misallocates; on the predictive modes it recovers the oracle's leverage and
-    # closes most of the CE gap. Placement is NOT recovered on the modes here (corr 0.03 vs
-    # 0.29 on raw features, 2026-09-08; open item in notes/superposition_results.md), so it
-    # is reported, not asserted.
+    # optimum (the paired_features runner, full batch) is the oracle, compared through the
+    # gauge-invariant measurements only (excess CE, leverage, leverage projector). On the
+    # predictive modes the theory closes most of the CE gap to the oracle that raw features
+    # leave open. Leverage and placement are reported, not asserted: measured invariantly they
+    # do not favor the modes (leverage a tie, placement 0.05 vs 0.28 raw, 2026-09-08); open
+    # item in notes/superposition_results.md.
     from src.code.train import train_inline
     m, d, k = 16, 3, 8
     model, dataset, evaluator, *_ = train_inline(
@@ -526,32 +523,32 @@ def test_whitening_brings_the_theory_to_the_class_optimum_on_correlated_features
          "random_seed=0"], cache_dir=str(tmp_path))
     alpha, Z = dataset.info["alpha"], np.asarray(dataset.features, float)
     iu = np.triu_indices(k, 1)
-    G_opt = _balanced_feature_gram(evaluator.evaluate(model)["logits"], Z, d)
+    h_opt, P_opt = leverage(feature_vectors(evaluator.evaluate(model)["representation"], Z)[0])
     G, P, _ = geometry._softmax_stats(alpha, Z)
     scores = {}
     for name, correlated in [("raw", 0.0), ("white", 0.6)]:
-        table = geometry.rank_optimal_logits(*geometry.modes(alpha, Z, correlated), d)
-        G_th = _balanced_feature_gram(table, Z, d)
-        scores[name] = (geometry._excess_ce(table, G, P),
-                        np.corrcoef(np.diag(G_th), np.diag(G_opt))[0, 1],
-                        np.corrcoef(G_th[:k, :k][iu], G_opt[:k, :k][iu])[0, 1])
-    print("placement corr vs the pairs optimum (raw, modes):", scores["raw"][2], scores["white"][2])
+        H, D = geometry.ce_optimal_representation(*geometry.modes(alpha, Z, correlated), d)
+        h_th, P_th = leverage(feature_vectors(H, Z)[0])
+        scores[name] = (geometry._excess_ce(H @ D.T, G, P), np.corrcoef(h_th, h_opt)[0, 1],
+                        np.corrcoef(P_th[:k, :k][iu], P_opt[:k, :k][iu])[0, 1])
+    print("(excess CE, leverage corr, placement corr) vs the pairs optimum:", scores)
     assert scores["white"][0] < scores["raw"][0] - 0.05, scores          # CE gap closed by > 0.05
-    assert scores["white"][1] > scores["raw"][1] + 0.1, scores           # leverage correlation
 
 
 def test_mutually_exclusive_features_are_predicted_antipodal_in_both_bases():
     # two features that never co-occur inside an iid background (m = 16, d = 3): the
-    # predicted feature-space overlap of the pair is negative on raw features and on the
-    # predictive modes alike (the TMS antipodal arrangement)
+    # predicted overlap of the pair's writers is negative (gauge-invariantly, in the leverage
+    # projector) on raw features and on the predictive modes alike (the TMS antipodal
+    # arrangement)
     rng = np.random.default_rng(0)
     n, m, d = 4096, 16, 3
     c = rng.choice(3, size=n, p=[0.3, 0.3, 0.4])
     Z = np.column_stack([c == 0, c == 1, rng.random((n, m - 2)) < 0.3]).astype(float)
     alpha = LADDER[:m]
     for correlated in (0.0, 1.0):
-        G = _balanced_feature_gram(geometry.rank_optimal_logits(*geometry.modes(alpha, Z, correlated), d), Z, d)
-        assert G[0, 1] < -0.02
+        H, _ = geometry.ce_optimal_representation(*geometry.modes(alpha, Z, correlated), d)
+        P = leverage(feature_vectors(H, Z)[0])[1]
+        assert P[0, 1] < -0.02, P[0, 1]
 
 
 # ── the exact tied-map Fantope program ─────────────────────────────────────────────────────

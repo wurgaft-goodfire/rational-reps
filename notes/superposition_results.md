@@ -62,20 +62,21 @@ Every figure has its own p / β / ρ selectors and reads the sweep grid (540 cel
 additive) lazily from each run's saved evaluation (`eval.npz`: logits, representation, readout);
 no model is constructed in the notebook.
 
-Every model is put in one gauge: its logit table over states Λ = E Dᵀ (theory: [Z, φ(Z), 1]·map_rep),
-row-centred, balanced SVD at rank d (`factor_logcond(Λ, rank=d)`, the repo-wide `predicted_geometry`),
-then the first-order vectors E_i of the least-squares fit h(z) ≈ h̄ + Σ E_i z_i to the balanced code.
-Why a common gauge: the loss is flat along E → EA, D → DA⁻ᵀ; GD from small init would balance E and D
-but the runs use AdamW, which leaves the state table 4.6–7.8× larger than the readout (SGD retrain:
-balanced to 0.4%). Raw scales are an optimizer artefact.
+Every model is read from its saved representation h(z) and readout D (`eval.npz`), then the
+first-order vectors E_i of the least-squares fit h(z) ≈ h̄ + Σ E_i z_i. The theory is a run of its
+own (`runner=theory`): the CE-optimal model's table, factored in the oracle's balanced gauge
+(`factor_logcond`, as `predicted_geometry`). Trained models stay in their own gauge: the loss is flat
+along E → EA, D → DA⁻ᵀ, and AdamW leaves the state table 4.6–7.8× larger than the readout (SGD
+retrain: balanced to 0.4%), so only the gauge-invariant quantities (leverage, its projector, the
+spectrum of h Dᵀ) compare across models; the Grams are shown per model and labelled as such.
 
 1. Allocation: Fantope diagonal (water filling + soft tail) vs trained leverage.
-2. Feature sizes ‖E_i‖² in state-table units (α_i/√(Np(1−p)) as reference); one theory series.
+2. Feature sizes ‖E_i‖², each model in its own gauge; one theory series.
 3. Feature Grams E Eᵀ (standard display, strong diagonal): trained / pairs / additive / theory.
-4. Spectrum of the first-order map E Wᵀ (gauge-free).
-5. Readout Grams Dᵀ D of the balanced readout.
+4. Spectrum of the row-centred logits h Dᵀ (gauge-free).
+5. Readout Grams D Dᵀ of the saved readout.
 6. Soft tail: trained tail leverage vs ‖a·_j‖²/4δ² and the Fantope tail (log–log).
-7. Gram of the regression vectors of the balanced code on [1, z − z̄, φ(z)] over the top 16 features
+7. Gram of the regression vectors of the representation on [1, z − z̄, φ(z)] over the top 16 features
    and the 15 pairs among the top 6, colour scale set by the pair blocks. Trained feature–pair blocks carry definite signs at d = 3, 6, which the
    theory reproduces in broad strokes at d = 3; pair–pair blocks are near-diagonal everywhere.
    At d = 12 the theory's pair vectors anti-align systematically with specific features (a
@@ -86,7 +87,7 @@ balanced to 0.4%). Raw scales are an optimizer artefact.
 
 `conf/setting/superposition.yaml` (a Hydra multirun per model class): p ∈ {0.05, 0.15, 0.3, 0.5} ×
 β ∈ {0.25, 0.5, 1.0} × ρ ∈ {0, 0.3, 0.6} × d ∈ {3, 6, 12}, 5 seeds per cell. The theory is a model
-class of its own (`runner=theory`): `geometry.rank_optimal_logits` solved per cell and stored as a
+class of its own (`runner=theory`): `geometry.ce_optimal_representation` solved per cell and stored (balanced gauge) as a
 rank-d linear run beside the trained classes, read like them.
 Notebook Figs 8a/8b (allocation small multiples) and 9 (score heatmaps; placement on the leverage
 projectors).
@@ -120,11 +121,13 @@ a full map, pair-block orthogonality, oracle test at ρ = 0.6 (m = 16, d = 3), a
   0.254 (oracle 0.216), placement −0.21 vs +0.42. Modes win clearly on shared-factor correlation.
 - **Caveat.** A mutually exclusive pair inside iid features (m = 16, d = 3): both coordinates
   predict the antipodal sign, but raw is closer to the oracle (CE 0.269 vs 0.297; oracle 0.237).
-- **Full theory vs the pairs class (2026-09-08, test oracle = trained `paired_features`, ρ = 0.6,
-  m = 16, d = 3).** The completed theory on the modes still wins on CE (0.206 vs 0.268 raw) and
-  leverage (corr 0.98 vs 0.84), but its placement is uncorrelated with the pairs optimum (0.03)
-  while raw features give 0.29. The additive-stage claim above does not carry through the
-  completion in this cell. Open: whether the pair block on the modes is the culprit.
+- **Full theory vs the pairs class, gauge-invariantly (2026-09-08, test oracle = trained
+  `paired_features`, ρ = 0.6, m = 16, d = 3; leverage and its projector, not balanced Grams).** The
+  completed theory on the modes wins on CE (0.206 vs 0.268 raw) and nothing else: leverage
+  correlation with the oracle 0.95 on the modes vs 0.96 raw, placement (projector off-diagonals)
+  0.05 vs 0.28. The additive-stage claims above were read off balanced Grams and do not carry
+  through the completion under invariant measurement. Open: whether the pair block on the modes
+  is the culprit, and whether the ρ = 0.3 numbers survive the same measurement.
   The relaxation is basis-dependent; modes are the right basis for shared-factor correlation,
   which the ρ sweep uses. Open: a basis choice that covers both (e.g. pick the lower completed CE).
 - **Runs (Fig 10a/b): ρ ∈ {0.3, 0.6} at the reference cell, d ∈ {3, 6, 12}, 5 seeds, theory on the
@@ -273,7 +276,7 @@ seeds while every trained model is not; the analysis below is what that noise me
 
 ## Next steps
 
-1. (done) `rank_optimal_logits` = water filling → linear Fantope orientation → fixed-diagonal
+1. (done) `ce_optimal_representation` = water filling → linear Fantope orientation → fixed-diagonal
    frame E★ → exact completion at E★ (the random-frame control is a test on the pressure score); retired analytic-completion
    functions deleted, `interference_curvature` kept; notebook rebuilt on the new outputs.
 2. (done) Pair-set sweep of the biconvex pairs class, n_top ∈ {0, 6, 12, 18, 24, 32, 48, 64}.

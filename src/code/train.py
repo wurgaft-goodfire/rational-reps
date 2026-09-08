@@ -14,7 +14,7 @@ from .models import init_model, load_model, MODEL_CLASSES
 from .config import Config, clean_dirname, run_key
 from .data import init_dataset, kernel_hash
 from .eval import Evaluator
-from .geometry import factor_logcond, modes, rank_optimal_logits
+from .geometry import ce_optimal_representation, factor_logcond, modes
 from .train_utils import (
     CustomSaveCallback,
     StepMetricsCallback,
@@ -69,15 +69,17 @@ def _size_model(config, dataset):
 
 
 def solve(config, dataset):
-    """The theory as a run: the task's rank-optimal logit table (`geometry.rank_optimal_logits`
-    on the coordinates `modes` gives it), factored at rank d into a balanced state
-    representation and readout and stored in a linear model, with the checkpoint, history and
-    evaluation files `train` writes. Returns the same artifacts as `train`."""
+    """The theory as a run: the task's CE-optimal model at rank d
+    (`geometry.ce_optimal_representation` on the coordinates `modes` gives it), its logit table
+    factored in the oracle's balanced gauge (`factor_logcond`, as `predicted_geometry`) and
+    stored in a linear model, with the checkpoint, history and evaluation files `train` writes.
+    Returns the same artifacts as `train`."""
     _size_model(config, dataset)
     model = init_model(config)
     d = config.cfg.model_kwargs.model_config.embed_dim
     W, X = modes(dataset.info["alpha"], dataset.features, config.cfg.structure_kwargs.get("rho", 0.0))
-    _, H, D, _ = factor_logcond(rank_optimal_logits(W, X, d, n_top=config.cfg.solver.n_top), rank=d)
+    H, D = ce_optimal_representation(W, X, d, n_top=config.cfg.solver.n_top)
+    _, H, D, _ = factor_logcond(H @ D.T, rank=d)
     weight = model.embedding.weight
     with torch.no_grad():
         weight[dataset.item_tokens.to(weight.device)] = torch.as_tensor(H, dtype=weight.dtype, device=weight.device)

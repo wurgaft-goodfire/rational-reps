@@ -7,7 +7,6 @@ import numpy as np
 from omegaconf import OmegaConf, open_dict
 
 from .config import run_key
-from .geometry import factor_logcond
 
 
 #########################
@@ -101,18 +100,6 @@ def leverage(W):
     W = np.asarray(W, float)
     P = W @ np.linalg.pinv(W.T @ W) @ W.T
     return np.diag(P).copy(), P
-
-
-def measure(L, X, d):
-    """One model's geometry from its logit table over states L (n, m), in the coordinates X
-    (n, r) — features, or predictive modes: balanced rank-d code H and readout D
-    (`factor_logcond`), first-order vectors E1 of H by least squares on [X, 1]. Returns
-    (leverage (r,), feature Gram E1 E1^T (r, r), top-d singular values of the row-centred
-    table per state (d,), readout Gram D^T D (m, m), leverage projector (r, r))."""
-    _, H, D, S = factor_logcond(L, rank=d)
-    E1 = feature_vectors(H, X)[0]
-    h, P = leverage(E1)
-    return h, E1 @ E1.T, S / np.sqrt(len(L)), D.T @ D, P
 
 
 #########################
