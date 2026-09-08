@@ -1,6 +1,7 @@
 """The first-order geometry pipeline (geometry.py), from notes/superposition.tex:
 convex allocation -> tight-frame realization -> convex decoder -> balanced SVD.
 Every test pins an analytic answer or an independent audit."""
+import os
 import pathlib
 
 import numpy as np
@@ -387,18 +388,54 @@ def test_biconvex_pairs_never_increases_the_objective_and_beats_the_additive_cla
 
 
 
-def test_sweep_grid_enumerates_unique_cells_with_unique_run_names_and_paths():
-    from src.scripts import sweep_superposition as sw
-    cs = sw.cells()
-    assert len(cs) == 4 * 3 * 3 * 3 * 5 and len(set(cs)) == len(cs)
-    assert len({sw.run_name(*c) for c in cs}) == len(cs)
-    assert len({sw.cell_path(*c) for c in cs}) == len(cs)
-    assert (0.3, 0.5, 0.0, 6, 0) in cs and sw.run_name(0.3, 0.5, 0.0, 6, 0) == "sp_p0.3_b0.5_d6_s0"
-    assert sw.run_name(0.3, 0.5, 0.6, 6, 0) == "sp_p0.3_b0.5_d6_s0_r0.6"
-    assert sw.run_name(0.3, 0.5, 0.0, 6, 0, "paired_features") == "pairf_p0.3_b0.5_d6_s0"
-    W, X = sw.modes(np.ones(4), _bernoulli(4, n=64), 0.0)
-    assert W.shape == (4,) and X.shape == (64, 4)
-    assert not sw.cached(0.3, 0.5, 0.0, 3, 99)
+def test_modes_are_the_features_when_independent_and_the_predictive_modes_when_not():
+    Z = _bernoulli(4, n=64)
+    W, X = geometry.modes(np.ones(4), Z, 0.0)
+    assert W.shape == (4,) and np.array_equal(X, Z)
+    W, X = geometry.modes(np.ones(4), Z, 0.4)
+    assert W.shape == (4, 4) and np.allclose(X @ geometry.whiten(Z)[1], Z)
+
+
+# ── the sweep as a setting preset ──────────────────────────────────────────────────────────
+
+def test_superposition_setting_declares_the_grid_and_couples_the_seeds():
+    # the sweep is Hydra's: every sweeper param is a valid override of the composed config, and
+    # the last value of each composes to the cell it names, with the task seed following the
+    # training seed
+    from hydra.core.override_parser.overrides_parser import OverridesParser
+    from omegaconf import OmegaConf
+    from pyprojroot import here
+    from src.code.train import resolve_config
+    params = OmegaConf.load(here() / "conf" / "setting" / "superposition.yaml").hydra.sweeper.params
+    grid = {o.key_or_group: list(o.sweep_string_iterator()) if o.is_sweep_override() else [str(o.value())]
+            for o in OverridesParser.create().parse_overrides([f"{k}={v}" for k, v in params.items()])}
+    assert [len(v) for v in grid.values()] == [4, 3, 3, 3, 5, 1]           # p, beta, rho, d, seed, steps
+    for runner in ("linear", "additive_features", "paired_features"):
+        config = resolve_config(["setting=superposition", f"runner={runner}"] + [f"{k}={v[-1]}" for k, v in grid.items()])
+        sk = config.cfg.structure_kwargs
+        assert (sk.N, sk.m, sk.scale, sk.spectrum) == (2048, 64, 8.0, "power")
+        assert sk.seed == config.cfg.random_seed == 4                      # task seed follows the training seed
+        assert (sk.p, sk.beta, sk.rho) == (0.5, 1.0, 0.6) and config.cfg.training_kwargs.train_steps == 8000
+        assert config.cfg.model_kwargs.model_config.embed_dim == 12
+        assert os.path.basename(config.run_dir) == runner                  # the model class is the leaf
+
+
+def test_theory_solution_is_solved_once_per_cell_and_shared_by_the_model_classes(tmp_path):
+    from src.code.analysis_utils import has_run, theory_solution
+    from src.code.data import init_dataset
+    from src.code.train import resolve_config
+    small = ["setting=superposition", "structure_kwargs.N=128", "structure_kwargs.m=6",
+             "model_kwargs.model_config.embed_dim=2", "random_seed=1"]
+    runs = {r: resolve_config(small + [f"runner={r}"], cache_dir=str(tmp_path)) for r in ("linear", "paired_features")}
+    assert not has_run(small + ["runner=linear"], cache_dir=str(tmp_path))
+    run = dict(config=runs["linear"], dataset=init_dataset(runs["linear"]))
+    out = theory_solution(run, n_frames=2, n_top=4)
+    path = pathlib.Path(runs["linear"].run_dir).parent / "theory.npz"
+    assert path.exists() and path == pathlib.Path(runs["paired_features"].run_dir).parent / "theory.npz"
+    assert out["map_rep"].shape[1] == 6 and out["E_star"].shape == (6, 2)
+    mtime = path.stat().st_mtime_ns
+    theory_solution(run, n_frames=2, n_top=4)
+    assert path.stat().st_mtime_ns == mtime                                # read, not re-solved
 
 
 # ── correlated features: predictive modes ──────────────────────────────────────────────────

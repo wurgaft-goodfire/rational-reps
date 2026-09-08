@@ -40,6 +40,9 @@ uv run python -m src.code.train runner=hmm_transformer
 # Sweep (Hydra runs in multirun mode by default)
 uv run python -m src.code.train runner=transformer model_kwargs.model_config.hidden_size=16,64,256
 
+# A setting can declare its sweep under hydra.sweeper.params; one multirun per model class
+uv run python -m src.code.train -m runner=linear setting=superposition
+
 # Evaluate every checkpoint of a trained run (same runner + overrides as training)
 uv run python -m src.code.eval runner=hmm_transformer
 

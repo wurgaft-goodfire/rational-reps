@@ -1,0 +1,31 @@
+# @package _global_
+# The superposition sweep: the feature-cube task with N words and m features on a power-law
+# importance ladder alpha_i = scale (i+1)^-beta, swept over sparsity p, ladder slope beta,
+# feature correlation rho, code rank d and seed. The task seed follows random_seed, so a
+# cell's data and training draws are coupled. One multirun per model class:
+#   python -m src.code.train -m runner=linear setting=superposition
+#   python -m src.code.train -m runner=additive_features setting=superposition
+#   python -m src.code.train -m runner=paired_features setting=superposition
+# The notebook reads the grid from `hydra.sweeper.params` (analysis_utils.sweep_grid).
+defaults:
+  - feature_cube
+  - _self_
+
+structure_kwargs:
+  N: 2048
+  m: 64
+  scale: 8.0
+  spectrum: power
+  beta: 0.5              # ladder slope (swept)
+  rho: 0.0               # feature correlation (swept)
+  seed: ${random_seed}
+
+hydra:
+  sweeper:
+    params:
+      structure_kwargs.p: 0.05,0.15,0.3,0.5
+      structure_kwargs.beta: 0.25,0.5,1.0
+      structure_kwargs.rho: 0.0,0.3,0.6
+      model_kwargs.model_config.embed_dim: 3,6,12
+      random_seed: 0,1,2,3,4
+      training_kwargs.train_steps: 8000

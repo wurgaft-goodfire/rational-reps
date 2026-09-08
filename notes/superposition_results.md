@@ -84,8 +84,9 @@ balanced to 0.4%). Raw scales are an optimizer artefact.
 
 ## Sweep over sparsity, ladder slope and rank (2026-09-04)
 
-`src/scripts/sweep_superposition.py`: p ∈ {0.05, 0.15, 0.3, 0.5} × β ∈ {0.25, 0.5, 1.0} × d ∈ {3, 6, 12},
-5 seeds per cell (180 networks, 180 theory solves, cached in `outputs/.../superposition_sweep`).
+`conf/setting/superposition.yaml` (a Hydra multirun per model class): p ∈ {0.05, 0.15, 0.3, 0.5} ×
+β ∈ {0.25, 0.5, 1.0} × ρ ∈ {0, 0.3, 0.6} × d ∈ {3, 6, 12}, 5 seeds per cell; the theory solve of a
+cell is cached as `theory.npz` beside its runs (`analysis_utils.theory_solution`).
 Notebook Figs 8a/8b (allocation small multiples) and 9 (score heatmaps; placement on the leverage
 projectors).
 
@@ -109,7 +110,7 @@ projectors).
 
 Pipeline generalised to a logit map: `alpha` may be an (m, m) matrix (`_logit_map`); all stages
 take (W, X) and `whiten(Z)` gives the predictive modes u = z C^{-1/2} with W = diag(α) C^{1/2}
-(`sweep_superposition.modes`). Pair features are residualised on [1, z]. Tests: whitening
+(`geometry.modes`). Pair features are residualised on [1, z]. Tests: whitening
 identities, vector/matrix equivalence, exact no-op on the full cube, derivative identities for
 a full map, pair-block orthogonality, oracle test at ρ = 0.6 (m = 16, d = 3), antipodal sign test.
 
@@ -154,7 +155,7 @@ correlation changes is the coordinates. The inputs are written in their predicti
 u = z C^{-1/2} (C the feature covariance, symmetric root so mode k stays closest to feature k), and the
 Bayes logits become u Wᵀ with the logit map W = diag(α) C^{1/2}: outcome i reads a mixture of modes,
 which is the only structural change. Water filling, pressure, Fantope program, frame and completion run
-unchanged on (W, u); trained models are measured in the same coordinates (`sweep_superposition.modes`,
+unchanged on (W, u); trained models are measured in the same coordinates (`geometry.modes`,
 `geometry.whiten`). On raw features the relaxation charges twice for a shared component (a duplicated
 feature is the extreme case); on the modes it does not.
 

@@ -111,6 +111,16 @@ def whiten(Z, tol=1e-10):
     return Z @ (V * inv_root) @ V.T, (V * root) @ V.T
 
 
+def modes(alpha, Z, correlated):
+    """The coordinates the theory and the measurement share: the features themselves when
+    independent, else the predictive modes with the Bayes map expressed on them (`whiten`).
+    Returns (alpha (m,) or W (m, m), X (n, m))."""
+    if not correlated:
+        return np.asarray(alpha, float), np.asarray(Z, float)
+    U, C_half = whiten(Z)
+    return np.diag(alpha) @ C_half.T, U
+
+
 def _logit_map(alpha, Z):
     """The Bayes logit map W (outcomes, modes): a vector alpha is diag(alpha) (logits
     alpha_i z_i); an (m, r) matrix is used as is (logits z W^T)."""

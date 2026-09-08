@@ -149,7 +149,8 @@ def _run_exists(config, dataset):
     resolved_path = os.path.join(config.run_dir, "config_resolved.yaml")
     with open_dict(config.cfg):
         config.cfg.kernel = kernel_hash(dataset)
-    stale = os.path.exists(resolved_path) and run_key(OmegaConf.load(resolved_path)) != run_key(config.cfg)
+    exclude = config.cfg.run_key_exclude
+    stale = os.path.exists(resolved_path) and run_key(OmegaConf.load(resolved_path), exclude) != run_key(config.cfg, exclude)
     config.to_yaml(resolved_path)
     if os.path.exists(config.output_dir) and len(os.listdir(config.output_dir)) > 0:
         if not config.cfg.overwrite and not stale:

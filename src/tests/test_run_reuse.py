@@ -10,6 +10,9 @@ from omegaconf import OmegaConf
 from src.code.config import Config
 from src.code.train import _run_exists
 
+# the bookkeeping keys conf/config.yaml excludes from a run's identity, for hand-built configs
+EXCLUDE = ["run_key_exclude", "cache_dir", "run_dir", "output_dir", "overwrite", "training_kwargs.eval_steps"]
+
 
 @dataclass
 class _DS:
@@ -25,7 +28,7 @@ def _cfg(tmp_path, sigma, cache_dir=None):
     return Config(OmegaConf.create({
         "random_seed": 0, "overwrite": False, "emission_sigma": sigma,
         "cache_dir": cache_dir or str(tmp_path), "run_dir": str(tmp_path),
-        "output_dir": str(tmp_path / "checkpoints"),
+        "output_dir": str(tmp_path / "checkpoints"), "run_key_exclude": EXCLUDE,
     }), make_run_dirs=True)
 
 
@@ -55,7 +58,7 @@ def _cfg_eval(tmp_path, eval_steps):
         "random_seed": 0, "overwrite": False, "emission_sigma": 2.5,
         "training_kwargs": {"eval_steps": eval_steps},
         "cache_dir": str(tmp_path), "run_dir": str(tmp_path),
-        "output_dir": str(tmp_path / "checkpoints"),
+        "output_dir": str(tmp_path / "checkpoints"), "run_key_exclude": EXCLUDE,
     }), make_run_dirs=True)
 
 

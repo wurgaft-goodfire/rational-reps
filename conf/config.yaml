@@ -34,6 +34,30 @@ hydra:
     _target_: hydra._internal.core_plugins.basic_sweeper.BasicSweeper
     max_batch_size: null
 
+# Keys that never touch the trained weights, excluded from a run's identity (`config.run_key`):
+# paths and flags, logging, evaluation (draws no RNG, updates no parameter), checkpoint cadence
+# and compilation. A cached run is reused while everything else in its resolved config matches.
+run_key_exclude:
+  - run_key_exclude
+  - cache_dir
+  - run_dir
+  - output_dir
+  - data_path
+  - eval_file
+  - overwrite
+  - wandb
+  - eval_kwargs
+  - eval_cache_dir
+  - training_kwargs.eval_steps
+  - training_kwargs.save_online_eval
+  - training_kwargs.logging_steps
+  - training_kwargs.save_steps_method
+  - training_kwargs.num_save_checkpoints
+  - training_kwargs.save_steps
+  - training_kwargs.pre_batch_data_collator
+  - training_kwargs.compile
+  - training_kwargs.compile_mode
+
 # Environment variable for cache directory (falls back to ./outputs if unset)
 cache_dir: ${oc.env:CACHE_DIR,./outputs}
 

@@ -2,12 +2,13 @@
 and compare them with a predicted geometry. Nothing here constructs a model; `eval.Evaluator`
 wrote every array this module reads."""
 import os
+from pathlib import Path
 
 import numpy as np
 from omegaconf import OmegaConf, open_dict
 
 from .config import run_key
-from .geometry import factor_logcond
+from .geometry import factor_logcond, modes, predict_geometry
 
 
 #########################
@@ -23,6 +24,19 @@ def load_evaluation(path):
             "representation": saved.get("representation"), "readout": saved.get("readout")}
 
 
+def _evaluation_path(config):
+    """The final checkpoint's saved evaluation of a run, or None when there is none."""
+    steps = [int(d) for d in os.listdir(config.output_dir) if d.isdigit()] if os.path.isdir(config.output_dir) else []
+    path = os.path.join(config.output_dir, str(max(steps)), config.eval_file) if steps else None
+    return path if path is not None and os.path.exists(path) else None
+
+
+def has_run(overrides, name=None, cache_dir=None):
+    """Whether `load_run` would find a saved evaluation for these overrides."""
+    from .train import resolve_config
+    return _evaluation_path(resolve_config(overrides, name=name, cache_dir=cache_dir)) is not None
+
+
 def load_run(overrides, name=None, cache_dir=None):
     """The run a list of Hydra overrides names, read from disk: its ``config``, ``dataset`` (the
     task) and the final checkpoint's `load_evaluation`. Never trains or loads a model: a missing
@@ -32,17 +46,32 @@ def load_run(overrides, name=None, cache_dir=None):
     from .train import resolve_config
     config = resolve_config(overrides, name=name, cache_dir=cache_dir)
     command = "uv run python -m src.code.train " + " ".join(list(overrides) + ([f"name={name}"] if name else []))
-    steps = [int(d) for d in os.listdir(config.output_dir) if d.isdigit()] if os.path.isdir(config.output_dir) else []
-    path = os.path.join(config.output_dir, str(max(steps)), config.eval_file) if steps else None
-    if path is None or not os.path.exists(path):
+    path = _evaluation_path(config)
+    if path is None:
         raise FileNotFoundError(f"no saved evaluation under {config.run_dir}; train it with\n  {command}")
     dataset = init_dataset(config)
     with open_dict(config.cfg):
         config.cfg.kernel = kernel_hash(dataset)
-    if run_key(OmegaConf.load(os.path.join(config.run_dir, "config_resolved.yaml"))) != run_key(config.cfg):
+    exclude = config.cfg.run_key_exclude
+    if run_key(OmegaConf.load(os.path.join(config.run_dir, "config_resolved.yaml")), exclude) != run_key(config.cfg, exclude):
         raise RuntimeError(f"{config.run_dir} was trained under a different resolved config or task "
                            f"than the overrides now build; retrain it with\n  {command} overwrite=true")
     return dict(config=config, dataset=dataset, **load_evaluation(path))
+
+
+def theory_solution(run, n_frames=8, n_top=18):
+    """`predict_geometry` for a loaded feature-cube run's task at its rank, on the coordinates
+    `modes` gives it; cached as ``theory.npz`` beside the cell's runs, which every model class
+    trained on that cell shares."""
+    config, dataset = run["config"], run["dataset"]
+    path = Path(config.run_dir).parent / "theory.npz"
+    if not path.exists():
+        W, X = modes(dataset.info["alpha"], dataset.features, config.cfg.structure_kwargs.get("rho", 0.0))
+        out = predict_geometry(W, X, config.cfg.model_kwargs.model_config.embed_dim,
+                               n_frames=n_frames, n_top=n_top, seed=config.cfg.random_seed)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, **{k: np.asarray(v) for k, v in out.items() if not isinstance(v, dict)})
+    return dict(np.load(path))
 
 
 #########################

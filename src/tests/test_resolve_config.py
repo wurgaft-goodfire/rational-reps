@@ -71,6 +71,26 @@ def test_evaluation_settings_do_not_invalidate_a_trained_run():
     base = resolve_config(["setting=graph", "structure_kwargs.n=8"])
     other = resolve_config(["setting=graph", "structure_kwargs.n=8",
                             "+eval_kwargs.output_hidden_states=true"])
-    assert run_key(base.cfg) == run_key(other.cfg)
+    key = lambda c: run_key(c.cfg, base.cfg.run_key_exclude)
+    assert key(base) == key(other)
     changed = resolve_config(["setting=graph", "structure_kwargs.n=9"])
-    assert run_key(base.cfg) != run_key(changed.cfg)
+    assert key(base) != key(changed)
+
+
+def test_only_keys_that_reach_the_weights_are_in_the_run_key():
+    # conf/config.yaml's run_key_exclude: logging, checkpoint cadence, compilation and the artifact
+    # names never touch a parameter, so editing them must not wipe a cached run; the
+    # optimizer-facing keys and the seed must
+    from src.code.config import run_key
+    from src.code.train import resolve_config
+    base = resolve_config(["setting=graph"])
+    key = lambda c: run_key(c.cfg, base.cfg.run_key_exclude)
+    for override in ("training_kwargs.logging_steps=7", "training_kwargs.save_steps_method=every_eval",
+                     "training_kwargs.num_save_checkpoints=3", "training_kwargs.save_online_eval=true",
+                     "training_kwargs.compile=true", "training_kwargs.eval_steps=50", "eval_file=other.npz",
+                     "overwrite=true"):
+        assert key(base) == key(resolve_config(["setting=graph", override])), override
+    for override in ("training_kwargs.learning_rate=0.5", "training_kwargs.train_steps=7",
+                     "training_kwargs.weight_decay=0.1", "random_seed=3",
+                     "model_kwargs.model_config.hidden_size=8"):
+        assert key(base) != key(resolve_config(["setting=graph", override])), override

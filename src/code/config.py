@@ -6,15 +6,16 @@ import torch
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
-def run_key(cfg):
+def run_key(cfg, exclude):
     """The config content that identifies a run's trained weights: the resolved config minus
-    machine-local bookkeeping. Evaluation draws no RNG and touches no parameter, so its cadence
-    and settings are excluded too."""
+    the dotted keys in ``exclude`` (the current config's ``run_key_exclude``)."""
     c = OmegaConf.to_container(cfg, resolve=True)
-    for k in ("cache_dir", "run_dir", "output_dir", "data_path", "eval_file", "overwrite", "wandb",
-              "eval_kwargs", "eval_cache_dir"):
-        c.pop(k, None)
-    c.get("training_kwargs", {}).pop("eval_steps", None)
+    for dotted in exclude:
+        *path, leaf = dotted.split(".")
+        node = c
+        for k in path:
+            node = node.get(k, {})
+        node.pop(leaf, None)
     return c
 
 
