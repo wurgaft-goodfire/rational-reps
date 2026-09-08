@@ -67,12 +67,11 @@ def overrides(p, beta, rho, d, seed, runner="linear"):
 def cached(p, beta, rho, d, seed, runner="linear"):
     """Whether one cell's run of `runner` is on disk with its saved final evaluation."""
     import os
-    from src.code.config import EVAL_FILE
     from src.code.train import resolve_config
     config = resolve_config(overrides(p, beta, rho, d, seed, runner),
                             name=run_name(p, beta, rho, d, seed, runner))
     steps = [int(x) for x in os.listdir(config.output_dir) if x.isdigit()] if os.path.isdir(config.output_dir) else []
-    return bool(steps) and os.path.exists(os.path.join(config.output_dir, str(max(steps)), EVAL_FILE))
+    return bool(steps) and os.path.exists(os.path.join(config.output_dir, str(max(steps)), config.eval_file))
 
 
 def train_cell(p, beta, rho, d, seed, runner="linear"):

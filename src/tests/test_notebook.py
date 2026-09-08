@@ -51,12 +51,14 @@ def test_load_run_reads_the_saved_evaluation_without_a_model(tmp_path):
         load_run(TINY, name="never", cache_dir=str(tmp_path))
     assert not (Path(config.run_dir).parent / "never").exists()
 
-    # the same run dir, but the task changed under it (a builder edit leaves the override string,
-    # hence the dir, untouched): the saved kernel no longer matches the one the config now builds
-    path = Path(config.output_dir) / "200" / "eval.npz"
-    saved = dict(np.load(path))
-    np.savez(path, **{**saved, "kernel": "0000000000000000"})
-    with pytest.raises(RuntimeError, match="kernel"):
+    # the same run dir, but its weights came from a different resolved config (a yaml default
+    # edited after training leaves the override string, hence the dir, untouched): refuse it
+    from omegaconf import OmegaConf
+    resolved = Path(config.run_dir) / "config_resolved.yaml"
+    stored = OmegaConf.load(resolved)
+    stored.training_kwargs.learning_rate = 0.5
+    OmegaConf.save(stored, resolved)
+    with pytest.raises(RuntimeError, match="resolved config or task"):
         load_run(TINY, name="read", cache_dir=str(tmp_path))
 
 

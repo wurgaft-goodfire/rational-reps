@@ -41,3 +41,4 @@ cache_dir: ${oc.env:CACHE_DIR,./outputs}
 output_dir: ${run_dir} # overridden by runners that checkpoint (e.g. ${run_dir}/checkpoints)
 data_path: ${cache_dir}/${setting}/${name}/data.pt
 run_dir: ${hydra:runtime.output_dir}
+eval_file: eval.npz # a checkpoint's saved evaluation: loss, logits, representation, readout

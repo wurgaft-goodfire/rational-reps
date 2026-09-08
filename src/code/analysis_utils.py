@@ -4,8 +4,9 @@ wrote every array this module reads."""
 import os
 
 import numpy as np
+from omegaconf import OmegaConf, open_dict
 
-from .config import EVAL_FILE
+from .config import run_key
 from .geometry import factor_logcond
 
 
@@ -14,35 +15,34 @@ from .geometry import factor_logcond
 #########################
 
 def load_evaluation(path):
-    """One ``eval.npz`` as a dict: ``step``, ``kernel``, ``loss``, ``logits`` (n, C),
-    ``representation`` (n, width) and ``readout`` (C, width); the last two None when absent."""
+    """One saved evaluation as a dict: ``step``, ``loss``, ``logits`` (n, C), ``representation``
+    (n, width) and ``readout`` (C, width); the last two None when absent."""
     with np.load(path) as z:
         saved = {k: z[k] for k in z.files}
-    return {"step": int(saved["step"]), "kernel": str(saved["kernel"]), "loss": float(saved["loss"]),
-            "logits": saved["logits"], "representation": saved.get("representation"),
-            "readout": saved.get("readout")}
+    return {"step": int(saved["step"]), "loss": float(saved["loss"]), "logits": saved["logits"],
+            "representation": saved.get("representation"), "readout": saved.get("readout")}
 
 
 def load_run(overrides, name=None, cache_dir=None):
     """The run a list of Hydra overrides names, read from disk: its ``config``, ``dataset`` (the
     task) and the final checkpoint's `load_evaluation`. Never trains or loads a model: a missing
-    run raises FileNotFoundError with the training command, and a run whose saved kernel differs
-    from the task the config now builds raises RuntimeError."""
+    run raises FileNotFoundError with the training command, and a run whose recorded resolved
+    config or task kernel differs from what the overrides now build raises RuntimeError."""
     from .data import init_dataset, kernel_hash
     from .train import resolve_config
     config = resolve_config(overrides, name=name, cache_dir=cache_dir)
     command = "uv run python -m src.code.train " + " ".join(list(overrides) + ([f"name={name}"] if name else []))
     steps = [int(d) for d in os.listdir(config.output_dir) if d.isdigit()] if os.path.isdir(config.output_dir) else []
-    path = os.path.join(config.output_dir, str(max(steps)), EVAL_FILE) if steps else None
+    path = os.path.join(config.output_dir, str(max(steps)), config.eval_file) if steps else None
     if path is None or not os.path.exists(path):
         raise FileNotFoundError(f"no saved evaluation under {config.run_dir}; train it with\n  {command}")
-    evaluation = load_evaluation(path)
     dataset = init_dataset(config)
-    if evaluation["kernel"] != kernel_hash(dataset):
-        raise RuntimeError(f"{config.run_dir} was trained on a different kernel than the task now "
-                           f"builds (saved {evaluation['kernel']}, current {kernel_hash(dataset)}); "
-                           f"retrain it with\n  {command} overwrite=true")
-    return dict(config=config, dataset=dataset, **evaluation)
+    with open_dict(config.cfg):
+        config.cfg.kernel = kernel_hash(dataset)
+    if run_key(OmegaConf.load(os.path.join(config.run_dir, "config_resolved.yaml"))) != run_key(config.cfg):
+        raise RuntimeError(f"{config.run_dir} was trained under a different resolved config or task "
+                           f"than the overrides now build; retrain it with\n  {command} overwrite=true")
+    return dict(config=config, dataset=dataset, **load_evaluation(path))
 
 
 #########################

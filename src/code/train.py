@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from pyprojroot import here
 from omegaconf import DictConfig, OmegaConf, open_dict
 from .models import init_model, load_model, MODEL_CLASSES
-from .config import Config, EVAL_FILE, clean_dirname
+from .config import Config, clean_dirname, run_key
 from .data import init_dataset, kernel_hash
 from .eval import Evaluator
 from .train_utils import (
@@ -142,18 +142,6 @@ def train(config, dataset):
     }
 
 
-def _run_key(cfg):
-    """The config content that identifies a run: everything except machine-local bookkeeping."""
-    c = OmegaConf.to_container(cfg, resolve=True)
-    for k in ("cache_dir", "run_dir", "output_dir", "data_path", "overwrite", "wandb",
-              "eval_kwargs", "eval_cache_dir"):
-        c.pop(k, None)
-    # Evaluation draws no RNG and touches no parameter, so its cadence and settings change the
-    # history curve and the saved metrics but never the trained weights.
-    c.get("training_kwargs", {}).pop("eval_steps", None)
-    return c
-
-
 def _run_exists(config, dataset):
     """Write config_resolved and report whether a completed run of the *same resolved config and
     task tensor* is already on disk; a stale or ``overwrite=true`` run is wiped so training
@@ -161,7 +149,7 @@ def _run_exists(config, dataset):
     resolved_path = os.path.join(config.run_dir, "config_resolved.yaml")
     with open_dict(config.cfg):
         config.cfg.kernel = kernel_hash(dataset)
-    stale = os.path.exists(resolved_path) and _run_key(OmegaConf.load(resolved_path)) != _run_key(config.cfg)
+    stale = os.path.exists(resolved_path) and run_key(OmegaConf.load(resolved_path)) != run_key(config.cfg)
     config.to_yaml(resolved_path)
     if os.path.exists(config.output_dir) and len(os.listdir(config.output_dir)) > 0:
         if not config.cfg.overwrite and not stale:
@@ -182,7 +170,7 @@ def _load_run(config, dataset, device=None):
     last = max(int(d) for d in os.listdir(config.output_dir) if d.isdigit())
     checkpoint_dir = os.path.join(config.output_dir, str(last))
     model, _ = load_model(config, os.path.join(checkpoint_dir, "model"), device=device)
-    if not os.path.exists(os.path.join(checkpoint_dir, EVAL_FILE)):
+    if not os.path.exists(os.path.join(checkpoint_dir, config.eval_file)):
         evaluator.save(evaluator.evaluate(model), checkpoint_dir, step=last)
     history = pd.read_csv(os.path.join(config.run_dir, "history.csv"))
     return model, dataset, evaluator, history

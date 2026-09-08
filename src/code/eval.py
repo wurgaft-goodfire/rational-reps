@@ -16,9 +16,7 @@ load_dotenv()
 
 from .config import Config
 from .models import load_model, MODEL_CLASSES
-from .data import init_dataset, kernel_hash
-
-EVAL_FILE = "eval.npz"          # one file per checkpoint: loss, logits, representation, readout
+from .data import init_dataset
 
 
 def decoder_weights(model, dataset):
@@ -43,7 +41,6 @@ class Evaluator:
     def __init__(self, config, dataset):
         self.config = config
         self.dataset = dataset
-        self.kernel = kernel_hash(dataset)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.inputs = dataset.model_inputs().cpu()                 # (n, arity [+1]), every input once
         # the exact target after the input: appended dummy token, then the last predicted position
@@ -74,11 +71,10 @@ class Evaluator:
                 "readout": None if readout is None else decoder_weights(model, self.dataset)}
 
     def save(self, result, checkpoint_dir, step):
-        """Write ``evaluate``'s result to ``checkpoint_dir/eval.npz`` with the step and the task's
-        kernel hash; absent arrays are omitted. Returns the path."""
-        path = os.path.join(checkpoint_dir, EVAL_FILE)
-        np.savez(path, step=step, kernel=self.kernel,
-                 **{k: v for k, v in result.items() if v is not None})
+        """Write ``evaluate``'s result and the step to ``checkpoint_dir/{eval_file}``; absent
+        arrays are omitted. Returns the path."""
+        path = os.path.join(checkpoint_dir, self.config.eval_file)
+        np.savez(path, step=step, **{k: v for k, v in result.items() if v is not None})
         return path
 
 
@@ -102,14 +98,14 @@ def run_evaluation(cfg: DictConfig) -> None:
         checkpoints = sorted(int(item) for item in os.listdir(config.output_dir))
         for checkpoint in tqdm(checkpoints, desc="Evaluating checkpoints"):
             checkpoint_dir = os.path.join(config.output_dir, str(checkpoint))
-            if os.path.exists(os.path.join(checkpoint_dir, EVAL_FILE)) and not cfg.overwrite:
-                print(f"{checkpoint_dir}/{EVAL_FILE} exists; set overwrite=true to re-evaluate.")
+            if os.path.exists(os.path.join(checkpoint_dir, config.eval_file)) and not cfg.overwrite:
+                print(f"{checkpoint_dir}/{config.eval_file} exists; set overwrite=true to re-evaluate.")
                 continue
             model, _ = load_model(config, os.path.join(checkpoint_dir, "model"), device=device)
             evaluator.save(evaluator.evaluate(model), checkpoint_dir, step=checkpoint)
     else:
         # Pretrained LLM: a single evaluation run.
-        if os.path.exists(os.path.join(config.output_dir, EVAL_FILE)) and not cfg.overwrite:
+        if os.path.exists(os.path.join(config.output_dir, config.eval_file)) and not cfg.overwrite:
             print(f"Results exist in {config.output_dir}; set overwrite=true to re-evaluate.")
             return
         config.to_yaml(os.path.join(config.run_dir, "config_resolved.yaml"))

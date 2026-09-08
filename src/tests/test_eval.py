@@ -16,7 +16,7 @@ def _config():
         "setting": "graph-cooccurrence", "structure": "ring", "structure_kwargs": {"n": 8},
         "gamma": 0.8, "sample_mode": "pointwise", "random_seed": 0,
         "model_kwargs": {"model_type": "linear"},
-        "training_kwargs": {"batch_size": 4, "context_length": 8},
+        "training_kwargs": {"batch_size": 4, "context_length": 8}, "eval_file": "eval.npz",
     })
     return Config(cfg)
 
@@ -64,17 +64,16 @@ def test_evaluate_returns_the_loss_logits_representation_and_readout_as_arrays()
 
 
 def test_save_writes_one_npz_that_load_evaluation_reads_back(tmp_path):
-    # eval.npz holds the arrays plus the step and the task's kernel hash; an absent array (a
-    # readout that reads no vector) is omitted on disk and comes back as None
+    # the config's eval_file holds the arrays plus the step; an absent array (a readout that reads
+    # no vector) is omitted on disk and comes back as None
     from src.code.analysis_utils import load_evaluation
-    from src.code.data import kernel_hash
     config = _config()
     dataset = KernelDataset(config)
     result = {"loss": 0.25, "logits": np.arange(20.0).reshape(5, 4), "representation": None, "readout": None}
     path = Evaluator(config, dataset).save(result, str(tmp_path), step=300)
     assert path == str(tmp_path / "eval.npz")
     back = load_evaluation(path)
-    assert back["loss"] == 0.25 and back["step"] == 300 and back["kernel"] == kernel_hash(dataset)
+    assert back["loss"] == 0.25 and back["step"] == 300
     assert np.array_equal(back["logits"], result["logits"])
     assert back["representation"] is None and back["readout"] is None
 

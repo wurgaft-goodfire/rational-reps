@@ -80,7 +80,7 @@ $CACHE_DIR/{setting}/{override_dirname}/{name}/
   checkpoints/
     {step}/
       model/               # saved weights (torch)
-      eval.npz             # the saved evaluation: loss, logits, representation, readout, step, kernel
+      eval.npz             # the saved evaluation (conf eval_file): loss, logits, representation, readout, step
 ```
 
 ## Notebooks
@@ -110,9 +110,9 @@ regardless of the working directory.
 Notebooks read runs through `analysis_utils.load_run(overrides)`, which returns the run's config,
 its dataset and the final checkpoint's saved evaluation as numpy arrays (`loss`, `logits`,
 `representation`, `readout`). It never trains or loads a model: a missing run raises with the
-training command, and a run whose saved kernel differs from the task the config now builds raises
-too. Train from the CLI (above); `train.train_inline(overrides)` exists for tests and for the one
-notebook that needs the live model.
+training command, and a run whose recorded resolved config or task kernel differs from what the
+overrides now build raises too. Train from the CLI (above); `train.train_inline(overrides)` exists
+for tests and for the one notebook that needs the live model.
 
 **Figures** are written to the gitignored cache via `plot_utils.figure_path(config, name)`; promote
 a figure to git by hand only when it is paper-final:
@@ -174,4 +174,4 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 
 - **Evaluate as a pure function.** Every model is scored on every input the task defines against its exact outcome distribution, so `evaluate(model)` is a pure function of the model, reproducible across checkpoints and architectures.
 - **Config-driven, no hardcoding.** All knobs live in `conf/`. Derive model I/O dims from the dataset; never hardcode them.
-- **Reproducible artifacts.** Each run writes `config_resolved.yaml` and, at the end of training, `eval.npz` with the model's loss, logits, representation and readout over every input plus the task's kernel hash — so analysis reads a run without constructing the model (`analysis_utils.load_run`) and notices when the task changed under it.
+- **Reproducible artifacts.** Each run writes `config_resolved.yaml` (the resolved config plus the task's kernel hash) and, at the end of training, `eval.npz` with the model's loss, logits, representation and readout over every input — so analysis reads a run without constructing the model (`analysis_utils.load_run`) and refuses one whose config or task changed under it.
