@@ -29,16 +29,6 @@ def factor_logcond(L):
     return Lc, U * rootS, rootS[:, None] * Vt, S
 
 
-def balance(E, D):
-    """The balanced representative of a factorization ``E @ D.T``: the same logits with
-    ``E.T @ E == D.T @ D`` (``sqrt(S)`` on each side of the product's SVD), the split gradient
-    flow from small init converges to. ``E`` (n, d), ``D`` (m, d) -> the same shapes."""
-    E, D = np.asarray(E, dtype=np.float64), np.asarray(D, dtype=np.float64)
-    U, S, Vt = np.linalg.svd(E @ D.T, full_matrices=False)
-    k = E.shape[1]
-    return U[:, :k] * np.sqrt(S[:k]), Vt[:k].T * np.sqrt(S[:k])
-
-
 def fourier_basis(p):
     """Real DFT modes of ``Z_p`` as rows: cos/sin at each frequency, Nyquist once when p is even.
     The canonical gauge for group operations (modular add/mult), whose factorization is degenerate
@@ -270,29 +260,6 @@ def signed_pressure(alpha, Z, di):
     return a
 
 
-def interference_curvature(alpha, Z, di):
-    """Fisher curvature of the tied-map CE in the off-diagonal coordinates g_p,
-    p = (i, j) over the upper triangle, at the fractional predictor: H[p, q] =
-    E[dl_p^T (diag q - q q^T) dl_q], where g_p moves the logits by
-    (z_k - p_k) W[:, l] + (z_l - p_l) W[:, k]. Returns H (r(r-1)/2, r(r-1)/2), PSD."""
-    from scipy.special import logsumexp
-    W = _logit_map(alpha, Z)
-    Z = np.asarray(Z, float)
-    n, r = Z.shape
-    L = (Z * np.asarray(di, float)) @ W.T
-    q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
-    X = Z - Z.mean(0)
-    I, J = np.triu_indices(r, 1)
-    # S[:, p] = q . dl_p ; the rank-one Fisher part is -S^T S / n
-    QW = q @ W
-    S = X[:, I] * QW[:, J] + X[:, J] * QW[:, I]
-    H = -S.T @ S / n
-    for k in range(W.shape[0]):                             # the diagonal Fisher part, per outcome
-        Dk = X[:, I] * W[k, J] + X[:, J] * W[k, I]
-        H += (Dk * q[:, [k]]).T @ Dk / n
-    return H
-
-
 def _fantope_project(P, d):
     """Projection onto the Fantope {0 <= P <= I, tr P = d}: clip the spectrum."""
     lam, U = np.linalg.eigh(0.5 * (P + P.T))
@@ -313,27 +280,25 @@ def tied_map_ce(alpha, Z, P):
     return float((lse - (Pt * L).sum(1)).mean()), Z.T @ ((q - Pt) @ W) / len(Z)
 
 
-def _fantope_objective(alpha, Z, P, a, H):
-    """C(diag P) + a^T g + g^T H g / 2 with g the upper-triangle off-diagonals of P."""
+def _fantope_objective(alpha, Z, P, a):
+    """C(diag P) + a^T g with g the upper-triangle off-diagonals of P."""
     from scipy.special import logsumexp
     W = _logit_map(alpha, Z)
     G, Pt, _ = _softmax_stats(W, Z)
     L = (np.asarray(Z, float) * np.clip(np.diag(P), 0.0, 1.0)) @ W.T
     C = float((logsumexp(L, axis=1) - (Pt * L).sum(1)).mean())
     iu = np.triu_indices(len(P), 1)
-    g = P[iu]
-    return C + float(a[iu] @ g) + (0.0 if H is None else 0.5 * float(g @ H @ g))
+    return C + float(a[iu] @ P[iu])
 
 
-def fantope_geometry(alpha, Z, d, a=None, H=None, iters=1000, tol=1e-10):
+def fantope_geometry(alpha, Z, d, a=None, iters=1000, tol=1e-10):
     """The first-order geometry as one convex program on the Fantope {0 <= P <= I,
-    tr P = d}, by projected gradient with backtracking. With `a` (and `H`): the exact CE
-    of diag P plus a^T g (+ g^T H g / 2) in the off-diagonals g — the linearised program
-    whose first-order term is the signed pressure; its optimum stays near the projectors.
-    Without `a`: the exact tied-map CE E[CE(softmax(A P z))] over the whole P, whose KKT
-    conditions are water filling on the eigenvalues of P; convex too, but its optimum
-    exploits the relaxation (eta ~ 1) and realizes poorly. Returns (P (r, r),
-    eta = tr(P - P^2), the projector-relaxation gap)."""
+    tr P = d}, by projected gradient with backtracking. With `a`: the exact CE of diag P plus
+    a^T g in the off-diagonals g — the linearised program whose first-order term is the signed
+    pressure; its optimum stays near the projectors. Without `a`: the exact tied-map CE
+    E[CE(softmax(A P z))] over the whole P, whose KKT conditions are water filling on the
+    eigenvalues of P; convex too, but its optimum exploits the relaxation (eta ~ 1) and
+    realizes poorly. Returns (P (r, r), eta = tr(P - P^2), the projector-relaxation gap)."""
     from scipy.special import logsumexp
     W = _logit_map(alpha, Z)
     Z = np.asarray(Z, float)
@@ -342,7 +307,7 @@ def fantope_geometry(alpha, Z, d, a=None, H=None, iters=1000, tol=1e-10):
     iu = np.triu_indices(m, 1)
 
     def value(P):
-        return tied_map_ce(W, Z, P)[0] if a is None else _fantope_objective(W, Z, P, a, H)
+        return tied_map_ce(W, Z, P)[0] if a is None else _fantope_objective(W, Z, P, a)
 
     def gradient(P):
         if a is None:
@@ -351,9 +316,8 @@ def fantope_geometry(alpha, Z, d, a=None, H=None, iters=1000, tol=1e-10):
         di = np.clip(np.diag(P), 0.0, 1.0)
         L = (Z * di) @ W.T
         q = np.exp(L - logsumexp(L, axis=1, keepdims=True))
-        g = P[iu]
         grad = np.zeros((m, m))
-        grad[iu] = 0.5 * (a[iu] + (0.0 if H is None else H @ g))
+        grad[iu] = 0.5 * a[iu]
         grad = grad + grad.T
         grad[np.diag_indices(m)] = _field(W, Z, q, Pt)
         return grad
@@ -376,12 +340,6 @@ def fantope_geometry(alpha, Z, d, a=None, H=None, iters=1000, tol=1e-10):
         P, f = P_new, f_new
         step *= 1.5
     return P, float(np.trace(P - P @ P))
-
-
-def top_eigenspace(P, d):
-    """Realization A: the top-d eigenvectors of P, an orthonormal (m, d) basis."""
-    lam, U = np.linalg.eigh(0.5 * (P + P.T))
-    return U[:, -d:]
 
 
 def predicted_rank_constrained_geometry(alpha, Z, d, n_top=18):

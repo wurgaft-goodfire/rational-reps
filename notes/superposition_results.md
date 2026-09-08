@@ -278,7 +278,7 @@ seeds while every trained model is not; the analysis below is what that noise me
 
 1. (done) `predicted_rank_constrained_geometry` = water filling → linear Fantope orientation → fixed-diagonal
    frame E★ → exact completion at E★ (the random-frame control is a test on the pressure score); retired analytic-completion
-   functions deleted, `interference_curvature` kept; notebook rebuilt on the new outputs.
+   functions deleted, `interference_curvature` deleted too (2026-09-08, tests only); notebook rebuilt on the new outputs.
 2. (done) Pair-set sweep of the biconvex pairs class, n_top ∈ {0, 6, 12, 18, 24, 32, 48, 64}.
    The class saturates at n_top ≈ 12–18: fresh-draw CE is lowest there (0.223 / 0.139 / 0.084)
    and rises beyond 32 (interpolation; at n_top = 64, 2081 features > 2048 states, fresh-draw

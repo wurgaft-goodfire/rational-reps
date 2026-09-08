@@ -297,15 +297,14 @@ def _tied_ce(alpha, Z, di, G_off):
     return float((logsumexp(L, axis=1) - (P * L).sum(1)).mean())
 
 
-def test_pressure_and_curvature_are_the_derivatives_of_the_tied_map_ce():
-    # a_g = first derivative, H_gg = second derivative of the tied-map CE in the
-    # off-diagonal coordinates at the diagonal background, by central differences
+def test_pressure_is_the_derivative_of_the_tied_map_ce():
+    # a_g = first derivative of the tied-map CE in the off-diagonal coordinates at the
+    # diagonal background, by central differences
     alpha = LADDER[:10]
     Z = _bernoulli(10, n=4096)
     di, _ = allocate_d(alpha, Z, 3)
     a = geometry.signed_pressure(alpha, Z, di)
     pairs = np.triu_indices(10, 1)
-    H = geometry.interference_curvature(alpha, Z, di)
     h = 1e-3
     def ce(deltas):
         G = np.zeros((10, 10))
@@ -316,14 +315,6 @@ def test_pressure_and_curvature_are_the_derivatives_of_the_tied_map_ce():
         i, j = pairs[0][p], pairs[1][p]
         fd = (ce([((i, j), h)]) - ce([((i, j), -h)])) / (2 * h)
         assert abs(fd - a[i, j]) < 1e-6 * max(1.0, abs(a[i, j])) + 1e-7
-        fdd = (ce([((i, j), h)]) - 2 * ce([]) + ce([((i, j), -h)])) / h ** 2
-        assert abs(fdd - H[p, p]) < 2e-3 * abs(H[p, p])
-    p, q = 0, 5                                        # pairs (0,1) and (0,6) share feature 0
-    i, j = pairs[0][p], pairs[1][p]; k, l = pairs[0][q], pairs[1][q]
-    fdd = (ce([((i, j), h), ((k, l), h)]) - ce([((i, j), h), ((k, l), -h)])
-           - ce([((i, j), -h), ((k, l), h)]) + ce([((i, j), -h), ((k, l), -h)])) / (4 * h ** 2)
-    assert abs(fdd - H[p, q]) < 2e-3 * abs(H[p, q]) + 1e-9
-    assert np.allclose(H, H.T) and np.all(np.linalg.eigvalsh(H) > -1e-9)
 
 
 def test_fantope_geometry_reduces_to_water_filling_without_pressure():
@@ -356,7 +347,7 @@ def test_fantope_geometry_with_pressure_grows_a_soft_tail_with_the_pressure_sign
     big = np.abs(P[iu]) > 0.1                                 # the large overlaps mostly do
     assert big.sum() >= 5 and np.mean(np.sign(P[iu][big]) == -np.sign(a[iu][big])) >= 0.75
     assert 0 <= eta < 0.1 * 3                                 # close to a rank-d projector
-    obj = lambda Q: geometry._fantope_objective(alpha, Z, Q, a, None)
+    obj = lambda Q: geometry._fantope_objective(alpha, Z, Q, a)
     assert obj(P) < obj(np.diag(di)) - 1e-6
 
 
@@ -369,8 +360,6 @@ def test_fixed_diagonal_realization_keeps_the_diagonal_and_is_parseval():
     E = tight_frame(np.diag(P), init=P)
     assert np.allclose(E.T @ E, np.eye(3), atol=1e-7)
     assert np.allclose((E ** 2).sum(1), np.diag(P), atol=1e-6)
-    Ud = geometry.top_eigenspace(P, 3)
-    assert np.allclose(Ud.T @ Ud, np.eye(3), atol=1e-10)
 
 
 
@@ -444,8 +433,6 @@ def test_a_diagonal_logit_map_reproduces_the_vector_form():
     di_v, dl_v = allocate_d(alpha, Z, 3); di_m, dl_m = allocate_d(W, Z, 3)
     assert np.allclose(di_v, di_m, atol=1e-9) and abs(dl_v - dl_m) < 1e-9
     assert np.allclose(geometry.signed_pressure(alpha, Z, di_v), geometry.signed_pressure(W, Z, di_v))
-    assert np.allclose(geometry.interference_curvature(alpha, Z, di_v),
-                       geometry.interference_curvature(W, Z, di_v))
     a = geometry.signed_pressure(alpha, Z, di_v)
     P_v, _ = geometry.fantope_geometry(alpha, Z, 3, a); P_m, _ = geometry.fantope_geometry(W, Z, 3, a)
     assert np.allclose(P_v, P_m, atol=1e-8)
@@ -469,15 +456,14 @@ def test_whitening_is_a_no_op_on_exactly_independent_features():
     assert np.allclose(P, Pw, atol=1e-6)
 
 
-def test_pressure_and_curvature_are_derivatives_for_a_full_logit_map():
-    # the derivative identities hold on whitened correlated features, where the logit
-    # map is a full matrix
+def test_pressure_is_the_derivative_for_a_full_logit_map():
+    # the derivative identity holds on whitened correlated features, where the logit map is
+    # a full matrix
     Z = _correlated(8, n=4096)
     U, C_half = geometry.whiten(Z)
     W = np.diag(LADDER[:8]) @ C_half.T
     di, _ = allocate_d(W, U, 3)
     a = geometry.signed_pressure(W, U, di)
-    H = geometry.interference_curvature(W, U, di)
     pairs = np.triu_indices(8, 1)
     h = 1e-3
     def ce(deltas):
@@ -489,9 +475,6 @@ def test_pressure_and_curvature_are_derivatives_for_a_full_logit_map():
         i, j = pairs[0][p], pairs[1][p]
         fd = (ce([((i, j), h)]) - ce([((i, j), -h)])) / (2 * h)
         assert abs(fd - a[i, j]) < 1e-6 * max(1.0, abs(a[i, j])) + 1e-7
-        fdd = (ce([((i, j), h)]) - 2 * ce([]) + ce([((i, j), -h)])) / h ** 2
-        assert abs(fdd - H[p, p]) < 2e-3 * abs(H[p, p])
-    assert np.allclose(H, H.T) and np.all(np.linalg.eigvalsh(H) > -1e-9)
 
 
 def test_pair_features_are_orthogonal_to_the_first_order_dictionary():
