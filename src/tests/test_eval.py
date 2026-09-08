@@ -83,3 +83,21 @@ def test_cca_ignores_float32_scale_junk_directions():
     v = rng.standard_normal(8); v /= np.linalg.norm(v)
     W_noisy = W + 1.5e-6 * s0 * np.outer(u, v)                     # junk direction at float32 scale
     assert abs(cca(H, W) - cca(H, W_noisy)) < 0.02
+
+
+def test_hidden_input_evaluator_reads_observations_and_scores_the_posterior():
+    # a stream task's inputs are its observation tokens (length-1 histories), whether the target is
+    # the next observation or the hidden input; the latent tokens are outputs and never read
+    cfg = OmegaConf.create({
+        "setting": "graph-cooccurrence", "structure": "feature_cube",
+        "structure_kwargs": {"m": 2, "paired": True, "all_bundles": True},
+        "sample_mode": "sequence", "infer_latent": True, "random_seed": 0,
+        "training_kwargs": {"batch_size": 4, "context_length": 8},
+    })
+    config = Config(cfg)
+    dataset = KernelDataset(config)
+    ev = Evaluator(config, dataset)
+    assert torch.equal(ev.inputs[:, 1], torch.arange(dataset.n_outcomes))       # start, then one observation
+    assert ev.targets.shape == (dataset.n_outcomes, dataset.n_items)
+    post = torch.softmax(dataset.prior.log()[:, None] + dataset.P.double().log(), dim=0).T   # p(z | x)
+    assert torch.allclose(ev.targets, post.float().cpu(), atol=1e-6)

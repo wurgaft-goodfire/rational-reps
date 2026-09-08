@@ -96,6 +96,14 @@ def predicted_geometry(log_cond, rank=None):
     return factor_logcond(log_cond, rank)[1]
 
 
+def predicted_inference_geometry(log_cond, D):
+    """Representation of each state in the frame of a fitted decoder: rows of ``L[state, outcome]``
+    centered over outcomes, times ``pinv(D)``. ``D`` (d, C) from ``factor_logcond`` on sampled
+    histories; returns ``(n_states, d)``."""
+    L = np.asarray(log_cond, dtype=np.float64)
+    return (L - L.mean(1, keepdims=True)) @ np.linalg.pinv(D)
+
+
 ##### Superposition: first-order geometry of a rank-limited softmax (notes/superposition.tex) #####
 
 def whiten(Z, tol=1e-10):

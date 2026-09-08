@@ -151,3 +151,21 @@ def test_balance_is_a_gauge_that_equalizes_the_grams():
     Es, Ds = Es[:, :2], Ds[:2].T
     Eb2, Db2 = balance(Es, Ds)
     assert np.allclose(np.abs(Eb2), np.abs(Es)) and np.allclose(np.abs(Db2), np.abs(Ds))
+
+
+def test_predicted_inference_geometry_places_rows_in_the_fitted_decoder_frame():
+    # D is fitted once on sampled histories; any state's Bayes row then gets its representation
+    # by the pseudoinverse. On the fitted rows this is the E factor_logcond returned, and a new
+    # row in the span is reconstructed exactly; a truncated D gives the least-squares projection.
+    from src.code.geometry import predicted_inference_geometry
+    rng = np.random.default_rng(0)
+    S = rng.normal(size=(40, 3))                                # 40 states, 3 coordinates
+    B = rng.normal(size=(3, 7))                                 # 7 outputs
+    L = S @ B + rng.normal(size=(40, 1))                        # a per-row constant the softmax ignores
+    Lc, E, D, _ = factor_logcond(L, rank=3)
+    assert np.allclose(predicted_inference_geometry(L, D), E)
+    new = rng.normal(size=(1, 3)) @ B + 2.0
+    e_new = predicted_inference_geometry(new, D)
+    assert np.allclose(e_new @ D, new - new.mean(1, keepdims=True))
+    Lc2, E2, D2, _ = factor_logcond(L, rank=2)
+    assert np.allclose(predicted_inference_geometry(L, D2), E2)

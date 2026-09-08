@@ -246,3 +246,16 @@ def test_model_inputs_prepend_the_start_token_when_the_layout_has_one():
     ids = sequential.model_inputs()
     assert ids.shape == (24, 2) and (ids[:, 0] == sequential.start_token).all()
     assert torch.equal(ids[:, 1:], sequential.input_tuples())
+
+
+def test_bipartite_is_declared_by_the_structure_not_read_off_the_shapes():
+    # a 4-word cube with 2 paired yes/no tokens has as many outcomes as items, yet the words are
+    # hidden inputs: the structure says so, and the sequence sampler must treat them as such
+    ds = _cube_dataset("sequence", m=2, infer_latent=True, structure_kwargs={"m": 2, "paired": True, "all_bundles": True})
+    assert ds.n_items == ds.n_outcomes == 4
+    assert ds.bipartite and not ds.connected
+    b = ds.__getitem__()
+    assert (b["input_ids"][:, 1:] < ds.n_outcomes).all()          # outcomes only, never z
+    # a plain ring still chains: its outcomes are its nodes
+    ring = KernelDataset(_config("sequence"))
+    assert ring.connected and not ring.bipartite
