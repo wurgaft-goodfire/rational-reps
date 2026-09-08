@@ -106,7 +106,7 @@ def save_figure(fig, filepath, **kwargs):
 
 
 def figure_path(config, name, ext="png"):
-    """Path for a figure under the gitignored cache — ``{cache_dir}/{setting}/{override_dirname}/
+    """Path for a figure under the gitignored cache — ``{cache_dir}/{setting}/{task}/{overrides}/
     figures/{name}.{ext}``, shared by every model on that structure. Creates the parent dir;
     pass ``ext="pdf"`` for a paper-final vector figure."""
     path = Path(config.run_dir).parent / "figures" / f"{name}.{ext}"   # run_dir = .../{override}/{model}

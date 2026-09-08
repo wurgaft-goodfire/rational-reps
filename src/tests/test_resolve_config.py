@@ -15,8 +15,8 @@ def test_figure_dir_is_keyed_by_the_overrides(tmp_path):
     config = resolve_config(FEATURE_CUBE, cache_dir=str(tmp_path))
     path = Path(figure_path(config, "fig1_excess_sweep"))
 
-    # {cache_dir}/{setting}/{clean_dirname}/figures/ — the setting comes from the yaml, not the flag
-    assert path == tmp_path / "graph-cooccurrence" / "structure=feature_cube,N=256,decay=0.9,m=8,scale=8.0" / \
+    # {cache_dir}/{setting}/{structure}/{overrides}/figures/ — setting and structure come from the yaml
+    assert path == tmp_path / "graph-cooccurrence" / "feature_cube" / "N=256,decay=0.9,m=8,scale=8.0" / \
         "figures" / "fig1_excess_sweep.png"
 
 
@@ -37,8 +37,8 @@ def test_same_overrides_give_the_run_dir_train_inline_would_use(tmp_path):
     # the path rule is shared: resolve_config is exactly train_inline's path half
     overrides = FEATURE_CUBE + ["runner=linear"]
     config = resolve_config(overrides, cache_dir=str(tmp_path))
-    assert Path(config.cfg.run_dir) == tmp_path / "graph-cooccurrence" / \
-        "structure=feature_cube,N=256,decay=0.9,m=8,scale=8.0" / "linear"
+    assert Path(config.cfg.run_dir) == tmp_path / "graph-cooccurrence" / "feature_cube" / \
+        "N=256,decay=0.9,m=8,scale=8.0" / "linear"
 
 
 def test_resolving_a_config_creates_no_run_directories(tmp_path):
@@ -59,8 +59,7 @@ def test_structure_distinguishes_settings_that_share_a_setting_name(tmp_path):
     dirs = {s: figure_path(resolve_config([f"setting={s}"], cache_dir=str(tmp_path)), "f")
             for s in ("feature_cube", "graph", "hypercube")}
     assert len(set(dirs.values())) == 3
-    assert "structure=feature_cube" in dirs["feature_cube"]
-    assert "default_run" not in dirs["graph"]
+    assert "/feature_cube/default/" in dirs["feature_cube"] and "/ring/default/" in dirs["graph"]
 
 
 def test_evaluation_settings_do_not_invalidate_a_trained_run():

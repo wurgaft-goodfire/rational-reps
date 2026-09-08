@@ -73,13 +73,16 @@ Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `linear`, `sae`, `llm` (pre
 
 ## Output structure
 
-`override_dirname` is the override string, tidied by `clean_dirname`. It always names the
-structure, even when the structure came from the setting yaml rather than the command line:
-`graph`, `feature_cube` and `hypercube` all set `setting: graph-cooccurrence`, so the structure is
-the only thing that tells their runs apart.
+A run lives at `{setting}/{task}/{overrides}/{name}`. The task is the structure or relation, a
+directory of its own even when it came from the setting yaml rather than the command line (`graph`,
+`feature_cube` and `hypercube` all set `setting: graph-cooccurrence`). The leaf is the override
+string tidied by `clean_dirname`: bookkeeping and the `*_kwargs.` prefixes dropped, sorted, e.g.
+`graph-cooccurrence/feature_cube/beta=0.5,embed_dim=3,p=0.3,random_seed=0,rho=0.0,train_steps=8000/linear`;
+no overrides gives `default`. Figures shared by the models of one task sit beside them in
+`{overrides}/figures/`.
 
 ```
-$CACHE_DIR/{setting}/{override_dirname}/{name}/
+$CACHE_DIR/{setting}/{task}/{overrides}/{name}/
   config_resolved.yaml     # full resolved config (reproducibility)
   history.csv              # the training curve
   checkpoints/
@@ -126,13 +129,13 @@ a figure to git by hand only when it is paper-final:
 from src.code.plot_utils import save_figure, figure_path
 
 save_figure(fig, figure_path(config, "cca_by_arch"))            # PNG (default)
-# -> $CACHE_DIR/{setting}/{override_dirname}/figures/cca_by_arch.png
+# -> $CACHE_DIR/{setting}/{task}/{overrides}/figures/cca_by_arch.png
 save_figure(fig, figure_path(config, "cca_by_arch", ext="pdf")) # vector, paper-final
 ```
 
 `save_figure` returns the figure, so ending a cell with the save call renders it in marimo.
 
-Figures are keyed by `{setting}/{override_dirname}/figures` (the per-model level is dropped), so
+Figures are keyed by `{setting}/{task}/{overrides}/figures` (the per-model level is dropped), so
 all models trained on one structure share a figures dir. A notebook that trains nothing gets the
 same path from `train.resolve_config(overrides)`, which builds the config and its `run_dir` without
 running a job.

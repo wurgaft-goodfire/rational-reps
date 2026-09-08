@@ -9,23 +9,25 @@ from src.code.config import Config, set_seed, clean_dirname
 
 def test_clean_dirname_tidies_the_override_string():
     # the raw graph_overrides string is noisy: deletions, +/structure_kwargs. prefixes, redundant
-    # setting=, and verbose factor dicts. Clean it to a readable, config-keyed run/figure dir name.
+    # setting=, and verbose factor dicts. Clean it to a readable, config-keyed {task}/{overrides}
+    # path, the *_kwargs. prefixes dropped since the keys are distinct anyway.
     od = ("+structure_kwargs.factors=[{structure:chain,n:15},{structure:ring,n:15}],"
           "setting=graph,structure=product,~structure_kwargs")
-    assert clean_dirname(od) == "structure=product,factors=[chain(n=15),ring(n=15)]"
-    assert clean_dirname("+structure_kwargs.n=12,setting=graph,structure=ring,~structure_kwargs") == \
-        "structure=ring,n=12"
-    assert clean_dirname("") == "default_run"           # no distinguishing overrides
-    assert clean_dirname("setting=graph,~structure_kwargs") == "default_run"
+    assert clean_dirname(od) == "product/factors=[chain(n=15),ring(n=15)]"
+    assert clean_dirname("+structure_kwargs.n=12,setting=graph,structure=ring,~structure_kwargs") == "ring/n=12"
+    assert clean_dirname("structure=ring,model_kwargs.model_config.embed_dim=3,training_kwargs.train_steps=8000,"
+                         "structure_kwargs.p=0.3,random_seed=0") == "ring/embed_dim=3,p=0.3,random_seed=0,train_steps=8000"
+    assert clean_dirname("") == "default"                # no distinguishing overrides, no task
+    assert clean_dirname("setting=graph,~structure_kwargs") == "default"
 
 
 def test_clean_dirname_carries_the_structure_even_when_it_is_not_overridden():
     # the structure usually comes from the setting yaml, and several settings share one `setting:`
     # value — so it must key the dir, or their default runs collide.
-    assert clean_dirname("setting=feature_cube", "feature_cube") == "structure=feature_cube"
-    assert clean_dirname("setting=hmm,emission_sigma=2.5", "ring") == "structure=ring,emission_sigma=2.5"
-    assert clean_dirname("setting=graph,structure=chain", "chain") == "structure=chain"   # no duplicate
-    assert clean_dirname("", None) == "default_run"                    # settings without a structure
+    assert clean_dirname("setting=feature_cube", "feature_cube") == "feature_cube/default"
+    assert clean_dirname("setting=hmm,emission_sigma=2.5", "ring") == "ring/emission_sigma=2.5"
+    assert clean_dirname("setting=graph,structure=chain", "chain") == "chain/default"   # no duplicate
+    assert clean_dirname("", None) == "default"                        # settings without a structure
 
 
 def test_graph_overrides_carries_kernel_params_in_structure_kwargs():
@@ -97,9 +99,9 @@ def test_clean_dirname_names_the_relation_without_being_asked():
     from src.code.config import clean_dirname
 
     assert clean_dirname("model_kwargs.model_config.hidden_size=128", relation="modular_add") \
-        == "relation=modular_add,model_kwargs.model_config.hidden_size=128"
-    assert clean_dirname("relation=maximum,x=1", relation="maximum") == "relation=maximum,x=1"
-    assert clean_dirname("gamma=0.8", structure="ring") == "structure=ring,gamma=0.8"
+        == "modular_add/hidden_size=128"
+    assert clean_dirname("relation=maximum,x=1", relation="maximum") == "maximum/x=1"
+    assert clean_dirname("gamma=0.8", structure="ring") == "ring/gamma=0.8"
 
 
 def test_clean_dirname_canonicalises_boolean_overrides():

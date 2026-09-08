@@ -20,11 +20,11 @@ def run_key(cfg, exclude):
 
 
 def clean_dirname(override_dirname, structure=None, relation=None):
-    """Turn Hydra's raw ``override_dirname`` into a tidy, config-keyed run/figure dir name: drops
-    bookkeeping noise, compresses factor dicts, puts ``structure`` first, hashes overlong names.
-    ``structure`` / ``relation`` are the resolved values: several settings share one ``setting:``,
-    so the name carries the task even when it came from the yaml rather than an override.
-    Empty -> ``default_run``."""
+    """Turn Hydra's raw ``override_dirname`` into the config-keyed run/figure path
+    ``{task}/{overrides}``: the task is the structure or relation (a directory of its own, from the
+    override or the resolved yaml value, since several settings share one ``setting:``), the leaf
+    the remaining overrides with bookkeeping and the ``*_kwargs.`` prefixes dropped, factor dicts
+    compressed, overlong names hashed. No remaining overrides -> ``default``."""
     # split on top-level commas only — factor values like [{structure:ring,n:15},...] carry their own
     items, depth, cur = [], 0, ""
     for ch in str(override_dirname):
@@ -35,29 +35,29 @@ def clean_dirname(override_dirname, structure=None, relation=None):
             cur += ch
     items.append(cur)
 
-    parts = []
+    task, parts = structure if structure is not None else relation, []
     for item in items:
         if not item or item.startswith("~") or item.startswith("setting="):
             continue
-        item = item.lstrip("+").replace("structure_kwargs.", "")
+        item = item.lstrip("+")
+        for prefix in ("structure_kwargs.", "relation_kwargs.", "model_kwargs.model_config.",
+                       "model_kwargs.", "training_kwargs."):
+            item = item.replace(prefix, "")
+        key, _, val = item.partition("=")
+        if key in ("structure", "relation"):
+            task = val
+            continue
         # the CLI and compose() disagree on bool casing (pair_inputs=true vs =True), which would
         # give one run two directories; canonicalise so either path resolves to the same one
-        key, _, val = item.partition("=")
         if val.lower() in ("true", "false"):
             item = f"{key}={val.lower() == 'true'}"
         parts.append(item)
-    for _key, _val in (("structure", structure), ("relation", relation)):
-        if _val is not None and not any(p.startswith(f"{_key}=") for p in parts):
-            parts.append(f"{_key}={_val}")
-    if not parts:
-        return "default_run"
-    parts.sort(key=lambda s: (not s.startswith(("structure=", "relation=")), s))   # the task first
     name = re.sub(r"\{structure:([^,}]+)(?:,([^}]*))?\}",
-                  lambda m: m.group(1) + (f"({m.group(2)})" if m.group(2) else ""), ",".join(parts))
-    name = name.replace(":", "=")                                     # factor kwargs n:15 -> n=15
+                  lambda m: m.group(1) + (f"({m.group(2)})" if m.group(2) else ""), ",".join(sorted(parts)))
+    name = name.replace(":", "=") or "default"                        # factor kwargs n:15 -> n=15
     if len(name) > 200:                                              # guard the 255-byte name limit
         name = f"{name[:180]}-{hashlib.md5(name.encode()).hexdigest()[:8]}"
-    return name
+    return f"{task}/{name}" if task is not None else name
 
 
 # Used by conf/config.yaml's run/sweep dir templates so the CLI writes the same tidy paths that
