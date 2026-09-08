@@ -37,7 +37,8 @@ def _(mo):
     from src.code.train import graph_overrides
     from src.code import plot_utils           # importing this applies the house plotting style
 
-    FIGURES = ROOT / "outputs" / "figures"     # one flat dir: {structure}_{figure}.png
+    from pathlib import Path
+    FIGURES = Path(os.environ.get("CACHE_DIR", ROOT / "outputs")) / "figures"   # one flat dir: {structure}_{figure}.png
     FIGURES.mkdir(parents=True, exist_ok=True)
     return (
         FIGURES,

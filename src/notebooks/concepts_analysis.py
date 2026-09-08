@@ -34,7 +34,8 @@ def _(mo):
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
-    FIGURES = ROOT / "outputs" / "figures"
+    from pathlib import Path
+    FIGURES = Path(os.environ.get("CACHE_DIR", ROOT / "outputs")) / "figures"
     FIGURES.mkdir(parents=True, exist_ok=True)
 
     N = 60

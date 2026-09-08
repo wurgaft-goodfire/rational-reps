@@ -35,7 +35,8 @@ def _(mo):
     from src.code import plot_utils
     import matplotlib.pyplot as plt
 
-    FIGURES = ROOT / "outputs" / "figures"
+    from pathlib import Path
+    FIGURES = Path(os.environ.get("CACHE_DIR", ROOT / "outputs")) / "figures"
     FIGURES.mkdir(parents=True, exist_ok=True)
     return FIGURES, graph_overrides, np, plot_utils, plt, train_inline
 
