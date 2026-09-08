@@ -420,16 +420,17 @@ def test_superposition_setting_declares_the_grid_and_couples_the_seeds():
         assert os.path.basename(config.run_dir) == runner                  # the model class is the leaf
 
 
-def test_theory_solution_is_solved_once_and_read_back(tmp_path):
+def test_rank_optimal_logits_is_the_completed_map_over_states_solved_once(tmp_path):
     from src.code.data import feature_cube
     Z = feature_cube(128, 6, 0.3, scale=8.0, seed=1, spectrum="power", beta=0.5)[1]["Z"]
     path = tmp_path / "cell" / "theory.npz"
-    out = geometry.theory_solution(LADDER[:6], Z, 2, 0.0, 1, path, n_frames=2, n_top=4)
-    assert out["map_rep"].shape[1] == 6 and out["E_star"].shape == (6, 2)
+    L = geometry.rank_optimal_logits(LADDER[:6], Z, 2, 0.0, 1, path, n_frames=2, n_top=4)
+    out = dict(np.load(path))
+    assert L.shape == (128, 6) and out["E_star"].shape == (6, 2)
+    assert np.allclose(L, geometry.theory_table(out, Z, n_top=4))          # the cached solve, applied to the states
     mtime = path.stat().st_mtime_ns
-    again = geometry.theory_solution(LADDER[:6], Z, 2, 0.0, 1, path, n_frames=2, n_top=4)
-    assert path.stat().st_mtime_ns == mtime                                # read, not re-solved
-    assert np.array_equal(again["E_star"], out["E_star"])
+    again = geometry.rank_optimal_logits(LADDER[:6], Z, 2, 0.0, 1, path, n_frames=2, n_top=4)
+    assert path.stat().st_mtime_ns == mtime and np.array_equal(again, L)   # read, not re-solved
 
 
 def test_has_run_is_false_before_training(tmp_path):

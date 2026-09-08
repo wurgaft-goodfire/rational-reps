@@ -40,7 +40,7 @@ def _(mo):
     from hydra.core.override_parser.overrides_parser import OverridesParser
     from omegaconf import OmegaConf
     from src.code.analysis_utils import has_run, load_run, measure
-    from src.code.geometry import factor_logcond, modes, pair_features, theory_solution, theory_table
+    from src.code.geometry import factor_logcond, modes, pair_features, rank_optimal_logits
     from src.code.train import resolve_config
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -85,8 +85,7 @@ def _(mo):
         pair_features,
         plot_utils,
         plt,
-        theory_solution,
-        theory_table,
+        rank_optimal_logits,
     )
 
 
@@ -99,29 +98,27 @@ def _(
     load_run,
     measure,
     modes,
-    theory_solution,
-    theory_table,
+    rank_optimal_logits,
 ):
     from pathlib import Path
     # measured cells, filled on demand the first time a figure asks for one
     SW = {}
 
     def sweep_rows(p, b, r, d, runners):
-        """One cell, per seed: the theory ('th') and each model class measured on the cell's
-        coordinates X (`measure`), plus the theory's solution ('o', solved once and cached as
-        theory.npz in the cell's directory), X, the ladder alpha and the logit tables the
-        measurements came from."""
+        """One cell, per seed: the logit tables over states of the theory ('th', its solve cached
+        as theory.npz in the cell's directory) and of each model class, each measured on the
+        cell's coordinates X (`measure`), plus X and the ladder alpha."""
         _rows = []
         for _s in SEEDS:
             _runs = {_run: load_run(cell_overrides(_run, p, b, r, d, _s)) for _run in runners}
             _ds = _runs["linear"]["dataset"]
             _, _X = modes(_ds.info["alpha"], _ds.features, float(r))
-            _o = theory_solution(_ds.info["alpha"], _ds.features, int(d), float(r), int(_s),
-                                 Path(_runs["linear"]["config"].run_dir).parent / "theory.npz")
-            _row = dict(th=measure(theory_table(_o, _X), _X, int(d)), o=_o, X=_X, alpha=_ds.info["alpha"],
-                        logits={_run: _runs[_run]["logits"] for _run in runners})
-            for _run in runners:
-                _row[_run] = measure(_row["logits"][_run], _X, int(d))
+            _logits = {_run: _runs[_run]["logits"] for _run in runners}
+            _logits["th"] = rank_optimal_logits(_ds.info["alpha"], _ds.features, int(d), float(r), int(_s),
+                                                Path(_runs["linear"]["config"].run_dir).parent / "theory.npz")
+            _row = dict(X=_X, alpha=_ds.info["alpha"], logits=_logits)
+            for _run, _L in _logits.items():
+                _row[_run] = measure(_L, _X, int(d))
             _rows.append(_row)
         return _rows
 
@@ -152,7 +149,7 @@ def _(B_KEY, D_GRID, GRID, P_KEY, R_KEY, load_cell, mo):
         _rows = {_d: load_cell(_p, _b, _r, _d) for _d in D_GRID}
         if any(_v is None for _v in _rows.values()):
             _rows = None
-        _runs = set.intersection(*[set(_rows[_d][0]["logits"]) for _d in D_GRID]) if _rows else set()
+        _runs = set.intersection(*[set(_rows[_d][0]["logits"]) - {"th"} for _d in D_GRID]) if _rows else set()
         return dict(rows=_rows, title=rf"$p$ = {_p}, $\beta$ = {_b}, $\rho$ = {_r}",
                     p=float(_p), b=float(_b), rho=float(_r), runners=_runs)
 
@@ -475,7 +472,6 @@ def _(
     plt,
     rows_for,
     selector_row,
-    theory_table,
 ):
     _sel = rows_for(SEL_F6.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
@@ -498,7 +494,7 @@ def _(
     for _c, _d in enumerate(D_GRID):
         _rows, _d = _sel["rows"][_d], int(_d)
         _panels = [(np.mean([_ext_gram(_row["logits"]["linear"], _row["X"], _d) for _row in _rows], 0), "trained (5-seed mean)"),
-                   (np.mean([_ext_gram(theory_table(_row["o"], _row["X"]), _row["X"], _d) for _row in _rows], 0), "theory (5-draw mean)")]
+                   (np.mean([_ext_gram(_row["logits"]["th"], _row["X"], _d) for _row in _rows], 0), "theory (5-draw mean)")]
         if _has_pairs:
             _panels.append((np.mean([_ext_gram(_row["logits"]["paired_features"], _row["X"], _d) for _row in _rows], 0), "pairs model (5-seed mean)"))
         _v = max(np.abs(_Gm[_K:, :]).max() for _Gm, _lbl in _panels)   # scale to the pair blocks; the feature block saturates

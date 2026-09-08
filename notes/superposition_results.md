@@ -86,7 +86,7 @@ balanced to 0.4%). Raw scales are an optimizer artefact.
 
 `conf/setting/superposition.yaml` (a Hydra multirun per model class): p ∈ {0.05, 0.15, 0.3, 0.5} ×
 β ∈ {0.25, 0.5, 1.0} × ρ ∈ {0, 0.3, 0.6} × d ∈ {3, 6, 12}, 5 seeds per cell; the theory solve of a
-cell is cached as `theory.npz` beside its runs (`geometry.theory_solution`).
+cell is cached as `theory.npz` beside its runs (`geometry.rank_optimal_logits`).
 Notebook Figs 8a/8b (allocation small multiples) and 9 (score heatmaps; placement on the leverage
 projectors).
 
