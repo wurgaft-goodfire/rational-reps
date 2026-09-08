@@ -64,8 +64,8 @@ no model is constructed in the notebook.
 
 Every model is read from its saved representation h(z) and readout D (`eval.npz`), then the
 first-order vectors E_i of the least-squares fit h(z) ≈ h̄ + Σ E_i z_i. The theory is a run of its
-own (`runner=theory`): the CE-optimal model's table, factored in the oracle's balanced gauge
-(`factor_logcond`, as `predicted_geometry`). Trained models stay in their own gauge: the loss is flat
+own (`runner=theory`): the CE-optimal model's own H = z E★ + φ(z) E₂ + e₀ and D, in the completion's
+gauge (E★ a Parseval frame, so its ‖E_i‖² is the leverage). Every model stays in its own gauge: the loss is flat
 along E → EA, D → DA⁻ᵀ, and AdamW leaves the state table 4.6–7.8× larger than the readout (SGD
 retrain: balanced to 0.4%), so only the gauge-invariant quantities (leverage, its projector, the
 spectrum of h Dᵀ) compare across models; the Grams are shown per model and labelled as such.
@@ -87,7 +87,7 @@ spectrum of h Dᵀ) compare across models; the Grams are shown per model and lab
 
 `conf/setting/superposition.yaml` (a Hydra multirun per model class): p ∈ {0.05, 0.15, 0.3, 0.5} ×
 β ∈ {0.25, 0.5, 1.0} × ρ ∈ {0, 0.3, 0.6} × d ∈ {3, 6, 12}, 5 seeds per cell. The theory is a model
-class of its own (`runner=theory`): `geometry.ce_optimal_representation` solved per cell and stored (balanced gauge) as a
+class of its own (`runner=theory`): `geometry.ce_optimal_representation` solved per cell and stored as a
 rank-d linear run beside the trained classes, read like them.
 Notebook Figs 8a/8b (allocation small multiples) and 9 (score heatmaps; placement on the leverage
 projectors).

@@ -1,7 +1,7 @@
 # @package _global_
 # The theory as a model class: the CE-optimal model of a feature-cube task at rank d
-# (geometry.ce_optimal_representation), its logit table factored in the oracle's balanced gauge
-# and stored as a linear model, so it is solved, saved and read exactly like a trained run.
+# (geometry.ce_optimal_representation), its representation and readout stored as they come in
+# a linear model, so it is solved, saved and read exactly like a trained run.
 #   python -m src.code.train -m runner=theory setting=superposition
 defaults:
   - override /model: linear

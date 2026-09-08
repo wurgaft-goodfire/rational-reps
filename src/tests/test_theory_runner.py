@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from src.code.analysis_utils import load_run
-from src.code.geometry import ce_optimal_representation, factor_logcond, modes
+from src.code.geometry import ce_optimal_representation, modes
 from src.code.train import resolve_config, train_inline
 
 pytestmark = pytest.mark.slow
@@ -18,22 +18,19 @@ CELL = ["setting=superposition", "structure_kwargs.N=256", "structure_kwargs.m=8
 THEORY = CELL + ["runner=theory"]
 
 
-def test_theory_runner_stores_the_ce_optimal_model_as_a_balanced_linear_run(tmp_path):
+def test_theory_runner_stores_the_ce_optimal_model_as_a_linear_run(tmp_path):
     model, dataset, evaluator, history, config = train_inline(THEORY, cache_dir=str(tmp_path))
     run = load_run(THEORY, cache_dir=str(tmp_path))
 
-    # the saved logits are the theory's table (pairs among all 8 features, since n_top=18 > m),
-    # up to the per-row constant softmax ignores, and the saved representation and readout are
-    # its balanced factors, the oracle's gauge. Tolerance: a second solve of the same cell
-    # reproduces the first to ~1e-3 of scale (iterative solvers on multithreaded BLAS).
+    # the saved representation and readout are the theory's own (pairs among all 8 features,
+    # since n_top=18 > m), the saved logits their product. Tolerance: a second solve of the
+    # same cell reproduces the first to ~1e-3 of scale (iterative solvers on multithreaded BLAS).
     W, X = modes(dataset.info["alpha"], dataset.features, 0.0)
     H, D = ce_optimal_representation(W, X, 3, n_top=config.cfg.solver.n_top)
-    Lc, Hb, Db, _ = factor_logcond(H @ D.T, rank=3)
-    tol = 1e-3 * np.abs(Lc).max()
-    saved = run["logits"] - run["logits"].mean(1, keepdims=True)
-    assert np.allclose(saved, Lc, atol=tol), np.abs(saved - Lc).max() / np.abs(Lc).max()
-    assert np.allclose(run["representation"], Hb, atol=tol) and np.allclose(run["readout"], Db.T, atol=tol)
-    assert np.allclose(run["representation"].T @ run["representation"], run["readout"].T @ run["readout"], atol=tol)
+    tol = 1e-3 * np.abs(H @ D.T).max()
+    assert np.allclose(run["representation"], H, atol=tol), np.abs(run["representation"] - H).max()
+    assert np.allclose(run["readout"], D, atol=tol), np.abs(run["readout"] - D).max()
+    assert np.allclose(run["logits"], H @ D.T, atol=tol)
     assert run["step"] == 0 and run["loss"] == history["loss"].iloc[0] > 0
 
     # a sibling of the trained classes in the cell directory, filled once
