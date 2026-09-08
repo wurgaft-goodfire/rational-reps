@@ -147,26 +147,36 @@ def test_signed_pressure_is_the_covariance_form_and_points_head_against_tail():
 
 
 @pytest.mark.slow
-def test_predict_geometry_reports_frame_ensemble_statistics():
-    # one realized CE per frame, the mean Gram's diagonal is the mean sizes, and
-    # the spectrum has exactly d modes (the rank cutoff is not a mode)
-    out = geometry.predict_geometry(LADDER[:16], _bernoulli(16, n=4096), 3, n_frames=6, n_top=8)
-    ce = out["frame_ce"]
-    assert ce.shape == (6,) and ce.min() > 0
-    assert np.allclose(np.diag(out["gram_mean"]), out["sizes_mean"])
-    assert out["spectra_mean"].shape == (3,) and out["spectra_sd"].shape == (3,)
-    assert np.allclose((out["E_star"] ** 2).sum(1), out["d_star"], atol=1e-5)
-    assert abs(out["d_star"].sum() - 3) < 1e-6 and 0 <= out["eta"] < 3
-    assert out["ce_rep"] < out["ce_add"] <= out["ce_star"] + 1e-9   # completion lowers the CE at E*
-    # the completion's logit map over its dictionary [z; phi(z); 1], and the dictionary in
-    # balanced coordinates: the rank-d factorization is exact with equal scale in both factors
-    M = np.vstack([out["E_star"], out["E2_rep"], out["e0_rep"]]) @ out["D_rep"]
-    assert out["map_rep"].shape == (16 + 28 + 1, 16) and np.allclose(out["map_rep"], M)
-    Mc, B, D, S = geometry.factor_logcond(M, rank=3)
-    assert B.shape == (45, 3) and D.shape == (3, 16) and S.shape == (3,)
-    assert np.allclose(B @ D, Mc, atol=1e-8)
-    assert np.allclose(np.linalg.norm(B, axis=0), np.linalg.norm(D, axis=1), atol=1e-6)
-    assert np.allclose(geometry.predicted_geometry(M, rank=3), B)
+def test_rank_optimal_logits_is_the_completed_map_at_the_pressure_frame():
+    # the table is (z E* + phi(z) E2 + e0) D with E* the fixed-diagonal realization of the
+    # Fantope solution and (E2, e0, D) the completion at E*; it has rank exactly d, so the
+    # balanced factorization the runner stores is lossless
+    alpha, Z, d = LADDER[:16], _bernoulli(16, n=4096), 3
+    L = geometry.rank_optimal_logits(alpha, Z, d, n_top=8)
+    d_wf, _ = allocate_d(alpha, Z, d)
+    P, _ = geometry.fantope_geometry(alpha, Z, d, geometry.signed_pressure(alpha, Z, d_wf))
+    E_star = tight_frame(np.diag(P), init=P)
+    rep = geometry.repair(alpha, Z, E_star, n_top=8)
+    assert L.shape == (4096, 16)
+    assert np.allclose(L, (Z @ E_star + geometry.pair_features(Z, 8) @ rep["E2"] + rep["e0"]) @ rep["D"])
+    Lc, H, D, S = geometry.factor_logcond(L, rank=d)
+    assert H.shape == (4096, 3) and D.shape == (3, 16) and np.allclose(H @ D, Lc, atol=1e-6)
+    assert np.linalg.matrix_rank(Lc, tol=1e-6 * S[0]) == d
+
+
+def test_pressure_frame_scores_below_every_random_frame_with_the_same_allocation():
+    # the control behind the orientation step: among tight frames at the water-filling
+    # diagonal, random ones score ~0 on the signed pressure sum_{i != j} a_ij G_ij while the
+    # realized Fantope frame sits below all of them
+    alpha, Z, d = LADDER[:16], _bernoulli(16, n=4096), 3
+    d_wf, _ = allocate_d(alpha, Z, d)
+    a = geometry.signed_pressure(alpha, Z, d_wf)
+    P, _ = geometry.fantope_geometry(alpha, Z, d, a)
+    score = lambda E: float((a * (E @ E.T)).sum())
+    star = score(tight_frame(np.diag(P), init=P))
+    random = np.array([score(tight_frame(d_wf, seed=k)) for k in range(1, 9)])
+    assert star < random.min() and star < 0
+    assert abs(random.mean()) < abs(star) / 3
 
 
 @pytest.mark.slow
@@ -274,16 +284,6 @@ def test_measure_recovers_a_planted_rank_d_table():
     assert np.allclose(P[:3, :3], np.eye(3), atol=1e-6) and GD.shape == (m, m)
 
 
-@pytest.mark.slow
-def test_theory_table_is_the_completed_models_logit_table():
-    # [x, phi(x), 1] @ map_rep reproduces (x E* + phi(x) E2 + e0) D
-    out = geometry.predict_geometry(LADDER[:16], _bernoulli(16, n=4096), 3, n_frames=2, n_top=8)
-    Z = _bernoulli(16, n=4096)
-    table = geometry.theory_table(out, Z, n_top=8)
-    ref = (Z @ out["E_star"] + geometry.pair_features(Z, 8) @ out["E2_rep"] + out["e0_rep"]) @ out["D_rep"]
-    assert np.allclose(table, ref)
-
-
 def _tied_ce(alpha, Z, di, G_off):
     # exact CE of the tied map: own logits alpha_k d_k z_k plus interference
     # alpha_k sum_{i != k} (z_i - zbar_i) G_ik; the object the local expansion approximates
@@ -370,23 +370,6 @@ def test_fixed_diagonal_realization_keeps_the_diagonal_and_is_parseval():
     assert np.allclose(Ud.T @ Ud, np.eye(3), atol=1e-10)
 
 
-@pytest.mark.slow
-def test_biconvex_pairs_never_increases_the_objective_and_beats_the_additive_class():
-    # Part II benchmark: exact CE of the additive-plus-pairs class by alternating convex
-    # block solves; the objective trace is nonincreasing and ends below the additive
-    # class realized at a compatible frame
-    alpha = LADDER[:16]
-    Z = _bernoulli(16, n=4096)
-    out = geometry.biconvex_pairs(alpha, Z, 3, n_top=10, rounds=4, seed=0)
-    assert (np.diff(out["ce_trace"]) < 1e-9).all()
-    di, _ = allocate_d(alpha, Z, 3)
-    G, P, _ = geometry._softmax_stats(alpha, Z)
-    L1, o = decoder_map(alpha, Z, tight_frame(di, seed=1))
-    assert out["ce"] < geometry._excess_ce(Z @ L1 + o, G, P)
-    assert out["B"].shape == (1 + 16 + 45, 3) and out["D"].shape == (3, 16)
-
-
-
 
 def test_modes_are_the_features_when_independent_and_the_predictive_modes_when_not():
     Z = _bernoulli(4, n=64)
@@ -418,19 +401,6 @@ def test_superposition_setting_declares_the_grid_and_couples_the_seeds():
         assert (sk.p, sk.beta, sk.rho) == (0.5, 1.0, 0.6) and config.cfg.training_kwargs.train_steps == 8000
         assert config.cfg.model_kwargs.model_config.embed_dim == 12
         assert os.path.basename(config.run_dir) == runner                  # the model class is the leaf
-
-
-def test_rank_optimal_logits_is_the_completed_map_over_states_solved_once(tmp_path):
-    from src.code.data import feature_cube
-    Z = feature_cube(128, 6, 0.3, scale=8.0, seed=1, spectrum="power", beta=0.5)[1]["Z"]
-    path = tmp_path / "cell" / "theory.npz"
-    L = geometry.rank_optimal_logits(LADDER[:6], Z, 2, 0.0, 1, path, n_frames=2, n_top=4)
-    out = dict(np.load(path))
-    assert L.shape == (128, 6) and out["E_star"].shape == (6, 2)
-    assert np.allclose(L, geometry.theory_table(out, Z, n_top=4))          # the cached solve, applied to the states
-    mtime = path.stat().st_mtime_ns
-    again = geometry.rank_optimal_logits(LADDER[:6], Z, 2, 0.0, 1, path, n_frames=2, n_top=4)
-    assert path.stat().st_mtime_ns == mtime and np.array_equal(again, L)   # read, not re-solved
 
 
 def test_has_run_is_false_before_training(tmp_path):
@@ -549,17 +519,21 @@ def _balanced_feature_gram(table, Z, d):
 
 
 @pytest.mark.slow
-def test_whitening_brings_the_theory_to_the_exact_optimum_on_correlated_features():
-    # equicorrelated features (rho = 0.6, m = 16, d = 3): the exact joint optimum of the
-    # additive class is the oracle. On raw features the relaxation misallocates and its
-    # placement is uncorrelated with the oracle; on the predictive modes it recovers the
-    # oracle's leverage and placement and closes most of the CE gap.
+def test_whitening_brings_the_theory_to_the_exact_optimum_on_correlated_features(tmp_path):
+    # equicorrelated features (rho = 0.6, m = 16, d = 3): the additive class trained to its
+    # optimum (the additive_features runner, full batch) is the oracle. On raw features the
+    # relaxation misallocates and its placement is uncorrelated with the oracle; on the
+    # predictive modes it recovers the oracle's leverage and placement and closes most of the
+    # CE gap.
+    from src.code.train import train_inline
     m, d, k = 16, 3, 8
-    alpha = LADDER[:m]
-    Z = _correlated(m, n=4096, rho=0.6)
+    model, dataset, evaluator, *_ = train_inline(
+        ["setting=superposition", "runner=additive_features", "structure_kwargs.N=4096",
+         f"structure_kwargs.m={m}", "structure_kwargs.rho=0.6", f"model_kwargs.model_config.embed_dim={d}",
+         "random_seed=0"], cache_dir=str(tmp_path))
+    alpha, Z = dataset.info["alpha"], np.asarray(dataset.features, float)
     iu = np.triu_indices(k, 1)
-    opt = geometry.biconvex_pairs(alpha, Z, d, n_top=0, rounds=15)
-    table_opt = (np.column_stack([np.ones(len(Z)), Z]) @ opt["B"]) @ opt["D"]
+    table_opt = evaluator.evaluate(model)["logits"]
     G_opt = _balanced_feature_gram(table_opt, Z, d)
     G, P, _ = geometry._softmax_stats(alpha, Z)
     U, C_half = geometry.whiten(Z)
@@ -570,9 +544,9 @@ def test_whitening_brings_the_theory_to_the_exact_optimum_on_correlated_features
         scores[name] = (geometry._excess_ce(table, G, P),
                         np.corrcoef(np.diag(G_th), np.diag(G_opt))[0, 1],
                         np.corrcoef(G_th[:k, :k][iu], G_opt[:k, :k][iu])[0, 1])
-    assert scores["white"][0] < scores["raw"][0] - 0.05
-    assert scores["white"][1] > scores["raw"][1]
-    assert scores["white"][2] > 0.3 > scores["raw"][2]
+    assert scores["white"][0] < scores["raw"][0] - 0.05, scores          # CE gap closed by > 0.05
+    assert scores["white"][1] > scores["raw"][1] + 0.1, scores           # leverage correlation
+    assert scores["white"][2] > scores["raw"][2] + 0.1, scores           # placement correlation
 
 
 def test_mutually_exclusive_features_are_predicted_antipodal_in_both_bases():
@@ -620,46 +594,3 @@ def test_exact_fantope_program_lowers_the_tied_ce_by_leaving_the_projectors():
     assert abs(np.trace(P_ex) - 3) < 1e-6 and np.abs(np.diag(P_ex) - np.diag(P_lin)).max() < 0.1
 
 
-def test_mutually_exclusive_features_are_predicted_antipodal_in_both_bases():
-    # two features that never co-occur inside an iid background (m = 16, d = 3): the
-    # predicted feature-space overlap of the pair is negative on raw features and on the
-    # predictive modes alike (the TMS antipodal arrangement)
-    rng = np.random.default_rng(0)
-    n, m, d = 4096, 16, 3
-    c = rng.choice(3, size=n, p=[0.3, 0.3, 0.4])
-    Z = np.column_stack([c == 0, c == 1, rng.random((n, m - 2)) < 0.3]).astype(float)
-    alpha = LADDER[:m]
-    U, C_half = geometry.whiten(Z)
-    for al, X in [(alpha, Z), (np.diag(alpha) @ C_half.T, U)]:
-        G = _balanced_feature_gram(_theory_table(al, X, d), Z, d)
-        assert G[0, 1] < -0.02
-
-
-# ── the exact tied-map Fantope program ─────────────────────────────────────────────────────
-
-def test_tied_map_ce_gradient_matches_finite_differences_on_the_fantope():
-    # F(P) = E CE(softmax(A P z)); its gradient is Z^T (q - p*) W / n, symmetrised
-    alpha, Z = LADDER[:8], _correlated(8, n=2048, rho=0.4)
-    rng = np.random.default_rng(0)
-    P = geometry._fantope_project(rng.normal(size=(8, 8)), 3)
-    f, G = geometry.tied_map_ce(alpha, Z, P)
-    h = 1e-5
-    for i, j in [(0, 0), (0, 1), (2, 5), (7, 7)]:
-        Dm = np.zeros((8, 8)); Dm[i, j] = Dm[j, i] = h
-        fd = (geometry.tied_map_ce(alpha, Z, P + Dm)[0] - geometry.tied_map_ce(alpha, Z, P - Dm)[0]) / (2 * h)
-        assert abs(fd - (G[i, j] + G[j, i]) * (1.0 if i != j else 0.5)) < 1e-6
-
-
-def test_exact_fantope_program_lowers_the_tied_ce_by_leaving_the_projectors():
-    # the exact tied-map program minimises the objective the linearised one expands, so
-    # its tied CE is no worse at its own optimum; it gets there by moving far from the
-    # projectors (a larger relaxation gap eta), which is why the pipeline keeps the
-    # linearised program for the frame
-    alpha, Z = LADDER[:16], _bernoulli(16, n=4096)
-    di, _ = allocate_d(alpha, Z, 3)
-    a = geometry.signed_pressure(alpha, Z, di)
-    P_lin, eta_lin = geometry.fantope_geometry(alpha, Z, 3, a)
-    P_ex, eta_ex = geometry.fantope_geometry(alpha, Z, 3)
-    assert geometry.tied_map_ce(alpha, Z, P_ex)[0] <= geometry.tied_map_ce(alpha, Z, P_lin)[0] + 1e-9
-    assert eta_ex > 2 * eta_lin
-    assert abs(np.trace(P_ex) - 3) < 1e-6 and np.abs(np.diag(P_ex) - np.diag(P_lin)).max() < 0.1

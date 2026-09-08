@@ -384,84 +384,28 @@ def top_eigenspace(P, d):
     return U[:, -d:]
 
 
-def predict_geometry(alpha, Z, d, n_frames=32, n_top=18, seed=0):
-    """The geometry on a dataset (notes/superposition.tex). Allocation: water filling.
-    Orientation: the linearised Fantope program on the signed pressure with the diagonal
-    free, realized as the fixed-diagonal frame E* (the *_star outputs; eta is the
-    projector-relaxation gap). The exact tied-map program (`a=None`) is not used: its
-    optimum sits far from the projectors (eta ~ 1) and loses the orientation once realized. Completion: decoder and pair block solved at E* by
-    convex block alternation (the *_rep outputs: E2_rep (K, d), e0_rep (d,), D_rep (d, m),
-    and map_rep (m + K + 1, m), the completed model's logit map over its dictionary
-    [z; phi(z); 1], whose `predicted_geometry` at rank d is the dictionary in balanced
-    coordinates: feature rows, pair rows, offset). Reference band:
-    n_frames random compatible frames at the water-filling diagonal (the *_mean/_sd
-    outputs)."""
-    from joblib import Parallel, delayed, parallel_config
+def rank_optimal_logits(alpha, Z, d, n_top=18):
+    """The theory's logit table over states at rank d, (n, m) (notes/superposition.tex).
+    Allocation: water filling (`allocate_d`). Orientation: the linearised Fantope program on
+    the signed pressure with the diagonal free (`fantope_geometry`), realized as the
+    fixed-diagonal frame E* (`tight_frame`). Completion: decoder and pair block solved at E*
+    by convex block alternation (`repair`). The table is (z E* + phi(z) E2 + e0) D; pass the
+    coordinates `modes` gives the task (features, or predictive modes with their map)."""
     Z = np.asarray(Z, float)
-    m = Z.shape[1]
-    d_wf, delta = allocate_d(alpha, Z, d)
-    a = signed_pressure(alpha, Z, d_wf)
-    P_star, eta = fantope_geometry(alpha, Z, d, a)
-    d_star = np.diag(P_star)
-    E_star = tight_frame(d_star, init=P_star)
-    ce_star, gram_star, spectra_star, gramD_star, offset_star = _realize_frame(alpha, Z, E_star, d)
+    d_wf, _ = allocate_d(alpha, Z, d)
+    P_star, _ = fantope_geometry(alpha, Z, d, signed_pressure(alpha, Z, d_wf))
+    E_star = tight_frame(np.diag(P_star), init=P_star)
     rep = repair(alpha, Z, E_star, n_top=n_top)
-    map_rep = np.vstack([E_star, rep["E2"], rep["e0"]]) @ rep["D"]
-    with parallel_config(backend="loky", inner_max_num_threads=1):
-        frames = Parallel(n_jobs=min(n_frames, 32))(
-            delayed(_realize_frame)(alpha, Z, tight_frame(d_wf, seed=seed + 101 * k + 1), d)
-            for k in range(n_frames))
-    frame_ce = np.array([f[0] for f in frames])
-    grams = np.array([f[1] for f in frames])
-    spectra = np.array([f[2] for f in frames])
-    gramsD = np.array([f[3] for f in frames])
-    sizes = grams[:, np.arange(m), np.arange(m)]
-    return dict(d_wf=d_wf, d_star=d_star, delta=delta, a=a, P_star=P_star, eta=eta,
-                E_star=E_star, ce_star=ce_star, gram_star=gram_star,
-                sizes_star=np.diag(gram_star), spectra_star=spectra_star,
-                gramD_star=gramD_star, offset_star=offset_star,
-                E2_rep=rep["E2"], e0_rep=rep["e0"], D_rep=rep["D"], map_rep=map_rep,
-                ce_rep=rep["ce"][-1],
-                ce_add=rep["ce_additive"], ce_trace_rep=rep["ce"],
-                frame_ce=frame_ce,
-                gram_mean=grams.mean(0), gram_sd=grams.std(0),
-                gramD_mean=gramsD.mean(0), gramD_sd=gramsD.std(0),
-                sizes_mean=sizes.mean(0), sizes_sd=sizes.std(0),
-                spectra_mean=spectra.mean(0), spectra_sd=spectra.std(0))
-
-
-def rank_optimal_logits(alpha, Z, d, correlated, seed, path, n_frames=8, n_top=18):
-    """The theory's logit table over states at rank d, (n, m): `predict_geometry` on the
-    coordinates `modes` gives the task, its solve cached at ``path`` (npz of the array outputs)
-    and the completed map applied to the states (`theory_table`)."""
-    from pathlib import Path
-    path = Path(path)
-    W, X = modes(alpha, Z, correlated)
-    if not path.exists():
-        out = predict_geometry(W, X, d, n_frames=n_frames, n_top=n_top, seed=seed)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(path, **{k: np.asarray(v) for k, v in out.items() if not isinstance(v, dict)})
-    return theory_table(dict(np.load(path)), X, n_top=n_top)
-
-
-def _realize_frame(alpha, Z, E1, d):
-    """A compatible tight frame with its decoder: (excess CE, feature Gram
-    U Sigma U^T of L1, top-d spectrum, decoder Gram V Sigma V^T, offset row o)."""
-    G, P, _ = _softmax_stats(alpha, Z)
-    L1, o = decoder_map(alpha, Z, E1)
-    Uf, Sf, Vt = np.linalg.svd(L1, full_matrices=False)
-    return (_excess_ce(Z @ L1 + o, G, P),
-            (Uf[:, :d] * Sf[:d]) @ Uf[:, :d].T, Sf[:d],
-            (Vt[:d].T * Sf[:d]) @ Vt[:d], o)
+    return (Z @ E_star + pair_features(Z, n_top) @ rep["E2"] + rep["e0"]) @ rep["D"]
 
 
 def pair_features(Z, n_top):
-    """Pair products (z_i - p_i)(z_j - p_j) for i < j < n_top, residualised on [1, z] so
-    the block is exactly orthogonal to the first-order dictionary (the second Walsh
+    """Pair products (z_i - p_i)(z_j - p_j) for i < j < min(n_top, m), residualised on [1, z]
+    so the block is exactly orthogonal to the first-order dictionary (the second Walsh
     level when the features are independent), then standardized. Returns (n, K)."""
     Z = np.asarray(Z, float)
     Zc = Z - Z.mean(0)
-    i, j = np.triu_indices(n_top, 1)
+    i, j = np.triu_indices(min(n_top, Z.shape[1]), 1)
     phi = Zc[:, i] * Zc[:, j]
     X = np.column_stack([np.ones(len(Z)), Zc])
     phi = phi - X @ np.linalg.lstsq(X, phi, rcond=None)[0]
@@ -521,67 +465,3 @@ def repair(alpha, Z, E1, n_top=18, rounds=30, tol=1e-5):
                 ce=np.array(ce), ce_additive=ce[0])
 
 
-def biconvex_pairs(alpha, Z, d, n_top=18, rounds=10, seed=0, init=None):
-    """The additive-plus-pairs class at its exact-CE optimum by alternating convex
-    block solves: logits = psi(z)^T B D with psi = [1, z, phi(z)], B ((1 + m + K), d),
-    D (d, m). Starts from the additive solution at a random compatible frame (or
-    `init` = (B, D)). Unregularized, as the SGD pairs runner. Returns dict(B, D, ce,
-    ce_trace) with the excess CE after every block solve."""
-    from scipy.optimize import minimize
-    from scipy.special import logsumexp
-    Z = np.asarray(Z, float)
-    n, r = Z.shape
-    G, P, _ = _softmax_stats(alpha, Z)
-    m = G.shape[1]
-    bayes = float((logsumexp(G, axis=1) - (P * G).sum(1)).mean())
-    psi = np.column_stack([np.ones(n), Z, pair_features(Z, n_top)])
-    if init is None:
-        di, _ = allocate_d(alpha, Z, d)
-        E1 = tight_frame(di, seed=seed)
-        L1, o = decoder_map(alpha, Z, E1)
-        D = E1.T @ L1
-        B = np.zeros((psi.shape[1], d))
-        B[1:1 + r] = E1
-        B[0] = np.linalg.lstsq(D.T, o, rcond=None)[0]
-    else:
-        B, D = (np.array(x, float) for x in init)
-
-    def excess(B_, D_):
-        L = (psi @ B_) @ D_
-        return float((logsumexp(L, axis=1) - (P * L).sum(1)).mean()) - bayes
-
-    def solve(fg, x0):
-        return minimize(fg, x0, jac=True, method="L-BFGS-B",
-                        options=dict(maxiter=4000, ftol=1e-11, gtol=1e-7)).x
-
-    trace = [excess(B, D)]
-    for _ in range(rounds):
-        def fgB(x):
-            B_ = x.reshape(-1, d)
-            H = psi @ B_
-            L = H @ D
-            lse = logsumexp(L, axis=1)
-            q = np.exp(L - lse[:, None])
-            return (float((lse - (P * L).sum(1)).mean()),
-                    (psi.T @ ((q - P) @ D.T) / n).ravel())
-        B = solve(fgB, B.ravel()).reshape(-1, d)
-        trace.append(excess(B, D))
-        H = psi @ B
-
-        def fgD(x):
-            D_ = x.reshape(d, m)
-            L = H @ D_
-            lse = logsumexp(L, axis=1)
-            q = np.exp(L - lse[:, None])
-            return (float((lse - (P * L).sum(1)).mean()),
-                    (H.T @ (q - P) / n).ravel())
-        D = solve(fgD, D.ravel()).reshape(d, m)
-        trace.append(excess(B, D))
-    return dict(B=B, D=D, ce=trace[-1], ce_trace=np.array(trace))
-
-
-def theory_table(out, X, n_top=18):
-    """The completed model's logit table over states from `predict_geometry`'s output:
-    [x, phi(x), 1] @ map_rep. (n, m)."""
-    X = np.asarray(X, float)
-    return np.column_stack([X, pair_features(X, n_top), np.ones(len(X))]) @ out["map_rep"]

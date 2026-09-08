@@ -1,0 +1,16 @@
+# @package _global_
+# The theory as a model class: the rank-optimal logit table of a feature-cube task
+# (geometry.rank_optimal_logits), factored at rank d and stored as a linear model, so it is
+# solved, saved and read exactly like a trained run.
+#   python -m src.code.train -m runner=theory setting=superposition
+defaults:
+  - override /model: linear
+  - override /train: default
+  - _self_
+
+name: theory
+output_dir: ${run_dir}/checkpoints
+sample_mode: pointwise
+
+solver:
+  n_top: 18            # the completion's pair dictionary: pairs among the first n_top features

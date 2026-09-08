@@ -14,9 +14,9 @@ seeds coupled. Numbers below are 5-seed means at d = 3 / 6 / 12 unless stated.
 3. **Completion** — decoder and pair block solved exactly at the fixed frame by convex block
    alternation (`repair`): CE 0.316 → 0.228 / 0.205 → 0.143 / 0.145 → 0.092 (trained
    0.207 / 0.130 / 0.077); head sizes 11.5 / 10.2 / 9.0 vs trained 11.2 / 11.0 / 9.7.
-4. **Benchmark** — the additive-plus-pairs class optimum by biconvex alternation
-   (`biconvex_pairs`): reproduces the trained network's CE within ~3% and its placement at
-   0.85 / 0.64 / 0.43; the SGD pairs runner had already found it.
+4. **Benchmark** — the additive-plus-pairs class optimum, which the SGD pairs runner
+   (`runner=paired_features`) reaches (biconvex refinement moved its CE in the fourth decimal):
+   reproduces the trained network's CE within ~3% and its placement at 0.85 / 0.64 / 0.43.
 
 ## What is established
 
@@ -85,8 +85,9 @@ balanced to 0.4%). Raw scales are an optimizer artefact.
 ## Sweep over sparsity, ladder slope and rank (2026-09-04)
 
 `conf/setting/superposition.yaml` (a Hydra multirun per model class): p ∈ {0.05, 0.15, 0.3, 0.5} ×
-β ∈ {0.25, 0.5, 1.0} × ρ ∈ {0, 0.3, 0.6} × d ∈ {3, 6, 12}, 5 seeds per cell; the theory solve of a
-cell is cached as `theory.npz` beside its runs (`geometry.rank_optimal_logits`).
+β ∈ {0.25, 0.5, 1.0} × ρ ∈ {0, 0.3, 0.6} × d ∈ {3, 6, 12}, 5 seeds per cell. The theory is a model
+class of its own (`runner=theory`): `geometry.rank_optimal_logits` solved per cell and stored as a
+rank-d linear run beside the trained classes, read like them.
 Notebook Figs 8a/8b (allocation small multiples) and 9 (score heatmaps; placement on the leverage
 projectors).
 
@@ -267,8 +268,8 @@ seeds while every trained model is not; the analysis below is what that noise me
 
 ## Next steps
 
-1. (done) `predict_geometry` = water filling → linear Fantope orientation → fixed-diagonal
-   frame E★ → exact completion at E★ → random-frame band; retired analytic-completion
+1. (done) `rank_optimal_logits` = water filling → linear Fantope orientation → fixed-diagonal
+   frame E★ → exact completion at E★ (the random-frame control is a test on the pressure score); retired analytic-completion
    functions deleted, `interference_curvature` kept; notebook rebuilt on the new outputs.
 2. (done) Pair-set sweep of the biconvex pairs class, n_top ∈ {0, 6, 12, 18, 24, 32, 48, 64}.
    The class saturates at n_top ≈ 12–18: fresh-draw CE is lowest there (0.223 / 0.139 / 0.084)

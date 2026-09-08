@@ -14,6 +14,7 @@ from .models import init_model, load_model, MODEL_CLASSES
 from .config import Config, clean_dirname, run_key
 from .data import init_dataset, kernel_hash
 from .eval import Evaluator
+from .geometry import factor_logcond, modes, rank_optimal_logits
 from .train_utils import (
     CustomSaveCallback,
     StepMetricsCallback,
@@ -50,12 +51,9 @@ def wandb_init(config):
     wandb.watch(models=[], log=None)
 
 
-def train(config, dataset):
-    print_current_gpus()
-    wandb_init(config)
-
-    # Derive all data-determined model dimensions from the dataset and inject them, so configs
-    # never hardcode vocab_size / num_classes / arity / max_position_embeddings.
+def _size_model(config, dataset):
+    """Derive the data-determined model dimensions from the dataset and inject them, so configs
+    never hardcode vocab_size / num_classes / arity / max_position_embeddings."""
     mc = config.cfg.model_kwargs.model_config
     with open_dict(mc):
         mc.vocab_size = dataset.vocab_size
@@ -69,6 +67,42 @@ def train(config, dataset):
     print(f"Model dims from dataset: vocab_size={dataset.vocab_size}, "
           f"num_classes={dataset.num_dims}, arity={dataset.arity}, seq_len={dataset.seq_len}")
 
+
+def solve(config, dataset):
+    """The theory as a run: the task's rank-optimal logit table (`geometry.rank_optimal_logits`
+    on the coordinates `modes` gives it), factored at rank d into a balanced state
+    representation and readout and stored in a linear model, with the checkpoint, history and
+    evaluation files `train` writes. Returns the same artifacts as `train`."""
+    _size_model(config, dataset)
+    model = init_model(config)
+    d = config.cfg.model_kwargs.model_config.embed_dim
+    W, X = modes(dataset.info["alpha"], dataset.features, config.cfg.structure_kwargs.get("rho", 0.0))
+    _, H, D, _ = factor_logcond(rank_optimal_logits(W, X, d, n_top=config.cfg.solver.n_top), rank=d)
+    weight = model.embedding.weight
+    with torch.no_grad():
+        weight[dataset.item_tokens.to(weight.device)] = torch.as_tensor(H, dtype=weight.dtype, device=weight.device)
+        model.readout.copy_(torch.as_tensor(D.T, dtype=weight.dtype, device=weight.device))
+    checkpoint_dir = os.path.join(config.output_dir, "0")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    model.save_pretrained(os.path.join(checkpoint_dir, "model"))
+    evaluator = Evaluator(config, dataset)
+    result = evaluator.evaluate(model)
+    history = pd.DataFrame([{"step": 0, "loss": result["loss"]}])
+    history.to_csv(os.path.join(config.run_dir, "history.csv"), index=False)
+    evaluator.save(result, checkpoint_dir, step=0)
+    return {"model": model, "dataset": dataset, "evaluator": evaluator, "history": history}
+
+
+def fit(config, dataset):
+    """Fill a run dir: `solve` when the config carries a ``solver`` block (the theory runner),
+    else `train`."""
+    return (solve if "solver" in config.cfg else train)(config, dataset)
+
+
+def train(config, dataset):
+    print_current_gpus()
+    wandb_init(config)
+    _size_model(config, dataset)
     model = init_model(config)
     if hasattr(model, "load_features"):
         model.load_features(dataset.features)
@@ -204,7 +238,7 @@ def train_inline(overrides, name=None, cache_dir=None):
     dataset = init_dataset(config)
     if _run_exists(config, dataset):
         return (*_load_run(config, dataset), config)
-    result = train(config, dataset)
+    result = fit(config, dataset)
     return result["model"], result["dataset"], result["evaluator"], result["history"], config
 
 
@@ -231,7 +265,7 @@ def main(cfg: DictConfig) -> None:
     if _run_exists(config, dataset):
         print(f"Output directory {config.output_dir} is not empty. Set overwrite=true to overwrite.")
         return
-    train(config, dataset)
+    fit(config, dataset)
     print("DONE")
 
 
