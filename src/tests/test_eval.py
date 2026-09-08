@@ -84,3 +84,21 @@ def test_collator_unwraps_the_prebatched_dict_and_drops_what_the_model_rejects()
     assert PreBatchedDataCollator()([batch]) == batch
     lm = PreBatchedDataCollator(drop=("distribution_labels",))([batch])
     assert set(lm) == {"input_ids", "labels"}                  # a causal LM never sees the row
+
+
+def test_hidden_input_evaluator_reads_observations_and_scores_the_posterior():
+    # a stream task's inputs are its observation tokens (length-1 histories), whether the target is
+    # the next observation or the hidden input; the latent tokens are outputs and never read
+    cfg = OmegaConf.create({
+        "setting": "graph-cooccurrence", "structure": "feature_cube",
+        "structure_kwargs": {"m": 2, "paired": True, "all_bundles": True},
+        "sample_mode": "sequence", "infer_latent": True, "random_seed": 0,
+        "training_kwargs": {"batch_size": 4, "context_length": 8},
+    })
+    config = Config(cfg)
+    dataset = KernelDataset(config)
+    ev = Evaluator(config, dataset)
+    assert torch.equal(ev.inputs[:, 1], torch.arange(dataset.n_outcomes))       # start, then one observation
+    assert ev.targets.shape == (dataset.n_outcomes, dataset.n_items)
+    post = torch.softmax(dataset.prior.log()[:, None] + dataset.P.double().log(), dim=0).T   # p(z | x)
+    assert torch.allclose(ev.targets, post.float().cpu(), atol=1e-6)

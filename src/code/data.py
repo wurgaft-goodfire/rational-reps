@@ -115,9 +115,9 @@ class KernelDataset(Dataset):
         self.n_outcomes = self.P.shape[-1]
 
         self.sequential = self.sample_mode == "sequence"
-        # outcomes that are the inputs connect into a chain; otherwise the kernel is bipartite
-        self.connected = self.n_items == self.n_outcomes and self.transition is None
-        self.bipartite = not self.connected
+        # a structure over one node set has its nodes as outcomes, so a stream chains; a structure
+        # with a separate outcome set (declared by the structure) hides its input
+        self.connected = not self.bipartite
         if self.infer_latent and not (self.sequential and self.bipartite):
             raise ValueError("infer_latent needs a hidden input: a connected stream has none, "
                              "and a pointwise task states its input outright")
@@ -132,7 +132,10 @@ class KernelDataset(Dataset):
         spec = _spec(config, "structure", "structure_kwargs")
         L, self.info = graph_build(spec)
         self.n_items = len(L)
+        self.bipartite = self.info["bipartite"]
         self.features = self.info.get("Z")                        # item feature codes, if any
+        if "prior" in self.info:                                  # the structure's prior over its hidden inputs
+            self.prior = torch.tensor(self.info["prior"], dtype=torch.float64, device=self.device)
         P = apply_lapse(np.exp(L), config.get("lapse", 0.05))
         return np.log(P), torch.tensor(P, dtype=torch.float32, device=self.device)
 
@@ -234,9 +237,11 @@ class KernelDataset(Dataset):
         return tuples.repeat(max(1, -(-self._batch_size() // len(tuples))), 1)
 
     def input_tuples(self):
-        """Every input the task defines, once: ``(n_items ** arity, arity)``. Training tiles this
-        to fill a batch; analysis wants it untiled, one row per distinct input."""
-        return self.item_tokens.to(self.device).unsqueeze(1)
+        """Every input the task defines, once, ``(n, 1)``. A stated input is its item token; a
+        stream's inputs are its observation tokens (the length-1 histories), whatever the target.
+        Training tiles this to fill a batch; analysis wants it untiled."""
+        tokens = torch.arange(self.n_outcomes) if self.sequential and self.bipartite else self.item_tokens
+        return tokens.to(self.device).unsqueeze(1)
 
     def _input_tuples(self):
         """``input_tuples`` tiled to ``batch_size``. The sampler appends the outcome column
@@ -326,6 +331,7 @@ class RelationalDataset(KernelDataset):
         flat = torch.tensor(M, dtype=torch.float32, device=self.device)
         if config.get("pair_inputs", False):
             self.n_items, self.arity = flat.shape[0], 1           # each input tuple is one token
+        self.bipartite = T.shape[-1] != self.n_items              # the outcome alphabet is its own
         return log_conditional(M), flat
 
     def input_tuples(self):
@@ -356,6 +362,7 @@ class HMMDataset(KernelDataset):
         # the bump emission share one geometry. gamma / cooccurrence are required.
         L = adjacency_conditional(structure_adjacency(spec), spec["gamma"], spec["cooccurrence"])
         self.n_items = self.n_states = len(L)
+        self.bipartite = True                                     # emissions are never the states
         self.features = None
 
         T = torch.tensor(np.exp(L), dtype=torch.float64, device=self.device)
@@ -611,7 +618,89 @@ def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
         g = np.sqrt(rho) * f + np.sqrt(1 - rho) * rng.normal(size=(N, m))
         Z = (g > norm.ppf(1 - p)).astype(float)
     Lc = np.c_[Z * alpha, (1 - Z) * alpha] if paired else Z * alpha
-    return Lc - logsumexp(Lc, axis=1, keepdims=True), {"Z": Z, "alpha": alpha}
+    return Lc - logsumexp(Lc, axis=1, keepdims=True), {"Z": Z, "alpha": alpha, "bipartite": True}
+
+
+# ── Hypothesis spaces (bipartite): hypotheses -> observations, strong sampling p(x|h) = 1/|h| ──
+# Zero cells are exact zeros (log -inf) so the dataset's lapse applies; each structure supplies
+# its own prior over hypotheses.
+
+def _size_prior(sizes, prior, sigma):
+    """Prior over hypotheses from their sizes: uniform, or Erlang ``s exp(-s / sigma)`` (T&G 2001)."""
+    sizes = np.asarray(sizes, dtype=float)
+    g = {"uniform": np.ones_like(sizes), "erlang": sizes * np.exp(-sizes / sigma)}[prior]
+    return g / g.sum()
+
+
+def _uniform_on(members, n_items):
+    """log p(x | h) for hypotheses given as boolean masks over items: ``-log|h|`` inside, -inf outside."""
+    M = np.asarray(members, dtype=float)
+    with np.errstate(divide="ignore"):
+        return np.log(M / M.sum(1, keepdims=True))
+
+
+def interval_hypotheses(n=10, prior="erlang", sigma=3.0):
+    """Bayesian generalization on a line (Shepard 1987; Tenenbaum & Griffiths 2001): items 1..n,
+    hypotheses every interval [a, b], p(x | h) = 1/|h| on the interval. Returns (L (n(n+1)/2, n),
+    {"hypotheses": (a, b) rows, "prior", "bipartite"})."""
+    hyps = np.array([(a, b) for a in range(1, n + 1) for b in range(a, n + 1)])
+    x = np.arange(1, n + 1)
+    members = (x[None] >= hyps[:, :1]) & (x[None] <= hyps[:, 1:])
+    sizes = hyps[:, 1] - hyps[:, 0] + 1
+    return _uniform_on(members, n), {"hypotheses": hyps, "prior": _size_prior(sizes, prior, sigma),
+                                     "bipartite": True}
+
+
+def rectangle_hypotheses(n=6, prior="erlang", sigma=2.0):
+    """T&G 2001's two-dimensional case: items the cells of an n x n grid (row-major), hypotheses
+    every axis-aligned rectangle [a1, b1] x [a2, b2], p(x | h) = 1/area. The prior factors over
+    the two side lengths. Returns (L ((n(n+1)/2)^2, n^2), {"hypotheses": (a1, b1, a2, b2) rows,
+    "positions" (n^2, 2), "prior", "bipartite"})."""
+    iv = np.array([(a, b) for a in range(1, n + 1) for b in range(a, n + 1)])
+    hyps = np.array([(a1, b1, a2, b2) for a1, b1 in iv for a2, b2 in iv])
+    pos = np.array([(i, j) for i in range(1, n + 1) for j in range(1, n + 1)])
+    members = ((pos[None, :, 0] >= hyps[:, :1]) & (pos[None, :, 0] <= hyps[:, 1:2]) &
+               (pos[None, :, 1] >= hyps[:, 2:3]) & (pos[None, :, 1] <= hyps[:, 3:4]))
+    side = lambda k: hyps[:, k + 1] - hyps[:, k] + 1
+    p = _size_prior(side(0), prior, sigma) * _size_prior(side(2), prior, sigma)
+    return _uniform_on(members, n * n), {"hypotheses": hyps, "positions": pos, "prior": p / p.sum(),
+                                         "bipartite": True}
+
+
+def subtree_hypotheses(n=3, k=3, parents=None):
+    """Xu & Tenenbaum's taxonomy: items the leaves of a tree, hypotheses every node (the set of
+    leaves below it), p(x | h) = 1/|leaves(h)|, uniform prior over nodes. Returns
+    (L (n_nodes, n_leaves), {"parents", "leaves" (leaf ids per node), "prior", "bipartite"})."""
+    parents = tree_parents(n, k, parents)
+    children = {i: [c for c, p in enumerate(parents) if p == i] for i in range(len(parents))}
+    leaves_of = {}
+    def collect(i):
+        leaves_of[i] = [i] if not children[i] else sum((collect(c) for c in children[i]), [])
+        return leaves_of[i]
+    collect(0)
+    leaf_ids = leaves_of[0]
+    members = np.array([[x in set(leaves_of[h]) for x in leaf_ids] for h in range(len(parents))])
+    return _uniform_on(members, len(leaf_ids)), {
+        "parents": parents, "leaves": [leaves_of[h] for h in range(len(parents))],
+        "prior": np.full(len(parents), 1.0 / len(parents)), "bipartite": True}
+
+
+# Krumhansl & Kessler (1982) probe-tone profiles, C major / C minor, pitch classes C..B
+KK_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+KK_MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+
+
+def key_profiles(beta=1.0):
+    """Key finding (Krumhansl & Schmuckler): items the 12 pitch classes, hypotheses the 24 keys,
+    p(x | key) proportional to the key's probe-tone profile to the power ``beta`` (sharpness).
+    Returns (L (24, 12), {"keys": [(tonic, mode)], "prior", "bipartite"})."""
+    rows, keys = [], []
+    for mode, prof in (("major", KK_MAJOR), ("minor", KK_MINOR)):
+        for tonic in range(12):
+            rows.append(np.roll(beta * np.log(prof), tonic)); keys.append((tonic, mode))
+    L = np.array(rows)
+    L = L - np.log(np.exp(L).sum(1, keepdims=True))
+    return L, {"keys": keys, "prior": np.full(24, 1.0 / 24), "bipartite": True}
 
 
 # One structure = one graph: it builds an adjacency (used by the HMM latent walk and by drawing)
@@ -624,8 +713,12 @@ _STRUCTURES = {
     "sphere": _Structure(sphere), "communities": _Structure(communities),
     "hypercube": _Structure(hypercube), "complete": _Structure(complete),
     "tree": _Structure(_tree_graph, tree_conditional),
-    # bipartite (no adjacency): words -> features
+    # bipartite (no adjacency): words -> features; hypothesis spaces -> observations
     "feature_cube": _Structure(None, feature_cube),
+    "intervals": _Structure(None, interval_hypotheses),
+    "rectangles": _Structure(None, rectangle_hypotheses),
+    "subtrees": _Structure(None, subtree_hypotheses),
+    "keys": _Structure(None, key_profiles),
 }
 
 
@@ -641,10 +734,10 @@ def _build_adjacency(name, params):
 
 
 def graph_build(spec, gamma=0.8, cooccurrence="diffusion"):
-    """``(L, info)`` for a structure spec: the log-conditional plus whatever the structure
-    exposes about its items (e.g. the feature codes ``Z`` of a bipartite structure)."""
-    out = _graph_conditional(spec, gamma, cooccurrence)
-    return out if isinstance(out, tuple) else (out, {})
+    """``(L, info)`` for a structure spec: the log-conditional plus what the structure exposes
+    about its items: ``bipartite`` (a separate outcome set, so the input can be hidden) and,
+    for a feature structure, the item codes ``Z``."""
+    return _graph_conditional(spec, gamma, cooccurrence)
 
 
 def graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
@@ -666,7 +759,8 @@ def _graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
         # pass the task gamma only to conditionals that take it (tree does)
         if "gamma" in inspect.signature(struct.conditional).parameters:
             spec.setdefault("gamma", gamma)
-        return struct.conditional(**spec)
+        out = struct.conditional(**spec)
+        return out if isinstance(out, tuple) else (out, {"bipartite": False})
     if cooccurrence == "gaussian":
         # Gaussian tuning in the structure's canonical coordinates (not the adjacency):
         # log p(x|i) = -gamma/2 ||p_i - q_x||^2 + const_i — rank <= dim(p) + 1 before centering,
@@ -678,8 +772,8 @@ def _graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
         pos = structure_positions(name, spec)
         out = pos if m is None else structure_positions(name, spec, count=m)
         lo = -gamma / 2 * ((pos[:, None] - out[None]) ** 2).sum(-1)
-        return lo - logsumexp(lo, axis=1, keepdims=True)      # exact: no exp round-trip underflow
-    return adjacency_conditional(_build_adjacency(name, spec), gamma, cooccurrence)
+        return lo - logsumexp(lo, axis=1, keepdims=True), {"bipartite": m is not None}
+    return adjacency_conditional(_build_adjacency(name, spec), gamma, cooccurrence), {"bipartite": False}
 
 
 def structure_positions(name, params, count=None):

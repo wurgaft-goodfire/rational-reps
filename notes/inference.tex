@@ -1,0 +1,242 @@
+\section{Inference Under Uncertainty}
+
+So far, we have considered prediction when $z$ is directly given. We now consider prediction from a history $x_{1:t}$. The representational question remains the same: what geometry allows the task's conditional distribution to be decoded linearly? Inference changes the input to this conditional, but not the factorization principle.
+
+Throughout, $L_c$ denotes a log-conditional centered over the variable being predicted, and $\tilde p$ denotes an unnormalized probability. We follow the convention $L_c=ED$: rows of $E$ are embedding vectors $E(s)^\top$, and columns of $D$ are decoder vectors $D(y)$.
+
+For a prediction target $y$, define two histories as equivalent when they induce the same target distribution:
+\[
+x_{1:t}\sim x'_{1:t'}
+\quad\Longleftrightarrow\quad
+p(y\mid x_{1:t})=p(y\mid x'_{1:t'})
+\qquad \forall y.
+\]
+
+Let $s_t=\Pi(x_{1:t})$ denote this equivalence class, or \emph{state}. Then
+\[
+p(y\mid s_t)=p(y\mid x_{1:t}),
+\]
+so the task kernel factors through the state:
+\[
+L_c(x_{1:t},y)=L_c(s_t,y).
+\]
+
+The state is target-dependent. When predicting $z$, it identifies the posterior over $z$. When predicting the next observation, it can be smaller: different posteriors may yield the same next-token distribution.
+
+\subsection{The same factorization over histories}
+
+We can define the task kernel directly over histories, without first identifying or enumerating its distinct states. For a sample of $N$ histories, construct
+\[
+L_c[i,y]
+=
+L_c(x^{(i)}_{1:t_i},y)
+=
+L_c(s_i,y).
+\]
+
+Histories inducing the same state give identical rows. We retain these repetitions: there is one row per sampled prediction instance, not one row per distinct state. Consequently, sampling histories from the task automatically represents how frequently each state is encountered.
+
+We now apply exactly the same factorization as in the static setting:
+\[
+L_c=U\Sigma V^\top=ED.
+\]
+
+Repeated rows do not change the earlier gradient-flow argument. For directly optimized matrix factors, the conserved quantity remains
+\[
+E^\top E-DD^\top.
+\]
+An initialization satisfying $E^\top E=DD^\top$ therefore remains balanced; sufficiently small initial factors instead make the conserved discrepancy small. At an exact balanced solution with no redundant coordinates, the singular-value split is
+\[
+\boxed{
+E=U\Sigma^{1/2},
+\qquad
+D=\Sigma^{1/2}V^\top,
+}
+\]
+up to a common orthogonal change of embedding coordinates.
+
+In particular, histories with the same target distribution receive the same embedding in this factorization. The state is the quotient already present in the kernel; an analytic expression for $\Pi$ is not required to derive its normative representation.
+
+As in the static case, this balance result concerns directly optimized matrix factors. Whether the representations produced by a shared neural encoder approach the same geometry remains an empirical question.
+
+\subsection{Computing the geometry without enumerating histories}
+
+Although there may be infinitely many histories, the decoder geometry can be obtained from a matrix whose size depends only on the number of outputs. For an exact balanced factorization,
+\[
+\begin{aligned}
+L_c^\top L_c
+&=
+D^\top E^\top E D\\
+&=
+D^\top(DD^\top)D\\
+&=
+(D^\top D)^2.
+\end{aligned}
+\]
+
+Therefore,
+\[
+\boxed{
+D^\top D
+=
+\left(L_c^\top L_c\right)^{1/2}
+=
+\left(
+\sum_{i=1}^N
+L_c(s_i,\cdot)^\top L_c(s_i,\cdot)
+\right)^{1/2}.
+}
+\]
+
+Here the square root is the positive-semidefinite matrix square root. A state appearing repeatedly contributes repeatedly to the sum. Thus its weighting follows directly from the rows of the sampled task kernel, rather than from a separate weighting assumption.
+
+For independently sampled histories with finite logit second moments,
+\[
+\frac{1}{N}L_c^\top L_c
+\longrightarrow
+\mathbb E_{x_{1:t}}
+\left[
+L_c(s_t,\cdot)^\top L_c(s_t,\cdot)
+\right].
+\]
+
+Equivalently, the decoder Gram, normalized for sample size, satisfies
+\[
+\boxed{
+\frac{D^\top D}{\sqrt N}
+\longrightarrow
+\left(
+\mathbb E_{x_{1:t}}
+\left[
+L_c(s_t,\cdot)^\top L_c(s_t,\cdot)
+\right]
+\right)^{1/2}.
+}
+\]
+
+The expectation is therefore the population counterpart of ordinary SVD over sampled histories. The task distribution, including its distribution over context lengths, enters through which rows are sampled. The sample-size normalization changes only the overall scale, not the relative geometry. Centering remains over output alternatives, not across histories.
+
+For any exactly represented state, its minimum-norm embedding is recovered from its target logits:
+\[
+\boxed{
+E(s)
+=
+(D^\top)^\dagger L_c(s,\cdot)^\top.
+}
+\]
+
+With fewer dimensions than the kernel's rank, retaining the leading singular modes gives the best squared-logit approximation. This is a statement about approximation of the centered log-conditional kernel, not an identification of truncated SVD with rank-constrained cross-entropy optimization.
+
+Thus the practical procedure is the same for any prediction target: sample histories, compute the target conditionals, center their logarithms, and factorize the resulting matrix. Alternatively, accumulate its output-side Gram without storing all its rows.
+
+\subsection{Latent inference and next-token prediction}
+
+The two inference tasks differ in the conditional kernel being factorized, not in the representational analysis.
+
+\paragraph{Inferring the latent variable.}
+
+When predicting $z$, Bayes' rule supplies the target:
+\[
+\log\tilde p(z\mid x_{1:t})
+=
+\log p_0(z)+\log p(x_{1:t}\mid z).
+\]
+Centering over $z$ gives $L_c(s_t,z)$.
+
+For conditionally independent observations,
+\[
+\log\tilde p(z\mid x_{1:t})
+=
+\log p_0(z)+\sum_{i=1}^t\log p(x_i\mid z).
+\]
+
+This case provides a simple illustration of the history-to-state computation. Let $E_Z$ be a basis for the normalized log-likelihood functions centered over $z$, including the centered log-prior when necessary. Denote their coordinates by $m(x)$ and $s_0$, respectively. We use $m(x)$ for the evidence message to distinguish it from the decoder $D$ of the history kernel.
+
+These factors can be obtained from the static likelihood factorization by restoring its normalizer, centering over $z$, and retaining a basis. In particular,
+\[
+\log p(x\mid z)
+=
+\log\tilde p(x\mid z)
+-
+\log\sum_{x'}\tilde p(x'\mid z).
+\]
+The normalizer is a single function of $z$, so restoring it requires at most one additional likelihood direction. Its per-observation coefficient is constant, and its accumulated coordinate is proportional to the observation count $t$.
+
+Centering Bayes' rule now gives
+\[
+L_c(s_t,\cdot)^\top
+=
+E_Z\left[s_0+\sum_{i=1}^t m(x_i)\right].
+\]
+
+Since $E_Z$ is a basis, we can identify the state with these unique coordinates:
+\[
+\boxed{
+s_t=s_0+\sum_{i=1}^t m(x_i),
+\qquad
+L_c(s_t,\cdot)^\top=E_Zs_t.
+}
+\]
+
+Importantly, additivity also holds for the balanced representation itself. Using the history-kernel decoder $D$ for the latent target,
+\[
+\begin{aligned}
+E(s_t)
+&=
+(D^\top)^\dagger E_Zs_t\\
+&=
+E(s_0)
++
+\sum_{i=1}^t
+(D^\top)^\dagger E_Zm(x_i).
+\end{aligned}
+\]
+
+Thus the likelihood messages and the balanced neural representation are related by a fixed linear map. The predicted representation is affine in the observation histogram and invariant to permutations of the same observations.
+
+This prediction concerns the minimal representation, or the readout-relevant component of a larger representation. Additional components invisible to the centered readout need not be additive or permutation-invariant.
+
+\paragraph{Predicting the next observation.}
+
+For next-token prediction, consider
+\[
+x_{1:t}\leftarrow z\rightarrow x_{t+1},
+\qquad
+P[z,x]=p(x\mid z).
+\]
+The target is the posterior predictive:
+\[
+p(x\mid x_{1:t})
+=
+\sum_z P[z,x]\,p(z\mid x_{1:t}).
+\]
+
+Its logits can be computed without normalizing the intermediate posterior:
+\[
+\boxed{
+\log\tilde p(x\mid x_{1:t})
+=
+\log\sum_z
+P[z,x]\,\tilde p(z\mid x_{1:t}).
+}
+\]
+The omitted posterior normalizer contributes only a constant across $x$. Centering this expression gives $L_c(s_t,x)$.
+
+The logarithm after marginalization makes this kernel generally nonlinear in latent-inference coordinates. In particular, the log of a mixture need not lie in the span of the component log-distributions. The history kernel can therefore have higher rank than the centered static kernel, up to $|X|-1$.
+
+When the posterior concentrates on a latent state and the component probabilities are positive, the predictive logits approach the corresponding static row. Their components outside the static logit span then vanish. The context-length curriculum consequently controls how strongly these uncertainty-dependent directions contribute to the Gram matrix; they are not necessarily low-variance or monotonically decreasing at every step.
+
+The object fixed by next-token prediction is therefore the centered log-predictive, not the latent posterior. Histories with identical posterior predictives have identical minimal factorization codes even when their latent beliefs differ. This predicts a linear correspondence between readout-relevant activations and the log-predictive SVD code, while no analogous linear correspondence with the entire latent belief is guaranteed. A larger network may nevertheless retain additional belief information in directions invisible to the readout.
+
+Both tasks therefore admit the same overall description:
+\[
+x_{1:t}
+\;\xrightarrow{\Pi}\;
+s_t
+\;\xrightarrow{E}\;
+E(s_t)
+\;\xrightarrow{D^\top}\;
+L_c(s_t,\cdot)^\top.
+\]
+
+Inference determines the conditional associated with each history. Kernel factorization determines its normative representation for linear readout. Different architectures can implement the history-to-state computation differently while being compared against the same kernel-factorization target.
