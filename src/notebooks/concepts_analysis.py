@@ -209,8 +209,8 @@ def _(mo):
     ## 2. Three worlds: the one law as geometry
 
     Binary features, temperature line, time-of-week circle, each from a trained 2-D linear net in
-    canonical gauge: one embedding, the decoders, and their dot products, with the kernel above.
-    Second row: the same networks with each token's argmax region, cones from the origin.
+    canonical gauge: one embedding, the decoders, and their dot products, with the kernel above and
+    each token's argmax region, a cone from the origin, behind.
     """)
     return
 
@@ -355,7 +355,7 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
         if arrow:
             _highlight(ax, e, r"$e_z$", 0.09 * R * e / np.linalg.norm(e))
         angle_arcs(ax, e, D, 0.06 * R, 0.02 * R)
-        frame(ax, "", (-R, R), (D[:, 1].min() - 0.45 * _g, max(D[:, 1].max(), E[:, 1].max()) + 0.42 * _g))
+        frame(ax, "", (-R, R), (-R, R))                    # square like the other worlds, so the three boxes match
 
     def draw_circle(ax, E, D, i, regions=False, arrow=True, logits=True):
         """Week circle: times E on a circle, day decoders D, time i highlighted; regions = the seven
@@ -393,16 +393,14 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
     ]
     DRAW = {"binary": draw_binary, "line": draw_line, "week": draw_circle}
 
-    def draw_worlds(vectors, regions, path):
-        """The three worlds side by side from ``vectors[name] = (E, D)``, kernel equations above; one row
-        per entry of ``regions`` (a bool: draw each token's argmax cone)."""
-        fig, ax = plt.subplots(len(regions), 3, figsize=(28, 9.6 * len(regions)), squeeze=False)
-        for _row, _reg in zip(ax, regions):
-            for _a, _name in zip(_row, DRAW):
-                DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=_reg)
-        _top = 1 - 0.16 / len(regions)                 # the equations' band, one row's worth
-        fig.tight_layout(rect=(0, 0, 1, _top), pad=0.6)
-        for _a, _eq in zip(ax[0], EQS):
+    def draw_worlds(vectors, path, regions=True):
+        """The three worlds side by side from ``vectors[name] = (E, D)``, kernel equations above and each
+        token's argmax cone behind."""
+        fig, ax = plt.subplots(1, 3, figsize=(28, 9.6))
+        for _a, _name in zip(ax, DRAW):
+            DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=regions)
+        fig.tight_layout(rect=(0, 0, 1, 0.84), pad=0.6)
+        for _a, _eq in zip(ax, EQS):
             _p = _a.get_position()                     # one shared height for the three equations
             fig.text((_p.x0 + _p.x1) / 2, 0.99, _eq, ha="center", va="top", fontsize=27, linespacing=1.5)
         return plot_utils.save_figure(fig, FIGURES / path)
@@ -447,7 +445,7 @@ def _(WORLDS, cka, gauge, graph_overrides, load_run, np, oracle):
 
 @app.cell
 def _(draw_worlds, learned):
-    draw_worlds(learned, regions=(False, True), path="concepts_worlds_learned.png")
+    draw_worlds(learned, path="concepts_worlds_learned.png")
     return
 
 
