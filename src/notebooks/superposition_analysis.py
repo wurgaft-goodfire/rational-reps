@@ -41,7 +41,7 @@ def _(mo):
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
     from hydra.core.override_parser.overrides_parser import OverridesParser
     from omegaconf import OmegaConf
-    from src.code.analysis_utils import feature_vectors, has_run, leverage, load_run
+    from src.code.analysis_utils import feature_vectors, has_run, leverage, load_run, rigid_map
     from src.code.geometry import factor_logcond, modes, pair_features
     from src.code.train import resolve_config
     from src.code import plot_utils
@@ -90,6 +90,7 @@ def _(mo):
         pair_features,
         plot_utils,
         plt,
+        rigid_map,
     )
 
 
@@ -360,8 +361,12 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 4 — spectrum
-    Singular values of the row-centred logits $h(z) D^\top$ over states, per state ($\sigma_k(\Lambda)/\sqrt{n}$); gauge-invariant.
+    ## Figure 4 — the frame, feature by feature
+    Whitened first-order vectors $E(E^\top E)^{-1/2}$ (rows of unit-or-shorter length, squared length the
+    leverage), grouped by the theory's allocation: represented ($d_i \ge 0.5$) and partial
+    ($0.05 \le d_i < 0.5$). Each panel is the top two principal directions of the theory group's span;
+    theory in grey, trained in colour by feature rank. Every seed's frame is rotated rigidly onto the
+    first seed's theory frame before averaging, so the means are of aligned vectors.
     """)
     return
 
@@ -377,44 +382,44 @@ def _(
     CONFIG,
     D_GRID,
     NOT_YET,
-    RUNNERS,
     SEL_F4,
     mo,
     np,
     plot_utils,
     plt,
+    rigid_map,
     rows_for,
     selector_row,
 ):
     _sel = rows_for(SEL_F4.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
 
-    def _spectrum(_row, _c):
-        _H, _D = _row["model"][_c]
-        _L = _H @ _D.T
-        return np.linalg.svd(_L - _L.mean(1, keepdims=True), compute_uv=False)[:_H.shape[1]] / np.sqrt(len(_L))
+    def _whiten(E):
+        """E (E'E)^{-1/2} up to a rotation: rows are the whitened feature vectors."""
+        _U, _, _Vt = np.linalg.svd(np.asarray(E, float), full_matrices=False)
+        return _U @ _Vt
 
-    _fig, _axes = plt.subplots(1, 3, figsize=(15, 4.0))
-    for _ax, _d in zip(_axes, D_GRID):
-        _x = 1 + np.arange(int(_d))
-        for _run, (_lbl, _col) in RUNNERS.items():
-            if _run not in _sel["runners"]:
+    _GROUPS = [("represented", 0.5, 1.01), ("partial", 0.05, 0.5)]
+    _fig, _axes = plt.subplots(len(_GROUPS), 3, figsize=(13.2, 4.4 * len(_GROUPS)), layout="constrained", squeeze=False)
+    for _c, _d in enumerate(D_GRID):
+        _rows = _sel["rows"][_d]
+        _ref = _whiten(_rows[0]["E"]["theory"])                                     # the frame every seed is aligned to
+        _Wp = np.mean([_whiten(_row["E"]["theory"]) @ rigid_map(_whiten(_row["E"]["theory"]), _ref) for _row in _rows], 0)
+        _Wt = np.mean([_whiten(_row["E"]["linear"]) @ rigid_map(_whiten(_row["E"]["linear"]), _ref) for _row in _rows], 0)
+        _lev = (_Wp ** 2).sum(1)
+        for _r, (_name, _lo, _hi) in enumerate(_GROUPS):
+            _idx = np.flatnonzero((_lev >= _lo) & (_lev < _hi)); _ax = _axes[_r, _c]
+            _ax.set_title(f"d = {_d} — {_name} ({len(_idx)} features)", fontsize=11)
+            _ax.set_xlim(-1.1, 1.1); _ax.set_ylim(-1.1, 1.1); _ax.set_aspect("equal"); _ax.set_xticks([]); _ax.set_yticks([])
+            if len(_idx) < 2:
                 continue
-            _rm = np.array([_spectrum(_row, _run) for _row in _sel["rows"][_d]])
-            _mu, _se = _rm.mean(0), _rm.std(0) / np.sqrt(len(_rm))
-            _ax.plot(_x, _mu, "o-" if _run == "linear" else "-", ms=4, lw=1.2 if _run == "linear" else 1.8, color=_col, label=_lbl)
-            _ax.fill_between(_x, _mu - _se, _mu + _se, color=_col, alpha=0.25, lw=0)
-        _pr = np.array([_spectrum(_row, "theory") for _row in _sel["rows"][_d]])
-        _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
-        _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
-        _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
-        _ax.set_title(f"d = {_d}")
-        _ax.set_xlabel("mode")
-        plot_utils.FIG.style_axes(_ax)
-    _axes[0].set_ylabel(r"$\sigma_k(\Lambda) / \sqrt{n}$")
-    _axes[0].legend(frameon=False, fontsize=9)
-    _fig.suptitle(_sel["title"], y=1.02)
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_spectra"))
+            _P = np.linalg.svd(_Wp[_idx], full_matrices=False)[2][:2]                # the theory group's top-2 span
+            for _W, _col, _lw, _z in [(_Wp, "0.65", 2.4, 2), (_Wt, None, 1.3, 3)]:
+                for _k, (_x, _y) in zip(_idx, _W[_idx] @ _P.T):
+                    _ax.annotate("", xy=(_x, _y), xytext=(0, 0), zorder=_z,
+                                 arrowprops=dict(arrowstyle="->", lw=_lw, color=_col or plt.cm.plasma(min(_k, 30) / 30)))
+    _fig.suptitle(_sel["title"])
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
     mo.vstack([selector_row(SEL_F4), _out])
     return
 
@@ -422,64 +427,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 5 — readout Grams
-    Whitened Gram $D(D^\top D)^{+}D^\top$ over outcomes of the balanced readout, `factor_logcond` of the
-    logit table at rank $d$ (row-centring the logits removes the softmax shift, a common offset of every
-    saved readout row that would soak up leverage), top 16, seed means; gauge-free.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(setting_ui):
-    SEL_F5 = setting_ui()
-    return (SEL_F5,)
-
-
-@app.cell
-def _(
-    CONFIG,
-    D_GRID,
-    NOT_YET,
-    RUNNERS,
-    SEL_F5,
-    balanced_factors,
-    mo,
-    np,
-    plot_utils,
-    plt,
-    projector,
-    rows_for,
-    selector_row,
-):
-    _sel = rows_for(SEL_F5.value)
-    mo.stop(_sel["rows"] is None, NOT_YET)
-    _K = 16
-    # the balanced readout from the logit table: row-centring the logits removes the softmax shift (one
-    # vector added to every saved readout row, 0.8 of a row's norm when trained) that would soak up leverage
-    _gram = lambda _row, _c, _d: projector(balanced_factors(*_row["model"][_c], int(_d))[1])[:_K, :_K]
-    _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
-    _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
-    for _c, _d in enumerate(D_GRID):
-        _panels = [(np.mean([_gram(_row, "linear", _d) for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
-                   (np.mean([_gram(_row, "theory", _d) for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
-        _panels += [(np.mean([_gram(_row, _run, _d) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
-        for _r, (_Gm, _lbl) in enumerate(_panels):
-            _ax = _axes[_r, _c]
-            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
-            _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
-            _ax.set_xticks([]); _ax.set_yticks([])
-    _fig.colorbar(_im, ax=_axes.ravel().tolist(), shrink=0.5, pad=0.02)
-    _fig.suptitle(_sel["title"])
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig5_decoder_grams"))
-    mo.vstack([selector_row(SEL_F5), _out])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Figure 6 — features and pairs together
+    ## Figure 5 — features and pairs together
     Whitened Gram of the regression vectors of the saved representation on $[1, z - \bar z, \phi(z)]$ (gauge-free): the top 16 features
     and the 15 pairs among the top 6, colour scale set by the pair blocks (the feature block
     saturates).
@@ -541,8 +489,65 @@ def _(
             _ax.set_xticks([]); _ax.set_yticks([])
         _fig.colorbar(_im, ax=_axes[:, _c].tolist(), shrink=0.5, pad=0.02)        # one bar per column: its own pair scale
     _fig.suptitle(_sel["title"])
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig6_extended_grams"))
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig5_extended_grams"))
     mo.vstack([selector_row(SEL_F6), _out])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Figure 6 — readout Grams
+    Whitened Gram $D(D^\top D)^{+}D^\top$ over outcomes of the balanced readout, `factor_logcond` of the
+    logit table at rank $d$ (row-centring the logits removes the softmax shift, a common offset of every
+    saved readout row that would soak up leverage), top 16, seed means; gauge-free.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(setting_ui):
+    SEL_F5 = setting_ui()
+    return (SEL_F5,)
+
+
+@app.cell
+def _(
+    CONFIG,
+    D_GRID,
+    NOT_YET,
+    RUNNERS,
+    SEL_F5,
+    balanced_factors,
+    mo,
+    np,
+    plot_utils,
+    plt,
+    projector,
+    rows_for,
+    selector_row,
+):
+    _sel = rows_for(SEL_F5.value)
+    mo.stop(_sel["rows"] is None, NOT_YET)
+    _K = 16
+    # the balanced readout from the logit table: row-centring the logits removes the softmax shift (one
+    # vector added to every saved readout row, 0.8 of a row's norm when trained) that would soak up leverage
+    _gram = lambda _row, _c, _d: projector(balanced_factors(*_row["model"][_c], int(_d))[1])[:_K, :_K]
+    _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
+    _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
+    for _c, _d in enumerate(D_GRID):
+        _panels = [(np.mean([_gram(_row, "linear", _d) for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
+                   (np.mean([_gram(_row, "theory", _d) for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
+        _panels += [(np.mean([_gram(_row, _run, _d) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
+        for _r, (_Gm, _lbl) in enumerate(_panels):
+            _ax = _axes[_r, _c]
+            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
+            _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
+            _ax.set_xticks([]); _ax.set_yticks([])
+    _fig.colorbar(_im, ax=_axes.ravel().tolist(), shrink=0.5, pad=0.02)
+    _fig.suptitle(_sel["title"])
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig6_decoder_grams"))
+    mo.vstack([selector_row(SEL_F5), _out])
     return
 
 
