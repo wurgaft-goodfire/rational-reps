@@ -23,3 +23,4 @@ training_kwargs:
   compile_mode: default # default | reduce-overhead | max-autotune
 
 eval_kwargs:
+  batch_size: 1024        # streams the evaluator scores (sequence tasks); outside the run key

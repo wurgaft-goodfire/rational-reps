@@ -140,3 +140,33 @@ def test_hidden_input_evaluator_scores_sampled_streams_against_the_exact_posteri
         for t in range(L):
             post = torch.softmax(lp0 + logp[:, ev.inputs[b, 1:1 + t]].sum(1), dim=0)   # after t observations
             assert torch.allclose(ev.targets[b, t], post.float(), atol=1e-6), (b, t)
+
+
+def test_evaluator_keeps_and_saves_the_sampled_batch_dict(tmp_path):
+    # the streams the evaluator scores are the dataset's own batch dict: every key it returns
+    # (input_ids, labels, ...) is kept and saved, so the latent behind each stream survives in
+    # the labels of a hidden-input task; eval_kwargs.batch_size sets how many streams, apart
+    # from the training batch
+    cfg = OmegaConf.create({
+        "setting": "graph-cooccurrence", "structure": "feature_cube",
+        "structure_kwargs": {"m": 2, "paired": True, "all_bundles": True},
+        "sample_mode": "sequence", "infer_latent": True, "random_seed": 0,
+        "training_kwargs": {"batch_size": 4, "context_length": 8},
+        "eval_kwargs": {"batch_size": 6}, "eval_file": "eval.npz",
+    })
+    config = Config(cfg)
+    dataset = KernelDataset(config)
+    ev = Evaluator(config, dataset)
+    assert set(ev.batch) >= {"input_ids", "labels"}
+    assert ev.inputs.shape == (6, 9) and ev.targets.shape == (6, 8, dataset.n_items)
+    z = ev.batch["labels"][:, 1:] - dataset.n_outcomes - 1
+    assert (z == z[:, :1]).all() and (0 <= z).all() and (z < dataset.n_items).all()
+    assert dataset[0]["input_ids"].shape[0] == 4                        # training batch untouched
+
+    class Model:
+        output_key = "logits"
+        def __call__(self, ids, output_hidden_states=False):
+            return {"logits": torch.zeros(*ids.shape, dataset.vocab_size), "hidden_states": ()}
+    saved = np.load(ev.save(ev.evaluate(Model()), str(tmp_path), step=1))
+    assert (saved["labels"] == ev.batch["labels"].numpy()).all()
+    assert (saved["inputs"] == ev.inputs.numpy()).all()

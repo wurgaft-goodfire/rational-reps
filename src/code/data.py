@@ -200,7 +200,12 @@ class KernelDataset(Dataset):
         return torch.full((B, 1), self.start_token, dtype=torch.long, device=self.device)
 
     def __getitem__(self, i=None):
-        B = self._batch_size()
+        return self.batch()
+
+    def batch(self, size=None):
+        """One sampled batch as the dict the model consumes (``input_ids``, ``labels``, ...);
+        ``size`` streams for a sequence task, default ``training_kwargs.batch_size``."""
+        B = size or self._batch_size()
         if not self.sequential:
             return self._pointwise_batch()
         L = self.context_length

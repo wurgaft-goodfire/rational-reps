@@ -46,10 +46,13 @@ class Evaluator:
         if dataset.sequential:
             training_rng = dataset.rng
             dataset.rng = torch.Generator(device=dataset.device).manual_seed(int(config.random_seed))
-            self.inputs = dataset[0]["input_ids"].cpu()                          # (B, T) tokens
+            # the dataset's own batch dict, kept whole: its labels carry the latent behind each stream
+            self.batch = {k: v.cpu() for k, v in dataset.batch(config.get("eval_kwargs.batch_size")).items()}
             dataset.rng = training_rng
+            self.inputs = self.batch["input_ids"]                                # (B, T) tokens
             targets = dataset.optimal_predictions(self.inputs.to(dataset.device))   # (B, T-1, C): target t <-> output t
         else:
+            self.batch = {}
             self.inputs = dataset.model_inputs().cpu()                           # (n, arity [+1])
             # the exact row for each input: appended dummy outcome column, then the last prediction
             padded = torch.cat([self.inputs, torch.zeros_like(self.inputs[:, :1])], dim=1)
@@ -59,7 +62,8 @@ class Evaluator:
 
     def evaluate(self, model) -> dict:
         """The forward pass on the fixed batch, as numpy: ``loss`` KL(model || true) over the scored
-        positions, ``inputs`` (B, T) tokens, ``targets`` (B, T-1, C) exact distributions with target t
+        positions, ``inputs`` (B, T) tokens, the rest of the sampled batch dict (``labels``, ...),
+        ``targets`` (B, T-1, C) exact distributions with target t
         paired to output t (static: (n, C)), ``logits`` (B, T, C) over the outcome tokens,
         ``hidden_states`` (layers, B, T, width) every layer at every position, and ``readout``
         (C, width) the rows that read the last layer; the last two None for a readout that reads
@@ -79,6 +83,7 @@ class Evaluator:
         if hasattr(model, "train"):
             model.train()
         return {"loss": float(loss), "inputs": self.inputs.numpy(), "targets": self.targets.numpy(),
+                **{k: v.numpy() for k, v in self.batch.items() if k != "input_ids"},
                 "logits": logits.numpy(), "hidden_states": hidden,
                 "readout": None if readout is None else decoder_weights(model, self.dataset)}
 
