@@ -186,8 +186,7 @@ def _(mo):
     ## Figure 1 — allocation
     Leverage $d_i$ of the first-order vectors (diagonal of the hat matrix $E (E^\top E)^{+} E^\top$,
     gauge-invariant): per-seed trained dots, reference means $\pm$ se, and the predicted
-    allocation (water filling plus the soft tail). Dotted levels: the leverage cuts that group features in
-    Figure 4, $\tfrac12$ and $\tfrac1{20}$.
+    allocation (water filling plus the soft tail).
     """)
     return
 
@@ -202,7 +201,6 @@ def _(setting_ui):
 def _(
     COL,
     CONFIG,
-    CUTS,
     D_GRID,
     NOT_YET,
     RUNNERS,
@@ -234,8 +232,6 @@ def _(
         _pr = np.array([_lev(_row, "theory") for _row in _sel["rows"][_d]])
         _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
         _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
-        for _lvl in CUTS.values():                                    # the groups of figure 4
-            _ax.axhline(_lvl, color="0.75", lw=0.8, ls=":", zorder=0)
         _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
         _ax.set_title(f"d = {_d}")
         _ax.set_xlabel("feature $i$" if _sel["rho"] == 0.0 else "mode $k$")
@@ -368,11 +364,13 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 4 — the frame, feature by feature
-    Whitened first-order vectors $E(E^\top E)^{-1/2}$ (squared length the leverage), grouped by the theory's
-    allocation: represented, $d_i \ge \tfrac12$ (more than half a dimension), and partial, $\tfrac1{20} \le d_i
-    < \tfrac12$; the dropped features below $\tfrac1{20}$ are not drawn. Trained beside theory in the same
-    plane, the top two principal directions of the theory group's span, colour by feature rank. Every seed's
-    frame is rotated rigidly onto the first seed's theory frame before averaging.
+    Whitened first-order vectors $E(E^\top E)^{-1/2}$ (squared length the leverage), in three dimensions:
+    the top three principal directions of the theory group's span (completed from the whole frame when
+    the group has fewer than three vectors). Trained beside theory; the trained frame is carried onto the
+    theory's by orthogonal Procrustes in the full $d$-dimensional space first, then projected, as in the
+    inference figures; every seed's frame is aligned to the first seed's theory frame before averaging.
+    Rows are the theory's allocation groups, cuts on leverage: represented $d_i \ge \tfrac12$ and partial
+    $\tfrac1{20} \le d_i < \tfrac12$; dropped features ($d_i < \tfrac1{20}$) are not drawn. Colour: feature rank.
     """)
     return
 
@@ -406,9 +404,32 @@ def _(
         _U, _, _Vt = np.linalg.svd(np.asarray(E, float), full_matrices=False)
         return _U @ _Vt
 
-    _GROUPS = [("represented", CUTS["represented"], 1.01), ("partial", CUTS["partial"], CUTS["represented"])]
-    _fig, _axes = plt.subplots(len(_GROUPS), 6, figsize=(19.8, 3.6 * len(_GROUPS)), layout="constrained", squeeze=False)
-    for _c, _d in enumerate(D_GRID):
+    _GROUPS = [(r"represented:  $d_i \geq \frac{1}{2}$", CUTS["represented"], 1.01),
+               (r"partial:  $\frac{1}{20} \leq d_i < \frac{1}{2}$", CUTS["partial"], CUTS["represented"])]
+
+    def _basis3(_group, _frame):
+        """Top-3 directions of the group's span, completed from the whole frame's when it has fewer rows."""
+        _B = np.linalg.svd(_group, full_matrices=False)[2][:3]
+        if len(_B) < 3:
+            _rest = _frame - _frame @ _B.T @ _B                                         # the frame outside the group's span
+            _B = np.vstack([_B, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_B)]])
+        return _B
+
+    def _frame_panel(_ax, _W, _idx, _B, _title):
+        _xyz = _W[_idx] @ _B.T
+        for _k, (_x, _y, _z) in zip(_idx, _xyz):
+            _ax.quiver(0, 0, 0, _x, _y, _z, color=plt.cm.plasma(min(_k, 30) / 30), lw=3.2, arrow_length_ratio=0.22)
+        _ax.set_xlim(-0.9, 0.9); _ax.set_ylim(-0.9, 0.9); _ax.set_zlim(-0.9, 0.9); _ax.set_box_aspect((1, 1, 1), zoom=1.45)
+        _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_zticks([])
+        for _pane in (_ax.xaxis, _ax.yaxis, _ax.zaxis):
+            _pane.pane.set_facecolor((1, 1, 1, 0))
+        _ax.set_title(_title, fontsize=11)
+
+    _fig = plt.figure(figsize=(19.8, 3.4 * len(_GROUPS)), layout="constrained")
+    _sfs = _fig.subfigures(1, 3, wspace=0.02)
+    for _c, (_d, _sf) in enumerate(zip(D_GRID, _sfs)):
+        _sf.suptitle(f"d = {_d}", fontsize=15)
+        _gs = _sf.add_gridspec(len(_GROUPS), 2, wspace=0, hspace=0)
         _rows = _sel["rows"][_d]
         _ref = _whiten(_rows[0]["E"]["theory"])                                     # the frame every seed is aligned to
         _Wp = np.mean([_whiten(_row["E"]["theory"]) @ rigid_map(_whiten(_row["E"]["theory"]), _ref) for _row in _rows], 0)
@@ -416,16 +437,14 @@ def _(
         _lev = (_Wp ** 2).sum(1)
         for _r, (_name, _lo, _hi) in enumerate(_GROUPS):
             _idx = np.flatnonzero((_lev >= _lo) & (_lev < _hi))
-            _P = np.linalg.svd(_Wp[_idx], full_matrices=False)[2][:2] if len(_idx) >= 2 else None   # the theory group's top-2 span
+            _B = _basis3(_Wp[_idx], _Wp) if len(_idx) else None
             for _j, (_W, _lbl) in enumerate([(_Wt, "trained"), (_Wp, "theory")]):
-                _ax = _axes[_r, 2 * _c + _j]
-                _ax.set_title(f"d = {_d} — {_lbl}, {_name} ({len(_idx)})", fontsize=11)
-                _ax.set_xlim(-1.1, 1.1); _ax.set_ylim(-1.1, 1.1); _ax.set_aspect("equal"); _ax.set_xticks([]); _ax.set_yticks([])
-                if _P is None:
-                    continue
-                for _k, (_x, _y) in zip(_idx, _W[_idx] @ _P.T):
-                    _ax.annotate("", xy=(_x, _y), xytext=(0, 0), zorder=3,
-                                 arrowprops=dict(arrowstyle="->", lw=1.6, color=plt.cm.plasma(min(_k, 30) / 30)))
+                _ax = _sf.add_subplot(_gs[_r, _j], projection="3d")
+                _ax.set_title(f"{_lbl} ({len(_idx)})", fontsize=11)
+                if _B is not None:
+                    _frame_panel(_ax, _W, _idx, _B, f"{_lbl} ({len(_idx)})")
+                if _c == 0 and _j == 0:
+                    _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
     _fig.suptitle(_sel["title"])
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
     mo.vstack([selector_row(SEL_F4), _out])
