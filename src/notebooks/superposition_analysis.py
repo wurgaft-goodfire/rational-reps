@@ -756,5 +756,83 @@ def _(
     return
 
 
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Figure 8 — allocation across the sweep
+    Figure 1 over the same grid as figure 7: leverage $d_i$ of the first $3d$ features, a mega-row per $d$
+    (largest first), sparsity $p$ falling left to right. Per-seed trained dots, reference means $\pm$ se, the
+    predicted allocation dashed.
+    """)
+    return
+
+
+@app.cell
+def _(B_KEY, GRID, R_KEY, mo):
+    SEL_F8 = mo.ui.dictionary({
+        "beta": mo.ui.dropdown(options=GRID[B_KEY], value="0.5", label="ladder slope β"),
+        "rho": mo.ui.dropdown(options=GRID[R_KEY], value="0.0", label="correlation ρ"),
+    })
+    return (SEL_F8,)
+
+
+@app.cell
+def _(
+    COL,
+    CONFIG,
+    D_GRID,
+    NOT_YET,
+    P_SWEEP,
+    RUNNERS,
+    SEL_F8,
+    leverage,
+    load_cell,
+    mo,
+    np,
+    plot_utils,
+    plt,
+):
+    _b, _r = SEL_F8.value["beta"], SEL_F8.value["rho"]
+    _cells = {(_d, _p): load_cell(_p, _b, _r, _d) for _d in D_GRID for _p in P_SWEEP}
+    mo.stop(any(_rows is None for _rows in _cells.values()), NOT_YET)
+    _runs = set.intersection(*[set(_rows[0]["model"]) - {"theory"} for _rows in _cells.values()])   # classes present everywhere
+    _lev = lambda _row, _c, _n: leverage(_row["E"][_c])[0][:_n]
+
+    _fig = plt.figure(figsize=(15.5, 4.2 * len(D_GRID)), layout="constrained")
+    for _row, (_d, _sf_row) in enumerate(zip(D_GRID[::-1], _fig.subfigures(len(D_GRID), 1, hspace=0.06))):   # a mega-row per d, largest first
+        _n = 3 * int(_d)                                                                     # the first 3d features, past every tail
+        _sf_d, _sf_blocks = _sf_row.subfigures(1, 2, wspace=0.0, width_ratios=[0.045, 1])
+        _sf_d.text(0.35, 0.5, f"$d$ = {_d}", rotation=90, va="center", ha="center", fontsize=26)
+        _axes = _sf_blocks.subplots(1, 3, sharey=True)
+        for _col, (_p, _ax) in enumerate(zip(P_SWEEP, _axes)):
+            _rows = _cells[_d, _p]
+            _x = np.arange(_n)
+            for _seed in _rows:
+                _ax.plot(_x, _lev(_seed, "linear", _n), "o", ms=4, alpha=0.45, color=COL["blue"], label="trained" if _seed is _rows[0] else None)
+            for _run, (_lbl, _colr) in RUNNERS.items():
+                if _run == "linear" or _run not in _runs:
+                    continue
+                _rm = np.array([_lev(_seed, _run, _n) for _seed in _rows])
+                _mu, _se = _rm.mean(0), _rm.std(0) / np.sqrt(len(_rm))
+                _ax.plot(_x, _mu, "-", lw=1.8, color=_colr, label=_lbl)
+                _ax.fill_between(_x, _mu - _se, _mu + _se, color=_colr, alpha=0.25, lw=0)
+            _pr = np.array([_lev(_seed, "theory", _n) for _seed in _rows])
+            _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
+            _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
+            _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
+            if _row == 0:
+                _ax.set_title(f"$p$ = {_p}", fontsize=26, pad=14)
+            _ax.set_xlabel("feature $i$" if float(_r) == 0.0 else "mode $k$")
+            _ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+            plot_utils.FIG.style_axes(_ax)
+        _axes[0].set_ylabel(r"leverage $d_i$")
+        if _row == 0:
+            _axes[0].legend(frameon=False, fontsize=10)
+    _fig.suptitle(rf"$\beta$ = {_b}, $\rho$ = {_r}")
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig8_allocation_sweep"))
+    mo.vstack([mo.hstack([SEL_F8["beta"], SEL_F8["rho"]], justify="start", gap=2), _out])
+    return
+
+
 if __name__ == "__main__":
     app.run()
