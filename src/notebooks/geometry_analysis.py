@@ -47,6 +47,7 @@ def _(mo):
         cka_null,
         cka_shuffle_null,
         class_means,
+        factor_logcond,
         graph_conditional,
         graph_overrides,
         io,
@@ -203,16 +204,17 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, apply_lapse, log_conditional, plot_utils):
+def _(FIGURES, apply_lapse, factor_logcond, log_conditional, plot_utils):
     from src.code.data import relation_tensor
 
-    # the helix relation's conditional, every (note, interval) pair as a row; the first four
-    # note blocks, not all 144 rows, so the columns stay readable
+    # the helix relation's conditional, every (note, interval) pair as a row, factored whole; the
+    # first four note blocks are drawn, not all 144 rows, so the columns stay readable
     pitch = relation_tensor({"relation": "pitch_transpose"})
     pitch_log = log_conditional(apply_lapse(pitch.reshape(-1, pitch.shape[-1])))
     rows = slice(0, 4 * pitch.shape[1])
+    _, E_pitch, D_pitch, _ = factor_logcond(pitch_log)                 # the whole task's factors; only the first rows are drawn
     fig_fact_rel, _ = plot_utils.plot_factorization(
-        pitch_log[rows], k=4, item_label=r"inputs  $(a,b)$", outcome_label=r"outputs  $c$",
+        pitch_log[rows], k=4, factors=(E_pitch[rows], D_pitch), item_label=r"inputs  $(a,b)$", outcome_label=r"outputs  $c$",
         figsize=(16, 5.6), embedding_width=0.1, decoder_height=0.15, conditional_aspect=0.5)
     plot_utils.save_figure(fig_fact_rel, FIGURES / "relational_factorization.png")
     return
@@ -222,18 +224,18 @@ def _(FIGURES, apply_lapse, log_conditional, plot_utils):
 def _(FIGURES, geometry_panel, plot_utils):
     from src.code.data import answer_classes
 
-    RUNNERS = ["rel_transformer", "rel_rnn", "rel_mlp", "rel_linear_paired", "rel_mlp_paired"]
+    RUNNERS = {"rel_transformer": "transformer", "rel_rnn": "rnn", "rel_mlp": "mlp", "rel_linear_paired": "linear"}
     RELATIONS = ["approx_add", "pitch_transpose", "between",
                  "feature_taxonomy", "set_difference", "entailment"]
 
     figs_rel = {}
     for relation in RELATIONS:
         classes, draw_spec = answer_classes(relation)
-        runs = {runner.removeprefix("rel_"): [f"runner={runner}", f"relation={relation}"] for runner in RUNNERS}
+        runs = {label: [f"runner={runner}", f"relation={relation}"] for runner, label in RUNNERS.items()}
         figs_rel[relation] = geometry_panel(f"relational_{relation}", runs,
                                             spec=draw_spec, classes=classes)
 
-    fig_rel_main = plot_utils.merge_panels(list(figs_rel.values()), labels=RELATIONS)
+    fig_rel_main = plot_utils.merge_panels(list(figs_rel.values()))
     plot_utils.save_figure(fig_rel_main, FIGURES / "relational_predictions_main.png", dpi=600)
     return
 
