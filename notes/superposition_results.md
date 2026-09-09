@@ -9,14 +9,22 @@ seeds coupled. Numbers below are 5-seed means at d = 3 / 6 / 12 unless stated.
 1. **Allocation** — water filling (`allocate_d`): d_i vs trained leverage 0.98 / 0.99 / 0.99.
 2. **Orientation** — the linear Fantope program on the compression pressure a_ij, diagonal
    free, then a fixed-diagonal realization (`fantope_geometry` + `tight_frame(init=P)`):
-   placement (off-diagonal correlation, top-16 whitened Gram, seed means) 0.61 / 0.72 / 0.33
-   against a pairs-class ceiling of 0.85 / 0.64 / 0.43. Produces the soft tail.
+   placement 0.67 / 0.73 / 0.46 on the feature side and 0.79 / 0.71 / 0.50 on the readout side,
+   level with the pairs model (0.65 / 0.69 / 0.50; 0.81 / 0.81 / 0.55) and above one trained
+   seed's agreement with the rest (0.54 / 0.44 / 0.26; 0.72 / 0.51 / 0.29). Produces the soft
+   tail. Placement = off-diagonal correlation, top 16 features, of the whitened Grams of the
+   shared frame (each seed's whitened frame rotated onto the first predicted frame by
+   orthogonal Procrustes in R^d, then averaged, then the Gram). The earlier measure, the mean
+   of per-seed leverage projectors, gives 0.60 / 0.69 / 0.24 for the theory.
 3. **Completion** — decoder and pair block solved exactly at the fixed frame by convex block
    alternation (`repair`): CE 0.316 → 0.228 / 0.205 → 0.143 / 0.145 → 0.092 (trained
-   0.207 / 0.130 / 0.077); head sizes 11.5 / 10.2 / 9.0 vs trained 11.2 / 11.0 / 9.7.
+   0.207 / 0.130 / 0.077). Sizes in the balanced per-state gauge of Figure 2, where the Bayes
+   table's head would read ≈ 2.1 α₁ ≈ 17: head 23.3 / 21.0 / 16.5 vs trained 23.9 / 23.2 / 20.1;
+   second and third features 14.1, 9.9 / 11.2, 9.4 / 8.0, 6.4 vs trained 14.9, 11.8 / 12.8,
+   10.6 / 11.2, 9.3.
 4. **Benchmark** — the additive-plus-pairs class optimum, which the SGD pairs runner
    (`runner=paired_features`) reaches (biconvex refinement moved its CE in the fourth decimal):
-   reproduces the trained network's CE within ~3% and its placement at 0.85 / 0.64 / 0.43.
+   reproduces the trained network's CE within ~3% and its placement as in item 2.
 
 ## What is established
 
@@ -55,33 +63,64 @@ seeds coupled. Numbers below are 5-seed means at d = 3 / 6 / 12 unless stated.
   Fantope solution into an unrealizable mixture (η = 0.9–3.7); the pair-integrated a_eff, H_eff
   destroys the orientation at the compressed background and is neutral at the realized one;
   integrating out resizing + pairs (Schur) reverses the pressure — expansion-point artifacts.
+- **The pairs class saturates at n_top ≈ 12–18** (biconvex pairs class, n_top ∈ {0, 6, 12, 18,
+  24, 32, 48, 64}). Fresh-draw CE is lowest there (0.223 / 0.139 / 0.084) and rises beyond 32
+  (interpolation; at n_top = 64, 2081 features > 2048 states, fresh-draw CE 3–5). Placement peaks
+  at 6–12 and head sizes are flat past 6. Widening pairs does not approach the network: the
+  remaining ~6% CE gap (0.2195 vs 0.2073 on the training states) and the second/third-feature
+  sizes are beyond pairs — higher Walsh levels, or the network's free per-state table fitting its
+  own draw (it has no fresh-draw evaluation; the states are its vocabulary). n_top = 18 stays.
 
 ## Figures (notebook `superposition_analysis.py`)
 
-Every figure has its own p / β / ρ selectors and reads the sweep grid (540 cells × linear, pairs,
-additive) lazily from each run's saved evaluation (`eval.npz`: logits, representation, readout);
-no model is constructed in the notebook.
+Every figure has its own selectors (p / β / ρ; the two merged figures β / ρ only) and reads the
+sweep grid (540 cells × linear, pairs, additive) lazily from each run's saved evaluation
+(`eval.npz`: logits, representation, readout); no model is constructed in the notebook. The theory
+is a run of its own (`runner=theory`): the rank-constrained model's own H = z E★ + φ(z) E₂ + e₀
+and D, stored as the completion returns them (E★ a Parseval frame, the scale in D). Trained models
+stay in their gauge too: the loss is flat along E → EA, D → DA⁻ᵀ, and AdamW leaves the state
+table 4.6–7.8× larger than the readout (SGD retrain: balanced to 0.4%).
 
-Every model is read from its saved representation h(z) and readout D (`eval.npz`), then the
-first-order vectors E_i of the least-squares fit h(z) ≈ h̄ + Σ E_i z_i. The theory is a run of its
-own (`runner=theory`): the rank-constrained model's own H = z E★ + φ(z) E₂ + e₀ and D, in the completion's
-gauge (E★ a Parseval frame, so its ‖E_i‖² is the leverage). Every model stays in its own gauge: the loss is flat
-along E → EA, D → DA⁻ᵀ, and AdamW leaves the state table 4.6–7.8× larger than the readout (SGD
-retrain: balanced to 0.4%), so only the gauge-invariant quantities (leverage, its projector, the
-spectrum of h Dᵀ) compare across models; the Grams are shown per model and labelled as such.
+Every model is read from its saved representation h(z) and readout D, then the first-order
+vectors E_i of the least-squares fit h(z) ≈ h̄ + Σ E_i z_i. Two readings (tex, appendix "Gauge
+and measurement"):
 
-1. Allocation: Fantope diagonal (water filling + soft tail) vs trained leverage.
-2. Feature sizes ‖E_i‖², each model in its own gauge; one theory series.
-3. Feature Grams E Eᵀ (standard display, strong diagonal): trained / pairs / additive / theory.
-4. Spectrum of the row-centred logits h Dᵀ (gauge-free).
-5. Readout Grams D Dᵀ of the saved readout.
-6. Soft tail: trained tail leverage vs ‖a·_j‖²/4δ² and the Fantope tail (log–log).
-7. Gram of the regression vectors of the representation on [1, z − z̄, φ(z)] over the top 16 features
-   and the 15 pairs among the top 6, colour scale set by the pair blocks. Trained feature–pair blocks carry definite signs at d = 3, 6, which the
-   theory reproduces in broad strokes at d = 3; pair–pair blocks are near-diagonal everywhere.
-   At d = 12 the theory's pair vectors anti-align systematically with specific features (a
-   stripe) while trained pairs are nearly orthogonal to the features — the completion
-   over-repairs there, the same regime as the tail overshoot.
+- **Gauge-free, for allocation and every Gram**: the whitened frame E (EᵀE)^{-1/2}, whose Gram is
+  the leverage projector (diagonal = leverage d_i, off-diagonals = the frame's overlaps). Across
+  seeds the *shared frame* is shown: each seed's whitened frame rotated onto the first predicted
+  frame by orthogonal Procrustes in R^d, averaged, then the Gram. Placement = the off-diagonal
+  correlation of two such Grams (top 16). The mean of per-seed Grams keeps each seed's private
+  wobble as haze (trained seed-to-seed off-diagonal correlation of per-seed projectors is only
+  0.40 / 0.37 / 0.15); the Gram of the mean frame keeps what the seeds share. The readout side is
+  read the same way from the balanced readout of the row-centred logit table (row-centring
+  removes the softmax shift, 0.8 of a row's norm when trained, which would otherwise soak up
+  leverage).
+- **Balanced, for sizes only**: `factor_logcond` of the row-centred logit table H Dᵀ at rank d,
+  E_bal = N^{1/4} U Σ^{1/2} (per-state scale, EᵀE/N = diag(σ_k/√N)). The Bayes table's sizes
+  are ≈ α_i/√(p(1−p)) ≈ 2.1 α_i on this scale.
+
+1. Allocation: leverage d_i of the first 24 features; per-seed trained dots, reference means ± se,
+   theory dashed.
+2. Feature sizes ‖E_i‖² in the balanced per-state gauge; one theory series.
+3. Feature Grams of the shared frame, top 16: trained / theory / pairs / additive; one colour
+   scale per figure, set by the largest off-diagonal entry (the diagonal saturates).
+4. The frame, feature by feature: whitened first-order vectors in 3-D, predicted beside trained
+   (trained carried onto predicted by Procrustes in R^d first, then projected). Two rows in their
+   own frames: the top three by leverage (Gram–Schmidt, head along z) and the band with d_i > 0.2
+   (its own top-3 PCA frame). Colour: α_i on a log scale.
+5. Features and pairs together: Gram of the shared frame of the regression vectors of the
+   representation on [1, z − z̄, φ(z)], top 16 features and the 15 pairs among the top 6, colour
+   scale set per column by the pair blocks (pair energy is 1–4% of feature energy). Trained
+   feature–pair blocks carry definite signs at d = 3, 6, which the theory reproduces in broad
+   strokes at d = 3; pair–pair blocks are near-diagonal everywhere. At d = 12 the theory's pair
+   vectors anti-align with specific features (a stripe) where trained pairs are nearly orthogonal
+   to them — the completion over-repairs there, the same regime as the tail overshoot.
+6. Readout Grams of the shared readout frame, same layout and scale rule as figure 3.
+7. Sparsity sweep in the toy-models layout: a mega-row per d (12, 6, 3), p = 0.3 / 0.15 / 0.05
+   across; per cell a predicted block and a trained block stacking the band frame of figure 4
+   (head and band together when the band has fewer than three vectors), the shared-frame Gram
+   (one scale over the figure) and black leverage bars for the first 3d features.
+8. Allocation sweep: figure 1 over the same grid.
 
 ## Sweep over sparsity, ladder slope and rank (2026-09-04)
 
@@ -89,8 +128,9 @@ spectrum of h Dᵀ) compare across models; the Grams are shown per model and lab
 β ∈ {0.25, 0.5, 1.0} × ρ ∈ {0, 0.3, 0.6} × d ∈ {3, 6, 12}, 5 seeds per cell. The theory is a model
 class of its own (`runner=theory`): `geometry.predicted_rank_constrained_geometry` solved per cell and stored as a
 rank-d linear run beside the trained classes, read like them.
-Notebook Figs 8a/8b (allocation small multiples) and 9 (score heatmaps; placement on the leverage
-projectors).
+Figure 8 shows the allocation profiles over p × d and figure 7 the frames, Grams and leverage
+bars. The placement numbers below were computed on the mean of per-seed leverage projectors, the
+measure before the shared frame.
 
 - **Allocation transfers everywhere**: leverage corr 0.83–1.00 over all 36 cells; weakest at
   β = 0.25 (flat ladder) and at d = 12.
@@ -130,8 +170,8 @@ a full map, pair-block orthogonality, oracle test at ρ = 0.6 (m = 16, d = 3), a
   is the culprit, and whether the ρ = 0.3 numbers survive the same measurement.
   The relaxation is basis-dependent; modes are the right basis for shared-factor correlation,
   which the ρ sweep uses. Open: a basis choice that covers both (e.g. pick the lower completed CE).
-- **Runs (Fig 10a/b): ρ ∈ {0.3, 0.6} at the reference cell, d ∈ {3, 6, 12}, 5 seeds, theory on the
-  modes.** Mode-space allocation transfers (leverage corr 0.96–0.99 at every ρ). Placement
+- **Runs: ρ ∈ {0.3, 0.6} at the reference cell, d ∈ {3, 6, 12}, 5 seeds, theory on the modes
+  (the ρ selector of every figure).** Mode-space allocation transfers (leverage corr 0.96–0.99 at every ρ). Placement
   (leverage projectors, top 16) falls with correlation: ρ = 0: +0.60 / +0.69 / +0.23 (d = 3 / 6 / 12);
   ρ = 0.3: +0.06 / +0.19 / +0.16; ρ = 0.6: +0.14 / +0.35 / +0.35. In feature space the trained Grams
   at ρ = 0.3, 0.6 stay near-diagonal with weak negative overlaps, much like ρ = 0; the theory at
@@ -251,14 +291,16 @@ seeds while every trained model is not; the analysis below is what that noise me
   positive, +0.05 to +0.13, where the pressure says negative); at β = 1.0 the pressure is ~0 and
   placement uninformative. The soft-tail log–log slope is ≈ 2 only at p = 0.15 (1.7 / 2.0); 1.1 at
   the reference cell, 0.4–1.0 elsewhere, so the slope-2 law is not general.
-- **Common gauge, d = 12**: in the state-table gauge the theory's sizes fall below every trained
-  class for features 1–8 (0.17 vs 0.30 at feature 2) while matching at d = 3, 6; the Fig 7
-  cross block shows the completion's pair vectors anti-aligned with specific features (a blue
-  stripe) that no trained class has.
+- **Sizes at d = 12**: in the balanced per-state gauge the theory's head is short of trained
+  (16.5 vs 20.1; features 2–3: 8.0, 6.4 vs 11.2, 9.3) while matching at d = 3, 6 (23.3 vs 23.9;
+  21.0 vs 23.2); the figure 5 cross block shows the completion's pair vectors anti-aligned with
+  specific features (a blue stripe) that no trained class has.
 - **d = 12**: (a) placement — a structured, mutually negative packing of the fractional tail
-  (features 4–15, α ≈ 2–3.6) that both reference models reproduce (0.48) and no frame score
-  predicts (~0); not pairs of dropped features, not head-vs-tail, not undertraining (4× steps
-  change nothing), not the second-order term. (b) The Fantope diagonal moves too much mass
+  (features 4–15, α ≈ 2–3.6). On the shared frame the theory reproduces about half of it
+  (0.46 / 0.50, feature / readout side), as do the pairs model (0.50 / 0.55) and the additive
+  model (0.51 / 0.65); on the mean of per-seed projectors the theory reads 0.24. The remainder
+  is not pairs of dropped features, not head-vs-tail, not undertraining (4× steps change
+  nothing), not the second-order term. (b) The Fantope diagonal moves too much mass
   into the tail, and (c) the completion's pair vectors anti-align with features where trained
   pairs are orthogonal to them. Common thread: the water level δ ≈ 0.005 is far below the
   second-order interference scale, so the near-degenerate tail (nearly uniform pressures) is
@@ -276,22 +318,10 @@ seeds while every trained model is not; the analysis below is what that noise me
 
 ## Next steps
 
-1. (done) `predicted_rank_constrained_geometry` = water filling → linear Fantope orientation → fixed-diagonal
-   frame E★ → exact completion at E★ (the random-frame control is a test on the pressure score); retired analytic-completion
-   functions deleted, `interference_curvature` deleted too (2026-09-08, tests only); notebook rebuilt on the new outputs.
-2. (done) Pair-set sweep of the biconvex pairs class, n_top ∈ {0, 6, 12, 18, 24, 32, 48, 64}.
-   The class saturates at n_top ≈ 12–18: fresh-draw CE is lowest there (0.223 / 0.139 / 0.084)
-   and rises beyond 32 (interpolation; at n_top = 64, 2081 features > 2048 states, fresh-draw
-   CE 3–5). Placement peaks at 6–12 (0.74 / 0.65) and head sizes are flat past 6
-   ([11.5, 6.4, 5.4] at d=3 vs trained [11.2, 8.1, 6.8]). Widening pairs does not approach the
-   network: the remaining ~6% CE gap (0.2195 vs 0.2073 on the training states) and the
-   second/third-feature sizes are beyond pairs — higher Walsh levels, or the network's free
-   per-state table fitting its own draw (it has no fresh-draw evaluation; the states are its
-   vocabulary). n_top = 18 stays.
-3. Notebook: a soft-tail panel (trained tail leverage vs ‖a·_j‖²/4δ² and vs the Fantope tail).
-4. d = 12: test whether the tail packing is set by the near-degenerate α ladder (perturb the
+1. Notebook: a soft-tail panel (trained tail leverage vs ‖a·_j‖²/4δ² and vs the Fantope tail).
+2. d = 12: test whether the tail packing is set by the near-degenerate α ladder (perturb the
    ladder slope; a simplex-like arrangement should follow the equal-α block) before looking
    for a new mechanism.
-5. (done) Hysteresis test: GD from the anti-pressure frame returns to the pressure pattern,
-   so orientation is an optimality statement of the joint class (tex updated accordingly).
-6. Commit.
+3. Soft/hard boundary: the residual-price alteration, tested against the 540-cell sweep.
+4. Figures 7 and 8 into the draft. The frame row at d = 12 needs a grouping that separates the
+   eleven band vectors; the top-3 PCA view shows three and piles the rest near the origin.

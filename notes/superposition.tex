@@ -285,37 +285,53 @@ The map alone does not fix raw feature norms: for any invertible \(A\),
 gradient descent from small initialization pins it, since \(E^\top E-D^\top D\) is
 conserved, so the solution is balanced; the trained models here use Adam, whose
 per-coordinate normalization does not conserve it (the state table \(E\) ends several
-times larger than \(D\); retrained with SGD the two agree to \(0.4\%\)). Raw scales
-are therefore an optimizer artefact, and every model, trained or predicted, is put
-in the same gauge: its logit table over states \(\Lambda=ED^\top\) (for the completed
-model, \(\Lambda=[Z,\ \phi(Z),\ \mathbf 1]\,[E^\star;E_2;e_0^\top]\,D\)) is row-centred,
-written \(\Lambda=U\Sigma V^\top\), and factored at rank \(d\) as
+times larger than \(D\); retrained with SGD the two agree to \(0.4\%\)), and the
+predicted model is stored as the completion returns it (\(E^\star\) a Parseval frame,
+the scale in \(D\)). Models are therefore compared through quantities that do not
+depend on \(A\), and every model's first-order vectors are read by one estimator, the
+least-squares fit \(h(z)\approx\bar h+\sum_iE_iz_i\) of its saved representation.
+
+\emph{Allocation and Grams} are read in the whitened coordinates of
+Equation~\eqref{eq:whitened-gauge}, \(\tilde E=E^{(1)}(E^{(1)\top}E^{(1)})^{-1/2}\).
+The leverage \(d_i=\|\tilde E_i\|^2\) is the diagonal of the projector
+\begin{equation}
+\boxed{
+\tilde E\tilde E^\top
+=
+E^{(1)}\big(E^{(1)\top}E^{(1)}\big)^{+}E^{(1)\top},
+}
+\label{eq:whitened-grams}
+\end{equation}
+and that projector is the Gram we display: the allocation on its diagonal, the signed
+overlaps of the frame off it, no scale left to choose. The readout is read the same way,
+\(D^\top(DD^\top)^{+}D\). Across seeds we compare the shared frame rather than the average
+Gram: each seed's whitened frame is carried onto the first predicted frame by orthogonal
+Procrustes over all rows in \(\mathbb R^d\), the frames are averaged, and the Gram of the
+mean frame is shown. The mean of per-seed Grams keeps every seed's private wobble as
+haze; the Gram of the mean frame keeps what the seeds agree on. Placement is the
+correlation of two such Grams' off-diagonal entries.
+
+\emph{Sizes} need a scale, and the loss offers none, so one gauge is imposed on every
+model's row-centred logit table over states (for the completed model
+\(\Lambda=[Z,\ \phi(Z),\ \mathbf 1]\,[E^\star;E_2;e_0^\top]\,D\)), written
+\(\Lambda=U\Sigma V^\top\), truncated to rank \(d\) and split evenly:
 \begin{equation}
 \boxed{
 E_{\mathrm{bal}}
 =
-U\Sigma^{1/2},
+N^{1/4}\,U\Sigma^{1/2},
 \qquad
 D_{\mathrm{bal}}
 =
-\Sigma^{1/2}V^\top .
+N^{-1/4}\,\Sigma^{1/2}V^\top,
 }
 \label{eq:balanced-factorization}
 \end{equation}
-The representation is then read off the balanced representation by one estimator for all
-models: the first-order vectors \(E_i\) of the least-squares fit
-\(h(z)\approx\bar h+\sum_i E_i z_i\) to \(E_{\mathrm{bal}}\), with sizes
-\(\|E_i\|^2\) and Grams
-\begin{equation}
-\boxed{
-G_E=EE^\top,
-\qquad
-G_D=D_{\mathrm{bal}}^\top D_{\mathrm{bal}} .
-}
-\label{eq:balanced-grams}
-\end{equation}
-Sizes are in the units of the state table, a factor \(\sqrt{Np(1-p)}\) below
-logit units, so \(\alpha_i\) is compared in those units.
+the factor \(N^{1/4}\) putting the state table on a per-state scale,
+\(E_{\mathrm{bal}}^\top E_{\mathrm{bal}}/N=\operatorname{diag}(\sigma_k/\sqrt N)\).
+Sizes are the \(\|E_i\|^2\) of the first-order vectors of \(E_{\mathrm{bal}}\); the Bayes
+table itself reads about \(\alpha_i/\sqrt{p(1-p)}\) on this scale, so amplification is a
+ratio to that reference rather than to \(\alpha_i\).
 
 \subsection{Correlated features: the predictive modes}
 \label{sec:modes}
@@ -345,7 +361,7 @@ structural change. Water filling, pressure, Fantope program, frame, and completi
 run unchanged on \((W, u)\); for a diagonal map they are the formulas of the previous
 sections, and for independent features \(C\propto I\) so the modes are the features.
 The trained networks are measured on the same coordinates (least squares of the
-balanced representation on \([1, u]\)); feature-space vectors follow as \(E = C^{-1/2}\tilde E\).
+representation on \([1, u]\)); feature-space vectors follow as \(E = C^{-1/2}\tilde E\).
 
 The choice is a modelling decision about the relaxation, not a theorem, and it is
 what makes correlated features work: across the sweep (\(\rho\in\{0.3,0.6\}\), every
@@ -362,7 +378,7 @@ features both coordinates predict the antipodal arrangement, the raw ones with t
 
 The allocation fixes each feature's total overlap; the tight-frame manifold leaves
 its placement and signs free. Trained networks are not uniform on that manifold:
-averaged over seeds they keep negative overlaps toward the head. The selection is
+the frame their seeds share keeps negative overlaps toward the head. The selection is
 the odd term of the expansion whose even term prices overlap magnitudes. At the
 fractional predictor \(q_{\mathbf d^\star}\), the first-order CE pressure on a signed
 overlap \(\langle E_i,E_j\rangle\) is
@@ -456,11 +472,13 @@ and separate as saturation grows.
 \end{itemize}
 
 \paragraph{Limit.}
-At \(d=12\) no frame score we have predicts the trained placement, a structured,
-mutually negative arrangement among the fractional tail (a packing of near-equal
-features). It is not carried by pairs of non-represented features, not a
-head-versus-tail question, and not resolved by the second-order term; which tail
-partners pair off is decided by something neither pressure order contains
+At \(d=12\) the trained placement is a structured, mutually negative arrangement among
+the fractional tail (a packing of near-equal features, \(\alpha\approx2\)--\(3.6\)). The
+pressure frame reproduces about half of it on the shared frame (placement \(0.46\),
+against \(0.67/0.73\) at \(d=3/6\)), and so do the pairs model and, at this \(d\) only,
+the additive model. The remainder is not carried by pairs of non-represented features,
+is not a head-versus-tail question, and is not resolved by the second-order term; which
+tail partners pair off is decided by something the pressure order does not contain
 (\texttt{notes/superposition\_results.md}).
 
 \subsection{Stage two: repair at the predicted frame}
@@ -509,21 +527,23 @@ Equation~\eqref{eq:forced-overlap}; realized frames satisfy it exactly.
 \item \textbf{Repair.} At \(E^\star\), the pair block closes most of the CE gap to
 trained and reproduces the head amplification (Section~\ref{sec:repair}).
 \item \textbf{Orientation.} The frame of Equation~\eqref{eq:pressure-frame} reproduces
-the seed-averaged trained placement (correlation of the leverage projectors'
-off-diagonals) at \(+0.60/+0.68/+0.25\) for \(d=3/6/12\) at the reference cell, at the
-level of the trained seed-to-seed agreement; orientation is a joint-optimum property
+the trained placement (off-diagonal correlation of the whitened Grams of the shared
+frame, top 16 features) at \(0.67/0.73/0.46\) for \(d=3/6/12\) at the reference cell,
+above the agreement of one trained seed with the rest (\(0.54/0.44/0.26\)) and level
+with the pairs model (\(0.65/0.69/0.50\)); orientation is a joint-optimum property
 (gradient descent from the anti-pressure frame returns to it) and is optimizer
 independent (Adam and SGD agree within seed noise).
 \end{itemize}
 
 \paragraph{Known failures.}
 \begin{itemize}
-\item \textbf{Head amplification beyond pairs.} Stage two recovers the head
-(Section~\ref{sec:repair}) but leaves the third feature at \(d=3\) and the second
-spectral mode short; the first-order theory alone under-predicts the whole
-represented block at \(d=3,6\).
-\item \textbf{Placement at \(d=12\).} The pressure frame predicts placement at
-\(d=3,6\) but not at \(d=12\), where both reference models do (Section~\ref{sec:orientation}).
+\item \textbf{Head amplification beyond pairs.} Stage two recovers the head at
+\(d=3,6\) (Section~\ref{sec:repair}) but leaves the third feature at \(d=3\) short and,
+at \(d=12\), the whole represented block (head \(16.5\) against \(20.1\) on the common
+scale); the first-order theory alone under-predicts the whole block at every \(d\).
+\item \textbf{Placement at \(d=12\).} The pressure frame reproduces the placement at
+\(d=3,6\) and about half of it at \(d=12\), where the reference models do no better
+(Section~\ref{sec:orientation}).
 \item \textbf{The refund assumption.} Stage one minimises the tied predictor's CE
 \(C(d)\), which counts the benefit of leverage and none of its cost: realising a fractional
 diagonal forces the off-diagonal energy of Equation~\eqref{eq:app-forced-overlap}, whose
@@ -541,8 +561,10 @@ projection onto \(\operatorname{span}\{1,z,\phi(z)\}\), which is computable at t
 fractional predictor and reduces to plain water filling where pairs refund
 (\texttt{notes/superposition\_results.md}).
 \item \textbf{Tail edges.} Trained allocations hold small leverage past the
-water-filling cutoff; the soft-tail law of Equation~\eqref{eq:soft-tail} accounts
-for it at \(d=3,6\) but is not yet part of the predicted allocation.
+water-filling cutoff. The free diagonal of Equation~\eqref{eq:pressure-frame} produces
+such a tail, but a smaller one than trained at \(d=3,6\); the closed form of
+Equation~\eqref{eq:soft-tail} matches the trained tail there and is not part of the
+predicted allocation.
 \end{itemize}
 
 \paragraph{Open.}
@@ -1167,7 +1189,7 @@ E^{(1)\top}E^{(1)}=I_d,\;
 \right\}.
 \]
 
-\subsection{Balanced geometry}
+\subsection{Gauge and measurement}
 \label{app:balanced}
 
 The allocation \(d_i^\star\) and the first-order map \(E^{(1)}D\) are invariant to
@@ -1179,26 +1201,46 @@ cancel. Adam's per-coordinate rescaling breaks the cancellation: each row of the
 table receives the gradient of one state while each row of \(D\) sums over all states,
 yet both move about one learning rate per step, so \(E\) grows roughly
 \(\sqrt{n/m}\) times faster (measured 4.6--7.8 at \(n/m=32\); an SGD retrain is balanced to
-\(0.4\%\)). We therefore impose the balanced gauge on every model's row-centred logit
-table over states, \(\Lambda=U\Sigma V^\top\), truncated to rank \(d\):
+\(0.4\%\)). The predicted model is stored in its own gauge too (\(E^\star\) Parseval, the
+scale in \(D\)).
+
+Every model's first-order vectors are the least-squares coefficients of its saved
+representation on \([1,z]\) (the conditional-mean difference
+\(\mathbb E[h\mid z_i=1]-\mathbb E[h\mid z_i=0]\) agrees in population but leaks the other
+features' chance sample correlations, about \(1/\sqrt n\) each). Two readings follow.
+
+\emph{Gauge-free.} The whitened frame \(\tilde E=E^{(1)}(E^{(1)\top}E^{(1)})^{-1/2}\) is
+independent of \(A\) up to a rotation of \(\mathbb R^d\), so its Gram, the projector
+\(E^{(1)}(E^{(1)\top}E^{(1)})^{+}E^{(1)\top}\), is invariant outright: its diagonal is
+the leverage \(d_i\), its off-diagonals the overlaps of the frame. Allocation and every
+Gram are read this way, on the feature side and on the readout side
+(\(D^\top(DD^\top)^{+}D\)). To compare orientations across seeds, each seed's whitened
+frame is rotated onto the first predicted frame by orthogonal Procrustes over all rows
+in \(\mathbb R^d\) before averaging, and the Gram of the mean frame is shown: the mean of
+per-seed Grams retains each seed's private wobble as haze, whereas the Gram of the mean
+frame keeps the geometry the seeds share.
+
+\emph{Balanced.} Sizes need a scale. Each model's row-centred logit table over states,
+\(\Lambda=U\Sigma V^\top\) truncated to rank \(d\), is split evenly,
 \begin{equation}
 \boxed{
 E_{\mathrm{bal}}
 =
-U\Sigma^{1/2},
+N^{1/4}\,U\Sigma^{1/2},
 \qquad
 D_{\mathrm{bal}}
 =
-\Sigma^{1/2}V^\top,
+N^{-1/4}\,\Sigma^{1/2}V^\top,
 }
 \label{eq:app-balanced-factorization}
 \end{equation}
-the same operation the other settings apply to their log-conditional tables. The
-feature vectors are the least-squares first-order coefficients of \(E_{\mathrm{bal}}\)
-on \(z\) (the conditional-mean difference \(\mathbb E[h\mid z_i=1]-\mathbb E[h\mid z_i=0]\)
-agrees in population but leaks the other features' chance sample correlations, about
-\(1/\sqrt n\) each). The balancing acts on the table over states rather than on the
+the same operation the other settings apply to their log-conditional tables, on the
+per-state scale \(E_{\mathrm{bal}}^\top E_{\mathrm{bal}}/N=\operatorname{diag}(\sigma_k/\sqrt N)\).
+Row-centring the table removes the softmax shift (a common vector added to every
+readout row, \(0.8\) of a row's norm when trained) that would otherwise soak up leverage
+on the readout side. The balancing acts on the table over states rather than on the
 \(m\times m\) first-order map because the trained model's parameters are that table.
+On this scale the Bayes table itself has sizes about \(\alpha_i/\sqrt{p(1-p)}\).
 
 \subsection{Why strict additivity disfavors fractional allocation}
 
@@ -1404,6 +1446,6 @@ and the unavoidable squared overlap
 d_i^\star(1-d_i^\star).
 \]
 
-Finally, the balanced rank-\(d\) factorization of the completed model's logit table
-over states gives the predicted feature and readout Grams in the common gauge
-(Section~\ref{app:balanced}).
+Finally, the whitened frame of the completed model gives the predicted allocation and
+Grams, and the balanced rank-\(d\) factorization of its logit table over states gives
+its sizes on the common scale (Section~\ref{app:balanced}).
