@@ -450,6 +450,7 @@ def _(
         for _k, _v in zip(_idx, _xyz):
             _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=ALPHA_CMAP(_norm(_alpha[_k])), shrinkA=0, shrinkB=0))
         _ax.set_xlim(-0.85, 0.85); _ax.set_ylim(-0.85, 0.85); _ax.set_zlim(-0.85, 0.85); _ax.set_box_aspect((1, 1, 1), zoom=1.6)
+        _ax.set_proj_type("ortho"); _ax.view_init(elev=24, azim=-45)                   # no perspective, x and y foreshortened alike
         _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_zticks([])
         for _pane in (_ax.xaxis, _ax.yaxis, _ax.zaxis):
             _pane.pane.set_facecolor((1, 1, 1, 0))
