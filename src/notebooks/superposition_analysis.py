@@ -408,12 +408,14 @@ def _(
                (r"partial:  $\frac{1}{20} \leq d_i < \frac{1}{2}$", CUTS["partial"], CUTS["represented"])]
 
     def _basis3(_group, _frame):
-        """Top-3 directions of the group's span, completed from the whole frame's when it has fewer rows."""
-        _B = np.linalg.svd(_group, full_matrices=False)[2][:3]
-        if len(_B) < 3:
-            _rest = _frame - _frame @ _B.T @ _B                                         # the frame outside the group's span
-            _B = np.vstack([_B, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_B)]])
-        return _B
+        """A canonical view of the group: Gram-Schmidt on its vectors in alpha order (rows come sorted), the
+        head along z, the next along x, the third along y; completed from the whole frame when the group
+        has fewer than three vectors."""
+        _Q = np.linalg.qr(_group[:3].T)[0].T                                            # orthonormal, in alpha order
+        if len(_Q) < 3:
+            _rest = _frame - _frame @ _Q.T @ _Q                                         # the frame outside the group's span
+            _Q = np.vstack([_Q, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_Q)]])
+        return _Q[[1, 2, 0]]                                                            # x <- second, y <- third, z <- head
 
     from matplotlib.patches import FancyArrowPatch as _FancyArrowPatch
     from mpl_toolkits.mplot3d.proj3d import proj_transform as _proj_transform
@@ -428,7 +430,10 @@ def _(
             self.set_positions((_x0, _y0), (_x1, _y1))
             return min(_z0, _z1)
 
-    ALPHA_CMAP = plt.get_cmap(plot_utils.FIG.diverging_cmap)                      # alpha on the house diverging map (vlag)
+    # the house diverging map with its pale middle cut out: blue -> light blue | light red -> red, so no
+    # arrow washes out on the white page; the jump sits at the represented cut
+    _vlag = plt.get_cmap(plot_utils.FIG.diverging_cmap)
+    ALPHA_CMAP = plt.matplotlib.colors.ListedColormap(np.vstack([_vlag(np.linspace(0.0, 0.36, 128)), _vlag(np.linspace(0.64, 1.0, 128))]), name="vlag_cut")
 
     def _frame_panel(_ax, _W, _idx, _B, _title, _alpha, _norm):
         _xyz = _W[_idx] @ _B.T
@@ -441,7 +446,12 @@ def _(
         _ax.set_title(_title, fontsize=11)
 
     _alpha = np.asarray(_sel["rows"][D_GRID[0]][0]["alpha"], float)                # the ladder: colour by alpha_i
-    _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())               # the ladder is a power law: log spreads it
+    # log alpha, the diverging map centred where the theory's leverage crosses the represented cut (alpha ~ 3
+    # at d = 3 and 6): represented features red, partial ones blue, pale only at the boundary
+    class _LogTwoSlope(plt.matplotlib.colors.TwoSlopeNorm):
+        def __call__(self, value, clip=None):
+            return super().__call__(np.log(np.asarray(value, float)), clip)
+    _norm = _LogTwoSlope(vcenter=np.log(3.0), vmin=np.log(_alpha.min()), vmax=np.log(_alpha.max()))
     _fig = plt.figure(figsize=(15.5, 2.7 * len(_GROUPS)), layout="constrained")
     *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.0, width_ratios=[1, 1, 1, 0.12])
     for _c, (_d, _sf) in enumerate(zip(D_GRID, _sfs)):
@@ -463,8 +473,9 @@ def _(
                 if _c == 0 and _j == 0:
                     _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
     _fig.suptitle(_sel["title"])
-    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
-    _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
+    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=plt.matplotlib.colors.TwoSlopeNorm(np.log(3.0), np.log(_alpha.min()), np.log(_alpha.max())), cmap=ALPHA_CMAP),
+                        cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
+    _cb.set_ticks(np.log([1, 2, 3, 4, 8])); _cb.set_ticklabels(["1", "2", "3", "4", "8"]); _cb.ax.minorticks_off()
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
     mo.vstack([selector_row(SEL_F4), _out])
     return
