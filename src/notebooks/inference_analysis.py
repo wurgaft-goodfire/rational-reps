@@ -24,7 +24,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    import os, sys
+    import io, os, sys
     import numpy as np
     from scipy.special import logsumexp
 
@@ -43,6 +43,7 @@ def _(mo):
         FIGURES,
         factor_logcond,
         graph_overrides,
+        io,
         load_run,
         logsumexp,
         np,
@@ -177,7 +178,18 @@ def _(T, hist, logsumexp, np, predicted_inference_geometry):
 
 
 @app.cell
-def _(T, factor_logcond, fits, frame, hist, np, plot_utils, plt, rigid_map):
+def _(
+    T,
+    factor_logcond,
+    fits,
+    frame,
+    hist,
+    io,
+    np,
+    plot_utils,
+    plt,
+    rigid_map,
+):
     def latent_means(pts, z, n):
         """Mean state per true latent at every position: pts (B, T, d), z (B,) -> (n, T, d)."""
         return np.stack([pts[z == _k].mean(0) for _k in range(n)])
@@ -265,9 +277,10 @@ def _(T, factor_logcond, fits, frame, hist, np, plot_utils, plt, rigid_map):
 
     FONT = 18                                                                     # panel-title size inside a block
 
-    def plane_block(pl, colors, b, cka_all, path, rays=True, background=True, cloud=None):
+    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None):
         """One world's block, laid out like `plot_embedding_panels`: predicted beside transformer (states
-        above; below, Grams of the mean path per true latent with the CKA over every state). Saved as png.
+        above; below, Grams of the mean path per true latent with the CKA over every state). Rendered to an
+        in-memory png for `merge_panels`; only the merged figure is saved.
         """
         _fig = plt.figure(figsize=(7.6, 9.0))                                      # large in inches: merged fonts match the geometry figure
         _gs = _fig.add_gridspec(2, 2, height_ratios=[1.15, 1], hspace=0.2, wspace=0.25)
@@ -280,7 +293,8 @@ def _(T, factor_logcond, fits, frame, hist, np, plot_utils, plt, rigid_map):
             plot_utils.gram_heatmap(_ax, pl[_side]["rep"],
                                     title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {cka_all:.3f}")
             _ax.title.set_fontsize(FONT)
-        plot_utils.save_figure(_fig, path, format="png"); plt.close(_fig)
+        _buf = io.BytesIO(); _fig.savefig(_buf, format="png", dpi=300, bbox_inches="tight"); plt.close(_fig)
+        _buf.seek(0); return _buf
 
     planes = {_name: planes_for(factor_logcond(_h["LP"].reshape(-1, _h["D"].shape[1]))[1].reshape(*_h["LP"].shape[:2], -1)[:, :T],
                                 _h["D"], fits[_name]["H"], fits[_name]["W"], _h["run"]["latent"])
@@ -302,11 +316,11 @@ def _(
     planes,
     plot_utils,
 ):
+    _blocks = []
     for _name, _pl in planes.items():
         _b = pick_stream(_pl["pred"]["pts"], toward=3 * np.pi / 4) if _name == "week" else 0   # the ring: a far stream heading up-left
-        plane_block(_pl, latent_colors(_name, hist[_name]["D"].shape[1]), _b, fits[_name]["cka"],
-                    FIGURES / f"inference_{_name}_panels.png")
-    fig_latent = plot_utils.merge_panels([FIGURES / "png" / f"inference_{_n}_panels.png" for _n in planes], ncols=3, label_size=30)
+        _blocks.append(plane_block(_pl, latent_colors(_name, hist[_name]["D"].shape[1]), _b, fits[_name]["cka"]))
+    fig_latent = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
     plot_utils.save_figure(fig_latent, FIGURES / "inference_latent.png", dpi=200)
     return
 
@@ -463,13 +477,14 @@ def _(
     # expected breadth, yellow = broad, dark = specific; Grams of the mean path per true hypothesis
     planes_hyp = {_name: planes_for(_h["E"][:, :T], _h["D"], _h["run"]["hidden_states"][-1][:, :T], _h["run"]["readout"],
                                     _h["run"]["latent"]) for _name, _h in hyp.items()}
+    _blocks = []
     for _name, _pl in planes_hyp.items():
         _C = hyp[_name]["D"].shape[1]
         _br = breadth(hyp[_name]["ds"], hyp[_name]["obs"])[:, :T]
-        plane_block(_pl, plt.get_cmap(plot_utils.FIG.diverging_cmap)(np.linspace(0.05, 0.95, _C)),
-                    pick_stream(_pl["pred"]["pts"], lowest=_br),                # a far stream that ends specific
-                    fits_hyp[_name]["cka"], FIGURES / f"inference_{_name}_panels.png", rays=False, background=False, cloud=_br)
-    fig_hyp = plot_utils.merge_panels([FIGURES / "png" / f"inference_{_n}_panels.png" for _n in planes_hyp], ncols=3, label_size=30)
+        _blocks.append(plane_block(_pl, plt.get_cmap(plot_utils.FIG.diverging_cmap)(np.linspace(0.05, 0.95, _C)),
+                                   pick_stream(_pl["pred"]["pts"], lowest=_br),   # a far stream that ends specific
+                                   fits_hyp[_name]["cka"], rays=False, background=False, cloud=_br))
+    fig_hyp = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
     plot_utils.save_figure(fig_hyp, FIGURES / "inference_hypotheses.png", dpi=200)
     return (breadth,)
 
