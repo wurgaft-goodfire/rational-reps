@@ -663,8 +663,9 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 7 — the sparsity sweep
-    Sparsity $p$ falls left to right; each mega-row is one $d$. Per cell, a predicted block and a trained block: the
-    superposed band ($d_i > 0.2$, the second row of figure 4) in its PCA frame, the Gram of the shared frame
+    Sparsity $p$ falls left to right; each mega-row is one $d$, largest first. Per cell, a predicted block and a trained
+    block: the superposed band ($d_i > 0.2$, the second row of figure 4) in its PCA frame (the head in its tripod frame joins
+    when the band has fewer than three vectors), the Gram of the shared frame
     (top 16 features, one colour scale over every panel, set by the largest off-diagonal entry), and the
     leverage $d_i$ of the first $3d$ features (seed mean).
     """)
@@ -718,14 +719,19 @@ def _(
 
     _fig = plt.figure(figsize=(15.5, 6.6 * len(D_GRID)), layout="constrained")
     _sf_main, _sf_bar = _fig.subfigures(1, 2, wspace=0.0, width_ratios=[1, 0.05])           # the colourbars hug the last block
-    for _d, _sf_row in zip(D_GRID, _sf_main.subfigures(len(D_GRID), 1, hspace=0.06)):       # a mega-row per d
+    for _row, (_d, _sf_row) in enumerate(zip(D_GRID[::-1], _sf_main.subfigures(len(D_GRID), 1, hspace=0.06))):   # a mega-row per d, largest first
         _nbar = 3 * int(_d)                                                                  # bars: the first 3d features, past every tail
-        for _col, (_p, _sf) in enumerate(zip(P_SWEEP, _sf_row.subfigures(1, 3, wspace=0.22))):   # gaps between p, none within
-            _sf.suptitle(f"$d$ = {_d}, $p$ = {_p}", fontsize=15)
+        _sf_d, _sf_blocks = _sf_row.subfigures(1, 2, wspace=0.0, width_ratios=[0.045, 1])
+        _sf_d.text(0.35, 0.47, f"$d$ = {_d}", rotation=90, va="center", ha="center", fontsize=26)
+        for _col, (_p, _sf) in enumerate(zip(P_SWEEP, _sf_blocks.subfigures(1, 3, wspace=0.22))):   # gaps between p, none within
+            if _row == 0:
+                _sf.suptitle(f"$p$ = {_p}", fontsize=26)
             _gs = _sf.add_gridspec(3, 2, wspace=0.0, hspace=0.0, height_ratios=[0.8, 0.95, 0.85], left=0, right=1, top=0.94, bottom=0)
             _Wp = _frames[_d, _p]["theory"]
-            _idx = band((_Wp ** 2).sum(1))
-            _B = basis3(_Wp[_idx], _Wp, False)
+            _lev = (_Wp ** 2).sum(1)
+            _whole = len(band(_lev)) < 3                                                     # a band too small for its own frame: draw the head with it
+            _idx = np.flatnonzero(_lev > CUT) if _whole else band(_lev)
+            _B = basis3(_Wp[_idx], _Wp, _whole)
             for _j, (_c, _lbl) in enumerate(_SIDES):
                 _ax3 = _sf.add_subplot(_gs[0, _j], projection="3d")
                 frame_panel(_ax3, _frames[_d, _p][_c], _idx, _B, _lbl, _alpha, _norm, zoom=1.55, box=False)
@@ -738,7 +744,7 @@ def _(
                 _axb.set_xlabel("leverage $d_i$")
                 plot_utils.FIG.style_axes(_axb)
                 if _col == 0 and _j == 0:
-                    _ax3.text2D(-0.12, 0.5, f"band, $d_i > {CUT}$", transform=_ax3.transAxes, rotation=90, va="center", ha="center", fontsize=12)
+                    _ax3.text2D(-0.12, 0.5, f"{'all' if _whole else 'band'}, $d_i > {CUT}$", transform=_ax3.transAxes, rotation=90, va="center", ha="center", fontsize=12)
                     _axg.set_ylabel("Gram", fontsize=12)
                     _axb.set_ylabel("feature $i$", fontsize=12)
     _fig.suptitle(rf"$\beta$ = {_b}, $\rho$ = {_r}")
