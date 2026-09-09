@@ -416,7 +416,8 @@ def _(
     def _basis3(_group, _frame):
         """A canonical view of the group: Gram-Schmidt on its vectors in alpha order, the first along z, the
         next along x, the third along y; completed from the whole frame when the group has fewer than three."""
-        _Q = np.linalg.qr(_group[:3].T)[0].T
+        _Qm, _R = np.linalg.qr(_group[:3].T)
+        _Q = (_Qm * np.sign(np.diag(_R))).T                                             # each axis points along its own vector
         if len(_Q) < 3:
             _rest = _frame - _frame @ _Q.T @ _Q                                         # the frame outside the group's span
             _Q = np.vstack([_Q, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_Q)]])
