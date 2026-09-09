@@ -726,7 +726,7 @@ def _(
         _B = basis3(_Wp[_idx], _Wp, False)
         for _j, (_c, _lbl) in enumerate(_SIDES):
             _ax3 = _sf.add_subplot(_gs[0, _j], projection="3d")
-            frame_panel(_ax3, _frames[_p][_c], _idx, _B, _lbl, _alpha, _norm, zoom=1.8, box=False)
+            frame_panel(_ax3, _frames[_p][_c], _idx, _B, _lbl, _alpha, _norm, zoom=1.55, box=False)
             _axg = _sf.add_subplot(_gs[1, _j])
             _im = _axg.imshow(_grams[_p, _c], cmap="vlag", vmin=-_v, vmax=_v)
             _axg.set_xticks([]); _axg.set_yticks([])
