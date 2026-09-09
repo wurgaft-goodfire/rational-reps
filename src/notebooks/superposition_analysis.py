@@ -431,7 +431,7 @@ def _(
     def _frame_panel(_ax, _W, _idx, _B, _title, _alpha, _norm):
         _xyz = _W[_idx] @ _B.T
         for _k, _v in zip(_idx, _xyz):
-            _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=plt.cm.plasma(_norm(_alpha[_k])), shrinkA=0, shrinkB=0))
+            _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=plt.cm.turbo(_norm(_alpha[_k])), shrinkA=0, shrinkB=0))
         _ax.set_xlim(-0.85, 0.85); _ax.set_ylim(-0.85, 0.85); _ax.set_zlim(-0.85, 0.85); _ax.set_box_aspect((1, 1, 1), zoom=1.6)
         _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_zticks([])
         for _pane in (_ax.xaxis, _ax.yaxis, _ax.zaxis):
@@ -439,7 +439,7 @@ def _(
         _ax.set_title(_title, fontsize=11)
 
     _alpha = np.asarray(_sel["rows"][D_GRID[0]][0]["alpha"], float)                # the ladder: colour by alpha_i
-    _norm = plt.Normalize(_alpha.min(), _alpha.max())
+    _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())               # the ladder is a power law: log spreads it
     _fig = plt.figure(figsize=(15.5, 2.7 * len(_GROUPS)), layout="constrained")
     *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.0, width_ratios=[1, 1, 1, 0.12])
     for _c, (_d, _sf) in enumerate(zip(D_GRID, _sfs)):
@@ -461,7 +461,8 @@ def _(
                 if _c == 0 and _j == 0:
                     _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
     _fig.suptitle(_sel["title"])
-    _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap="plasma"), cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
+    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap="turbo"), cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
+    _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
     mo.vstack([selector_row(SEL_F4), _out])
     return
