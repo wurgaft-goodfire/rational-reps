@@ -666,7 +666,7 @@ def _(mo):
     Sparsity $p$ falls left to right at one $d$. Per column, a predicted block and a trained block: the
     superposed band ($d_i > 0.2$, the second row of figure 4) in its PCA frame, the Gram of the shared frame
     (top 16 features, one colour scale over every panel, set by the largest off-diagonal entry), and the
-    leverage $d_i$ of the first 24 features (seed mean).
+    leverage $d_i$ of the first $3d$ features (seed mean).
     """)
     return
 
@@ -705,7 +705,7 @@ def _(
     _b, _r, _d = SEL_F7.value["beta"], SEL_F7.value["rho"], SEL_F7.value["d"]
     _cells = {_p: load_cell(_p, _b, _r, _d) for _p in P_SWEEP}
     mo.stop(any(_rows is None for _rows in _cells.values()), NOT_YET)
-    _K, _NBAR = 16, 18
+    _K, _NBAR = 16, 3 * int(_d)                                                    # bars: the first 3d features, past every tail
     _SIDES = [("theory", "predicted"), ("linear", "trained")]
 
     _frames = {_p: {_c: aligned_mean([_row["E"][_c] for _row in _rows], whiten(_rows[0]["E"]["theory"])) for _c, _ in _SIDES}
@@ -726,7 +726,7 @@ def _(
         _B = basis3(_Wp[_idx], _Wp, False)
         for _j, (_c, _lbl) in enumerate(_SIDES):
             _ax3 = _sf.add_subplot(_gs[0, _j], projection="3d")
-            frame_panel(_ax3, _frames[_p][_c], _idx, _B, _lbl, _alpha, _norm, zoom=2.0, box=False)
+            frame_panel(_ax3, _frames[_p][_c], _idx, _B, _lbl, _alpha, _norm, zoom=1.8, box=False)
             _axg = _sf.add_subplot(_gs[1, _j])
             _im = _axg.imshow(_grams[_p, _c], cmap="vlag", vmin=-_v, vmax=_v)
             _axg.set_xticks([]); _axg.set_yticks([])
