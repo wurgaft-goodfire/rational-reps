@@ -42,7 +42,7 @@ def _(mo):
     from hydra.core.override_parser.overrides_parser import OverridesParser
     from omegaconf import OmegaConf
     from src.code.analysis_utils import feature_vectors, has_run, leverage, load_run
-    from src.code.geometry import modes, pair_features
+    from src.code.geometry import factor_logcond, modes, pair_features
     from src.code.train import resolve_config
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -80,6 +80,7 @@ def _(mo):
         R_KEY,
         SEEDS,
         cell_overrides,
+        factor_logcond,
         feature_vectors,
         has_run,
         leverage,
@@ -97,6 +98,7 @@ def _(
     CLASSES,
     SEEDS,
     cell_overrides,
+    factor_logcond,
     feature_vectors,
     has_run,
     load_run,
@@ -127,14 +129,13 @@ def _(
         _V = np.asarray(V, float)
         return _V @ np.linalg.pinv(_V.T @ _V) @ _V.T
 
-    def balanced_code(H, D, d):
-        """A model's code in the balanced gauge, per state: row-centre its logit table H D', split the SVD
-        scale evenly at rank d, and scale so that E'E / N = diag(sigma_k / sqrt N), the per-state singular
-        values of figure 4. The gauge GD from small init learns; sizes here compare to alpha."""
-        _Lam = np.asarray(H, float) @ np.asarray(D, float).T
-        _Lc = _Lam - _Lam.mean(1, keepdims=True)
-        _U, _S, _ = np.linalg.svd(_Lc, full_matrices=False)
-        return len(_Lam) ** 0.25 * _U[:, :d] * np.sqrt(_S[:d])
+    def balanced_factors(H, D, d):
+        """A model's (code, readout) in the balanced gauge: `factor_logcond` of its logit table H D' (row-
+        centred, SVD scale split evenly) at rank d. The code is scaled per state, E'E / N = diag(sigma_k /
+        sqrt N) as in figure 4, so its sizes compare to alpha; the readout's rows are centred over outcomes
+        by construction. Returns (E (N, d), D (m, d)). The gauge GD from small init learns."""
+        _, _E, _D, _ = factor_logcond(np.asarray(H, float) @ np.asarray(D, float).T)
+        return len(H) ** 0.25 * _E[:, :d], _D[:d].T
 
     def load_cell(p, b, r, d):
         """One loaded cell, cached in SW: every model class whose seeds are all saved; None
@@ -144,7 +145,7 @@ def _(
             SW[(p, b, r, d)] = sweep_rows(p, b, r, d, _have) if {"linear", "theory"} <= set(_have) else None
         return SW[(p, b, r, d)]
 
-    return balanced_code, load_cell, projector
+    return balanced_factors, load_cell, projector
 
 
 @app.cell
@@ -266,7 +267,7 @@ def _(
     NOT_YET,
     RUNNERS,
     SEL_F2,
-    balanced_code,
+    balanced_factors,
     feature_vectors,
     mo,
     np,
@@ -279,7 +280,7 @@ def _(
     mo.stop(_sel["rows"] is None, NOT_YET)
     _fig, _axes = plt.subplots(1, 3, figsize=(15, 4.2), sharey=True)
     for _ax, _d in zip(_axes, D_GRID):
-        _sizes = lambda _row, _c: (feature_vectors(balanced_code(*_row["model"][_c], int(_d)), _row["X"])[0] ** 2).sum(1)[:24]
+        _sizes = lambda _row, _c: (feature_vectors(balanced_factors(*_row["model"][_c], int(_d))[0], _row["X"])[0] ** 2).sum(1)[:24]
         _x = np.arange(24)
         for _run, (_lbl, _col) in RUNNERS.items():
             if _run not in _sel["runners"]:
@@ -422,9 +423,9 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 5 — readout Grams
-    Whitened Gram $D(D^\top D)^{+}D^\top$ of the saved readout over outcomes, rows centred over outcomes
-    first (the softmax shift is a common offset of every readout row, and would soak up leverage), top 16,
-    seed means; gauge-free.
+    Whitened Gram $D(D^\top D)^{+}D^\top$ over outcomes of the balanced readout, `factor_logcond` of the
+    logit table at rank $d$ (row-centring the logits removes the softmax shift, a common offset of every
+    saved readout row that would soak up leverage), top 16, seed means; gauge-free.
     """)
     return
 
@@ -442,6 +443,7 @@ def _(
     NOT_YET,
     RUNNERS,
     SEL_F5,
+    balanced_factors,
     mo,
     np,
     plot_utils,
@@ -453,15 +455,15 @@ def _(
     _sel = rows_for(SEL_F5.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
     _K = 16
-    # the softmax shift adds one vector to every readout row (trained: 0.8 of a row's norm) and would soak
-    # up leverage; centre the rows over outcomes, then whiten
-    _gram = lambda _row, _c: projector(_row["model"][_c][1] - _row["model"][_c][1].mean(0))[:_K, :_K]
+    # the balanced readout from the logit table: row-centring the logits removes the softmax shift (one
+    # vector added to every saved readout row, 0.8 of a row's norm when trained) that would soak up leverage
+    _gram = lambda _row, _c, _d: projector(balanced_factors(*_row["model"][_c], int(_d))[1])[:_K, :_K]
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
     _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
     for _c, _d in enumerate(D_GRID):
-        _panels = [(np.mean([_gram(_row, "linear") for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
-                   (np.mean([_gram(_row, "theory") for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
-        _panels += [(np.mean([_gram(_row, _run) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
+        _panels = [(np.mean([_gram(_row, "linear", _d) for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
+                   (np.mean([_gram(_row, "theory", _d) for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
+        _panels += [(np.mean([_gram(_row, _run, _d) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]
             _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
