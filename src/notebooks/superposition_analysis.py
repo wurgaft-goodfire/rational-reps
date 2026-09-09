@@ -422,7 +422,9 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 5 — readout Grams
-    Whitened Gram $D(D^\top D)^{+}D^\top$ of the saved readout over outcomes, top 16, seed means; gauge-free.
+    Whitened Gram $D(D^\top D)^{+}D^\top$ of the saved readout over outcomes, rows centred over outcomes
+    first (the softmax shift is a common offset of every readout row, and would soak up leverage), top 16,
+    seed means; gauge-free.
     """)
     return
 
@@ -451,7 +453,9 @@ def _(
     _sel = rows_for(SEL_F5.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
     _K = 16
-    _gram = lambda _row, _c: projector(_row["model"][_c][1])[:_K, :_K]           # whitened: gauge-free
+    # the softmax shift adds one vector to every readout row (trained: 0.8 of a row's norm) and would soak
+    # up leverage; centre the rows over outcomes, then whiten
+    _gram = lambda _row, _c: projector(_row["model"][_c][1] - _row["model"][_c][1].mean(0))[:_K, :_K]
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
     _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
     for _c, _d in enumerate(D_GRID):
