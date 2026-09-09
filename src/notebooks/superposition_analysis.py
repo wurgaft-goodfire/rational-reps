@@ -740,9 +740,9 @@ def _(
                 _axg.set_ylabel("Gram", fontsize=12)
                 _axb.set_ylabel("feature $i$", fontsize=12)
     _fig.suptitle(rf"$d$ = {_d}, $\beta$ = {_b}, $\rho$ = {_r}")
-    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.7, 0.25, 0.25]), label=r"$\alpha_i$")
+    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.56, 0.25, 0.25]), label=r"$\alpha_i$")
     _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
-    _fig.colorbar(_im, cax=_sf_bar.add_axes([0.15, 0.36, 0.25, 0.25]))
+    _fig.colorbar(_im, cax=_sf_bar.add_axes([0.15, 0.26, 0.25, 0.25]))
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig7_sparsity"))
     mo.vstack([mo.hstack([SEL_F7["beta"], SEL_F7["rho"], SEL_F7["d"]], justify="start", gap=2), _out])
     return
