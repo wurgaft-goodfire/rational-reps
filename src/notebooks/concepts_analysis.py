@@ -397,13 +397,13 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
         """The three worlds side by side from ``vectors[name] = (E, D)``, kernel equations above and each
         token's argmax cone behind."""
         fig, ax = plt.subplots(1, 3, figsize=(28, 9.6))
-        for _j, (_a, _name) in enumerate(zip(ax, DRAW)):
+        for _a, _name in zip(ax, DRAW):
             DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=regions)
-            _a.set_title(f"({chr(97 + _j)})", loc="left", fontsize=26, pad=14)
-        fig.tight_layout(rect=(0, 0, 1, 0.84), pad=0.6)
-        for _a, _eq in zip(ax, EQS):
+        fig.tight_layout(rect=(0, 0, 1, 0.8), pad=0.6)
+        for _j, (_a, _eq) in enumerate(zip(ax, EQS)):
             _p = _a.get_position()                     # one shared height for the three equations
-            fig.text((_p.x0 + _p.x1) / 2, 0.99, _eq, ha="center", va="top", fontsize=27, linespacing=1.5)
+            fig.text(_p.x0, 0.995, f"({chr(97 + _j)})", ha="left", va="top", fontsize=40)   # panel letter, top left
+            fig.text((_p.x0 + _p.x1) / 2, 0.935, _eq, ha="center", va="top", fontsize=27, linespacing=1.5)
         return plot_utils.save_figure(fig, FIGURES / path)
 
     return DRAW, HIGHLIGHT, adjs, cols5, days, draw_worlds, gauge, hue7, yes_no
