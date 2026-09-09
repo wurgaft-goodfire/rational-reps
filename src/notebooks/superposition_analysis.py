@@ -415,10 +415,23 @@ def _(
             _B = np.vstack([_B, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_B)]])
         return _B
 
+    from matplotlib.patches import FancyArrowPatch as _FancyArrowPatch
+    from mpl_toolkits.mplot3d.proj3d import proj_transform as _proj_transform
+
+    class _Arrow3D(_FancyArrowPatch):
+        """A FancyArrowPatch from the origin to a 3-D point: a filled head, unlike quiver's three lines."""
+        def __init__(self, xyz, **kw):
+            super().__init__((0, 0), (0, 0), **kw); self._xyz = xyz
+        def do_3d_projection(self, renderer=None):
+            _x0, _y0, _z0 = _proj_transform(0, 0, 0, self.axes.M)
+            _x1, _y1, _z1 = _proj_transform(*self._xyz, self.axes.M)
+            self.set_positions((_x0, _y0), (_x1, _y1))
+            return min(_z0, _z1)
+
     def _frame_panel(_ax, _W, _idx, _B, _title):
         _xyz = _W[_idx] @ _B.T
-        for _k, (_x, _y, _z) in zip(_idx, _xyz):
-            _ax.quiver(0, 0, 0, _x, _y, _z, color=plt.cm.plasma(min(_k, 30) / 30), lw=3.2, arrow_length_ratio=0.22)
+        for _k, _v in zip(_idx, _xyz):
+            _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.2, color=plt.cm.plasma(min(_k, 30) / 30), shrinkA=0, shrinkB=0))
         _ax.set_xlim(-0.9, 0.9); _ax.set_ylim(-0.9, 0.9); _ax.set_zlim(-0.9, 0.9); _ax.set_box_aspect((1, 1, 1), zoom=1.45)
         _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_zticks([])
         for _pane in (_ax.xaxis, _ax.yaxis, _ax.zaxis):
