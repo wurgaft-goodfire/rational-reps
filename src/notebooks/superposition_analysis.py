@@ -367,13 +367,13 @@ def _(mo):
     ## Figure 4 — the frame, feature by feature
     Whitened first-order vectors $E(E^\top E)^{-1/2}$ (squared length the leverage), in three dimensions:
     the top three principal directions of the theory group's span (completed from the whole frame when
-    the group has fewer than three vectors). Trained beside theory; the trained frame is carried onto the
-    theory's by orthogonal Procrustes in the full $d$-dimensional space first, then projected, as in the
-    inference figures; every seed's frame is aligned to the first seed's theory frame before averaging.
+    the group has fewer than three vectors). Predicted beside the trained linear network; the trained frame is
+    carried onto the predicted one by orthogonal Procrustes in the full $d$-dimensional space first, then
+    projected, as in the inference figures; every seed's frame is aligned to the first seed's predicted frame
+    before averaging.
     Rows are three groups, each in its own frame so the later ones are not squashed against the head's
-    axes: the head (the first three features by $\alpha$, Gram-Schmidt frame with the head along $z$), the
-    superposed band (the rest with leverage $d_i \ge \tfrac15$: the features that share dimensions, in their
-    own PCA frame). Features below $\tfrac15$ are not drawn. Colour: $\alpha_i$ on a log scale.
+    axes: the top three by leverage (Gram-Schmidt frame with the head along $z$) and the rest with
+    $d_i > 0.2$ (the features that share dimensions, in their own PCA frame). Features below are not drawn. Colour: $\alpha_i$ on a log scale.
     """)
     return
 
@@ -410,8 +410,8 @@ def _(
 
     # two groups, each drawn in its own frame: the head (first HEAD features by alpha, a near-orthogonal
     # tripod) and the superposed band (the rest with leverage >= 1/5: where the frame's overlaps live)
-    _GROUPS = [(f"head:  first {HEAD}", lambda _lev: np.arange(HEAD), True),
-               (r"superposed:  the rest with $d_i \geq \frac{1}{5}$", lambda _lev: np.flatnonzero(_lev >= CUT)[HEAD:], False)]
+    _GROUPS = [(f"Top {HEAD} $d_i$", lambda _lev: np.arange(HEAD), True),
+               (f"Rest with $d_i > {CUT}$", lambda _lev: np.flatnonzero(_lev > CUT)[HEAD:], False)]
 
     def _basis3(_group, _frame, _tripod):
         """A view of the group. The head: Gram-Schmidt on its three vectors, the first along z, the next along
@@ -458,7 +458,7 @@ def _(
     _alpha = np.asarray(_sel["rows"][D_GRID[0]][0]["alpha"], float)                # the ladder: colour by alpha_i
     _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())               # the ladder is a power law: log spreads it
     _fig = plt.figure(figsize=(15.5, 2.7 * len(_GROUPS)), layout="constrained")
-    *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.0, width_ratios=[1, 1, 1, 0.12])
+    *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.12, width_ratios=[1, 1, 1, 0.12])       # gaps between d, none within
     for _c, (_d, _sf) in enumerate(zip(D_GRID, _sfs)):
         _sf.suptitle(f"d = {_d}", fontsize=15)
         _gs = _sf.add_gridspec(len(_GROUPS), 2, wspace=0, hspace=0, left=0, right=1, top=0.9, bottom=0)
@@ -470,11 +470,11 @@ def _(
         for _r, (_name, _pick, _tripod) in enumerate(_GROUPS):
             _idx = _pick(_lev)
             _B = _basis3(_Wp[_idx], _Wp, _tripod) if len(_idx) else None
-            for _j, (_W, _lbl) in enumerate([(_Wt, "trained"), (_Wp, "theory")]):
+            for _j, (_W, _lbl) in enumerate([(_Wp, "predicted"), (_Wt, "linear")]):
                 _ax = _sf.add_subplot(_gs[_r, _j], projection="3d")
-                _ax.set_title(f"{_lbl} ({len(_idx)})", fontsize=11)
+                _ax.set_title(_lbl, fontsize=11)
                 if _B is not None:
-                    _frame_panel(_ax, _W, _idx, _B, f"{_lbl} ({len(_idx)})", _alpha, _norm)
+                    _frame_panel(_ax, _W, _idx, _B, _lbl, _alpha, _norm)
                 if _c == 0 and _j == 0:
                     _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
     _fig.suptitle(_sel["title"])
