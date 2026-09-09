@@ -663,7 +663,7 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 7 — the sparsity sweep
-    Sparsity $p$ falls left to right at one $d$. Per column, a predicted block and a trained block: the
+    Sparsity $p$ falls left to right; each mega-row is one $d$. Per cell, a predicted block and a trained block: the
     superposed band ($d_i > 0.2$, the second row of figure 4) in its PCA frame, the Gram of the shared frame
     (top 16 features, one colour scale over every panel, set by the largest off-diagonal entry), and the
     leverage $d_i$ of the first $3d$ features (seed mean).
@@ -672,12 +672,11 @@ def _(mo):
 
 
 @app.cell
-def _(B_KEY, D_GRID, GRID, R_KEY, mo):
+def _(B_KEY, GRID, R_KEY, mo):
     P_SWEEP = ["0.3", "0.15", "0.05"]
     SEL_F7 = mo.ui.dictionary({
         "beta": mo.ui.dropdown(options=GRID[B_KEY], value="0.5", label="ladder slope β"),
         "rho": mo.ui.dropdown(options=GRID[R_KEY], value="0.0", label="correlation ρ"),
-        "d": mo.ui.dropdown(options=D_GRID, value="6", label="d"),
     })
     return P_SWEEP, SEL_F7
 
@@ -687,6 +686,7 @@ def _(
     ALPHA_CMAP,
     CONFIG,
     CUT,
+    D_GRID,
     NOT_YET,
     P_SWEEP,
     SEL_F7,
@@ -702,50 +702,51 @@ def _(
     plt,
     whiten,
 ):
-    _b, _r, _d = SEL_F7.value["beta"], SEL_F7.value["rho"], SEL_F7.value["d"]
-    _cells = {_p: load_cell(_p, _b, _r, _d) for _p in P_SWEEP}
+    _b, _r = SEL_F7.value["beta"], SEL_F7.value["rho"]
+    _cells = {(_d, _p): load_cell(_p, _b, _r, _d) for _d in D_GRID for _p in P_SWEEP}
     mo.stop(any(_rows is None for _rows in _cells.values()), NOT_YET)
-    _K, _NBAR = 16, 3 * int(_d)                                                    # bars: the first 3d features, past every tail
+    _K = 16
     _SIDES = [("theory", "predicted"), ("linear", "trained")]
 
-    _frames = {_p: {_c: aligned_mean([_row["E"][_c] for _row in _rows], whiten(_rows[0]["E"]["theory"])) for _c, _ in _SIDES}
-               for _p, _rows in _cells.items()}
-    _grams = {(_p, _c): _W[:_K] @ _W[:_K].T for _p, _fr in _frames.items() for _c, _W in _fr.items()}
+    _frames = {_key: {_c: aligned_mean([_row["E"][_c] for _row in _rows], whiten(_rows[0]["E"]["theory"])) for _c, _ in _SIDES}
+               for _key, _rows in _cells.items()}
+    _grams = {(*_key, _c): _W[:_K] @ _W[:_K].T for _key, _fr in _frames.items() for _c, _W in _fr.items()}
     _v = max(np.abs(_Gm - np.diag(np.diag(_Gm))).max() for _Gm in _grams.values())      # one scale: the largest off-diagonal entry
-    _levs = {(_p, _c): np.mean([leverage(_row["E"][_c])[0][:_NBAR] for _row in _rows], 0) for _p, _rows in _cells.items() for _c, _ in _SIDES}
-    _alpha = np.asarray(_cells[P_SWEEP[0]][0]["alpha"], float)
+    _levs = {(*_key, _c): np.mean([leverage(_row["E"][_c])[0] for _row in _rows], 0) for _key, _rows in _cells.items() for _c, _ in _SIDES}
+    _alpha = np.asarray(next(iter(_cells.values()))[0]["alpha"], float)
     _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())
 
-    _fig = plt.figure(figsize=(15.5, 7.2), layout="constrained")
+    _fig = plt.figure(figsize=(15.5, 6.6 * len(D_GRID)), layout="constrained")
     _sf_main, _sf_bar = _fig.subfigures(1, 2, wspace=0.0, width_ratios=[1, 0.05])           # the colourbars hug the last block
-    _sfs = _sf_main.subfigures(1, 3, wspace=0.22)                                            # gaps between p, none within
-    for _col, (_p, _sf) in enumerate(zip(P_SWEEP, _sfs)):
-        _sf.suptitle(f"$p$ = {_p}", fontsize=15)
-        _gs = _sf.add_gridspec(3, 2, wspace=0.0, hspace=0.0, height_ratios=[0.8, 0.95, 0.85], left=0, right=1, top=0.94, bottom=0)
-        _Wp = _frames[_p]["theory"]
-        _idx = band((_Wp ** 2).sum(1))
-        _B = basis3(_Wp[_idx], _Wp, False)
-        for _j, (_c, _lbl) in enumerate(_SIDES):
-            _ax3 = _sf.add_subplot(_gs[0, _j], projection="3d")
-            frame_panel(_ax3, _frames[_p][_c], _idx, _B, _lbl, _alpha, _norm, zoom=1.55, box=False)
-            _axg = _sf.add_subplot(_gs[1, _j])
-            _im = _axg.imshow(_grams[_p, _c], cmap="vlag", vmin=-_v, vmax=_v)
-            _axg.set_xticks([]); _axg.set_yticks([])
-            _axb = _sf.add_subplot(_gs[2, _j])
-            _axb.barh(np.arange(_NBAR), _levs[_p, _c], color="black", height=0.75)
-            _axb.set_xlim(0, 1); _axb.set_ylim(_NBAR - 0.5, -0.5); _axb.set_yticks([]); _axb.set_xticks([0, 0.5, 1])
-            _axb.set_xlabel("leverage $d_i$")
-            plot_utils.FIG.style_axes(_axb)
-            if _col == 0 and _j == 0:
-                _ax3.text2D(-0.12, 0.5, f"band, $d_i > {CUT}$", transform=_ax3.transAxes, rotation=90, va="center", ha="center", fontsize=12)
-                _axg.set_ylabel("Gram", fontsize=12)
-                _axb.set_ylabel("feature $i$", fontsize=12)
-    _fig.suptitle(rf"$d$ = {_d}, $\beta$ = {_b}, $\rho$ = {_r}")
-    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.56, 0.25, 0.25]), label=r"$\alpha_i$")
+    for _d, _sf_row in zip(D_GRID, _sf_main.subfigures(len(D_GRID), 1, hspace=0.06)):       # a mega-row per d
+        _nbar = 3 * int(_d)                                                                  # bars: the first 3d features, past every tail
+        for _col, (_p, _sf) in enumerate(zip(P_SWEEP, _sf_row.subfigures(1, 3, wspace=0.22))):   # gaps between p, none within
+            _sf.suptitle(f"$d$ = {_d}, $p$ = {_p}", fontsize=15)
+            _gs = _sf.add_gridspec(3, 2, wspace=0.0, hspace=0.0, height_ratios=[0.8, 0.95, 0.85], left=0, right=1, top=0.94, bottom=0)
+            _Wp = _frames[_d, _p]["theory"]
+            _idx = band((_Wp ** 2).sum(1))
+            _B = basis3(_Wp[_idx], _Wp, False)
+            for _j, (_c, _lbl) in enumerate(_SIDES):
+                _ax3 = _sf.add_subplot(_gs[0, _j], projection="3d")
+                frame_panel(_ax3, _frames[_d, _p][_c], _idx, _B, _lbl, _alpha, _norm, zoom=1.55, box=False)
+                _axg = _sf.add_subplot(_gs[1, _j])
+                _im = _axg.imshow(_grams[_d, _p, _c], cmap="vlag", vmin=-_v, vmax=_v)
+                _axg.set_xticks([]); _axg.set_yticks([])
+                _axb = _sf.add_subplot(_gs[2, _j])
+                _axb.barh(np.arange(_nbar), _levs[_d, _p, _c][:_nbar], color="black", height=0.75)
+                _axb.set_xlim(0, 1); _axb.set_ylim(_nbar - 0.5, -0.5); _axb.set_yticks([]); _axb.set_xticks([0, 0.5, 1])
+                _axb.set_xlabel("leverage $d_i$")
+                plot_utils.FIG.style_axes(_axb)
+                if _col == 0 and _j == 0:
+                    _ax3.text2D(-0.12, 0.5, f"band, $d_i > {CUT}$", transform=_ax3.transAxes, rotation=90, va="center", ha="center", fontsize=12)
+                    _axg.set_ylabel("Gram", fontsize=12)
+                    _axb.set_ylabel("feature $i$", fontsize=12)
+    _fig.suptitle(rf"$\beta$ = {_b}, $\rho$ = {_r}")
+    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.52, 0.25, 0.09]), label=r"$\alpha_i$")
     _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
-    _fig.colorbar(_im, cax=_sf_bar.add_axes([0.15, 0.26, 0.25, 0.25]))
+    _fig.colorbar(_im, cax=_sf_bar.add_axes([0.15, 0.41, 0.25, 0.09]))
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig7_sparsity"))
-    mo.vstack([mo.hstack([SEL_F7["beta"], SEL_F7["rho"], SEL_F7["d"]], justify="start", gap=2), _out])
+    mo.vstack([mo.hstack([SEL_F7["beta"], SEL_F7["rho"]], justify="start", gap=2), _out])
     return
 
 
