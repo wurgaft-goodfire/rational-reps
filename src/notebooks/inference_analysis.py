@@ -293,7 +293,7 @@ def _(
             plot_utils.gram_heatmap(_ax, pl[_side]["rep"],
                                     title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {cka_all:.3f}")
             _ax.title.set_fontsize(FONT)
-        _buf = io.BytesIO(); _fig.savefig(_buf, format="png", dpi=300, bbox_inches="tight"); plt.close(_fig)
+        _buf = io.BytesIO(); _fig.savefig(_buf, format="png", dpi=600, bbox_inches="tight"); plt.close(_fig)
         _buf.seek(0); return _buf
 
     planes = {_name: planes_for(factor_logcond(_h["LP"].reshape(-1, _h["D"].shape[1]))[1].reshape(*_h["LP"].shape[:2], -1)[:, :T],
@@ -321,7 +321,7 @@ def _(
         _b = pick_stream(_pl["pred"]["pts"], toward=3 * np.pi / 4) if _name == "week" else 0   # the ring: a far stream heading up-left
         _blocks.append(plane_block(_pl, latent_colors(_name, hist[_name]["D"].shape[1]), _b, fits[_name]["cka"]))
     fig_latent = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
-    plot_utils.save_figure(fig_latent, FIGURES / "inference_latent.png", dpi=200)
+    plot_utils.save_figure(fig_latent, FIGURES / "inference_latent.png", dpi=600)
     return
 
 
@@ -485,7 +485,7 @@ def _(
                                    pick_stream(_pl["pred"]["pts"], lowest=_br),   # a far stream that ends specific
                                    fits_hyp[_name]["cka"], rays=False, background=False, cloud=_br))
     fig_hyp = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
-    plot_utils.save_figure(fig_hyp, FIGURES / "inference_hypotheses.png", dpi=200)
+    plot_utils.save_figure(fig_hyp, FIGURES / "inference_hypotheses.png", dpi=600)
     return (breadth,)
 
 

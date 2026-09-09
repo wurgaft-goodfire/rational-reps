@@ -23,7 +23,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    import os, sys
+    import io, os, sys
     import numpy as np
 
     # Project root, independent of the working directory (a headless run can start outside
@@ -47,9 +47,9 @@ def _(mo):
         cka_null,
         cka_shuffle_null,
         class_means,
-        factor_logcond,
         graph_conditional,
         graph_overrides,
+        io,
         load_run,
         log_conditional,
         np,
@@ -60,11 +60,11 @@ def _(mo):
 
 @app.cell
 def _(
-    FIGURES,
     cka,
     cka_null,
     cka_shuffle_null,
     class_means,
+    io,
     load_run,
     np,
     plot_utils,
@@ -73,7 +73,8 @@ def _(
     ITEM_CMAP = plot_utils.FIG.item_cmap           # twilight minus its grey ends (house item map)
 
     def geometry_panel(name, runs, spec=None, classes=None):
-        """Draw the predicted code beside each run's, and score them against it.
+        """Draw the predicted code beside each run's, and score them against it; returns the block as an
+        in-memory png.
 
         ``runs`` maps a column label to that run's Hydra overrides; each run is read from its saved
         evaluation, and its representation is the raw last hidden state. ``classes``, when given, is
@@ -94,7 +95,8 @@ def _(
         show = (lambda X: class_means(X, classes)[0]) if classes is not None else (lambda X: X)
         fig = plot_utils.plot_embedding_panels(show(oracle), {k: show(v) for k, v in codes.items()},
                                                spec=spec, cmap=ITEM_CMAP, scores=scores)
-        return plot_utils.save_figure(fig, FIGURES / f"{name}_panels.png")
+        buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=600, bbox_inches="tight"); plot_utils.plt.close(fig)
+        buf.seek(0); return buf                                        # a block for `merge_panels`; only the merged figure is saved
 
     return (geometry_panel,)
 
@@ -170,9 +172,8 @@ def _(FIGURES, geometry_panel, graph_overrides, plot_utils):
     }
 
     # Merge the panels into one figure
-    fig_main = plot_utils.merge_panels(
-        [FIGURES / "png" / f"{name}_panels.png" for name in SPECS])
-    plot_utils.save_figure(fig_main, FIGURES / "geometry_predictions_main.png", dpi=200)
+    fig_main = plot_utils.merge_panels(list(figs_settings.values()))
+    plot_utils.save_figure(fig_main, FIGURES / "geometry_predictions_main.png", dpi=600)
     return
 
 
@@ -232,10 +233,8 @@ def _(FIGURES, geometry_panel, plot_utils):
         figs_rel[relation] = geometry_panel(f"relational_{relation}", runs,
                                             spec=draw_spec, classes=classes)
 
-    fig_rel_main = plot_utils.merge_panels(
-        [FIGURES / "png" / f"relational_{relation}_panels.png" for relation in RELATIONS],
-        labels=RELATIONS)
-    plot_utils.save_figure(fig_rel_main, FIGURES / "relational_predictions_main.png", dpi=200)
+    fig_rel_main = plot_utils.merge_panels(list(figs_rel.values()), labels=RELATIONS)
+    plot_utils.save_figure(fig_rel_main, FIGURES / "relational_predictions_main.png", dpi=600)
     return
 
 
