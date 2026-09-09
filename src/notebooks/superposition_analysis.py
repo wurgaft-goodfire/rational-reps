@@ -428,21 +428,23 @@ def _(
             self.set_positions((_x0, _y0), (_x1, _y1))
             return min(_z0, _z1)
 
-    def _frame_panel(_ax, _W, _idx, _B, _title):
+    def _frame_panel(_ax, _W, _idx, _B, _title, _alpha, _norm):
         _xyz = _W[_idx] @ _B.T
         for _k, _v in zip(_idx, _xyz):
-            _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.2, color=plt.cm.plasma(min(_k, 30) / 30), shrinkA=0, shrinkB=0))
-        _ax.set_xlim(-0.9, 0.9); _ax.set_ylim(-0.9, 0.9); _ax.set_zlim(-0.9, 0.9); _ax.set_box_aspect((1, 1, 1), zoom=1.45)
+            _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=plt.cm.plasma(_norm(_alpha[_k])), shrinkA=0, shrinkB=0))
+        _ax.set_xlim(-0.85, 0.85); _ax.set_ylim(-0.85, 0.85); _ax.set_zlim(-0.85, 0.85); _ax.set_box_aspect((1, 1, 1), zoom=1.6)
         _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_zticks([])
         for _pane in (_ax.xaxis, _ax.yaxis, _ax.zaxis):
             _pane.pane.set_facecolor((1, 1, 1, 0))
         _ax.set_title(_title, fontsize=11)
 
-    _fig = plt.figure(figsize=(19.8, 3.4 * len(_GROUPS)), layout="constrained")
-    _sfs = _fig.subfigures(1, 3, wspace=0.02)
+    _alpha = np.asarray(_sel["rows"][D_GRID[0]][0]["alpha"], float)                # the ladder: colour by alpha_i
+    _norm = plt.Normalize(_alpha.min(), _alpha.max())
+    _fig = plt.figure(figsize=(15.5, 2.7 * len(_GROUPS)), layout="constrained")
+    *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.0, width_ratios=[1, 1, 1, 0.12])
     for _c, (_d, _sf) in enumerate(zip(D_GRID, _sfs)):
         _sf.suptitle(f"d = {_d}", fontsize=15)
-        _gs = _sf.add_gridspec(len(_GROUPS), 2, wspace=0, hspace=0)
+        _gs = _sf.add_gridspec(len(_GROUPS), 2, wspace=0, hspace=0, left=0, right=1, top=0.9, bottom=0)
         _rows = _sel["rows"][_d]
         _ref = _whiten(_rows[0]["E"]["theory"])                                     # the frame every seed is aligned to
         _Wp = np.mean([_whiten(_row["E"]["theory"]) @ rigid_map(_whiten(_row["E"]["theory"]), _ref) for _row in _rows], 0)
@@ -455,10 +457,11 @@ def _(
                 _ax = _sf.add_subplot(_gs[_r, _j], projection="3d")
                 _ax.set_title(f"{_lbl} ({len(_idx)})", fontsize=11)
                 if _B is not None:
-                    _frame_panel(_ax, _W, _idx, _B, f"{_lbl} ({len(_idx)})")
+                    _frame_panel(_ax, _W, _idx, _B, f"{_lbl} ({len(_idx)})", _alpha, _norm)
                 if _c == 0 and _j == 0:
                     _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
     _fig.suptitle(_sel["title"])
+    _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap="plasma"), cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
     mo.vstack([selector_row(SEL_F4), _out])
     return
