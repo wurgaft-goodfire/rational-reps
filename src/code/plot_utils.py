@@ -72,11 +72,11 @@ class FigureGenerator:
             ax.spines[side].set_linewidth(spine_width)
         ax.tick_params(length=tick_length, width=tick_width)
 
-    def save_figure(self, fig, filepath, format=None, dpi=300):
+    def save_figure(self, fig, filepath, format=None, dpi=300, pdf_dpi=600):
         """Save a figure with publication-quality settings and selective rasterization, as both
-        ``.png`` (viewing) and ``.pdf`` (papers) — name either one and the sibling is written
-        beside it. ``format`` forces a single format instead. Returns the figure, so a save call
-        at the end of a marimo cell renders it."""
+        ``.png`` (viewing, at ``dpi``) and ``.pdf`` (papers; its embedded rasters at ``pdf_dpi``) —
+        name either one and the sibling is written beside it. ``format`` forces a single format
+        instead. Returns the figure, so a save call at the end of a marimo cell renders it."""
         for ax in fig.get_axes():
             for collection in ax.collections:
                 if collection.__class__.__name__ in ['QuadMesh', 'AxesImage']:
@@ -91,7 +91,7 @@ class FigureGenerator:
         paths = [asked.parent / ext.lstrip(".") / asked.with_suffix(ext).name for ext in exts]
         for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(path, bbox_inches='tight', dpi=dpi, format=format)
+            fig.savefig(path, bbox_inches='tight', dpi=pdf_dpi if path.suffix == ".pdf" else dpi, format=format)
         print(f"Saved figure to {paths[0]}" + (f" (+{paths[1].suffix})" if len(paths) > 1 else ""))
         return fig
 
@@ -375,7 +375,7 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None, colors=None, xy=None):
 def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"outputs  $x$",
                        caption=None, highlight_row=None, highlight_col=None, factors=None,
                        figsize=(13, 4.2), embedding_width=0.05, decoder_height=0.09,
-                       conditional_aspect="equal"):
+                       conditional_aspect="equal", font_scale=1.0):
     """Decomposition schematic: centered log-conditional = embedding × decoder, three aligned
     heatmaps with per-panel symmetric color scales. ``k=None`` shows the full-rank factorization
     (exact, drawn with ``=``); an int truncates (drawn with ``≈``). ``factors`` supplies an
@@ -384,7 +384,8 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
     height of one decoder row (as a fraction of the panel row); ``conditional_aspect="auto"``
     stretches the conditional to fill its cell like the embedding, instead of square cells. The
     decoder is centered on the operator row. ``highlight_row``/``highlight_col`` box one decoder
-    row/column. Returns ``(fig, {"L","E","D"})``."""
+    row/column. ``font_scale`` multiplies every font (a header drawn large, then shrunk).
+    Returns ``(fig, {"L","E","D"})``."""
     from matplotlib.patches import Rectangle
     from .geometry import factor_logcond
     Lc, E, D, S = factor_logcond(L)
@@ -410,19 +411,19 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
 
     axL = fig.add_subplot(gs[0, 0])
     _panel(axL, Lc, aspect=conditional_aspect, pct=98)
-    axL.set_title("log-conditional\n" + r"$L[z, x] = \log \tilde{p}(x \mid z)$", fontsize=15)
-    axL.set_xlabel(outcome_label, fontsize=13); axL.set_ylabel(item_label, fontsize=13)
+    axL.set_title("log-conditional\n" + r"$L[z, x] = \log \tilde{p}(x \mid z)$", fontsize=15 * font_scale)
+    axL.set_xlabel(outcome_label, fontsize=13 * font_scale); axL.set_ylabel(item_label, fontsize=13 * font_scale)
 
     axE = fig.add_subplot(gs[0, 2])
     _panel(axE, Ek)
-    axE.set_title("embedding", fontsize=15)
-    axE.set_xlabel("k dims", fontsize=13)
+    axE.set_title(r"embedding  $E^{*}$", fontsize=15 * font_scale)
+    axE.set_xlabel("k dims", fontsize=13 * font_scale)
 
     # decoder: k rows drawn at the same cell height as the other panels, vertically centered
     axD = fig.add_subplot(gs[0, 4])
     _panel(axD, Dk)
-    axD.set_title("decoder", fontsize=15)
-    axD.set_xlabel(outcome_label, fontsize=13)
+    axD.set_title(r"decoder  $D^{*}$", fontsize=15 * font_scale)
+    axD.set_xlabel(outcome_label, fontsize=13 * font_scale)
     pos = axD.get_position()
     shrink = min(1.0, decoder_height * k)                         # chunky rows, like the manuscript
     axD.set_position([pos.x0, pos.y0 + pos.height * (1 - shrink) / 2,
@@ -440,8 +441,8 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
     pL, pE, pD = axL.get_position(), axE.get_position(), axD.get_position()
     yc = (pE.y0 + pE.y1) / 2                              # the full-height panel: the row's middle
     fig.text((pL.x1 + pE.x0) / 2, yc, r"$=$" if exact else r"$\approx$",
-             fontsize=26, ha="center", va="center", color="0.15")
-    fig.text((pE.x1 + pD.x0) / 2, yc, r"$\times$", fontsize=26, ha="center", va="center", color="0.15")
+             fontsize=26 * font_scale, ha="center", va="center", color="0.15")
+    fig.text((pE.x1 + pD.x0) / 2, yc, r"$\times$", fontsize=26 * font_scale, ha="center", va="center", color="0.15")
     if highlight_row is not None:
         axD.add_patch(Rectangle((-0.5, highlight_row - 0.5), n_o, 1, fill=False,
                                 ec="0.45", lw=2.2, zorder=5, clip_on=False))
@@ -449,7 +450,7 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
         axD.add_patch(Rectangle((highlight_col - 0.5, -0.5), 1, k, fill=False,
                                 ec="black", lw=2.2, zorder=5, clip_on=False))
     if caption:
-        fig.text(0.5, 0.015, caption, ha="center", fontsize=12.5, color="0.45")
+        fig.text(0.5, 0.015, caption, ha="center", fontsize=12.5 * font_scale, color="0.45")
     return fig, {"L": axL, "E": axE, "D": axD}
 
 
@@ -611,24 +612,38 @@ def gram_heatmap(ax, reps, title="Gram", cmap=None):
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
 
 
-def merge_panels(paths, labels=None, ncols=2, width=21, label_size=26):
-    """Tile saved panel images into one lettered figure, filling column by column so the letters
-    read (a, b, c) down the first column. Row heights follow each row's tallest panel."""
+def merge_panels(paths, labels=None, ncols=2, width=21, label_size=26, header=None):
+    """Tile panel images (paths or file-like pngs) into one lettered figure, filling column by column
+    so the letters read (a, b, c) down the first column. Row heights follow each row's tallest panel.
+    ``header``: a wide image drawn across the top, lettered (a), the panels following from (b)."""
     import matplotlib.image as mpimg
+
+    def read(p):                                   # a file-like png may already have been read once
+        if hasattr(p, "seek"):
+            p.seek(0)
+        return mpimg.imread(p)
     paths = list(paths)
     nrows = -(-len(paths) // ncols)
     order = [[i + c * nrows for c in range(ncols) if i + c * nrows < len(paths)] for i in range(nrows)]
-    imgs = [mpimg.imread(p) for p in paths]
+    imgs = [read(p) for p in paths]
     ratios = [max(imgs[i].shape[0] / imgs[i].shape[1] for i in row) for row in order]
+    head = None if header is None else read(header)
+    if head is not None:
+        ratios = [ncols * head.shape[0] / head.shape[1]] + ratios          # the header row, in column units
     fig = plt.figure(figsize=(width, 0.5 * width * sum(ratios) + 2.5))
-    gs = fig.add_gridspec(nrows, ncols, height_ratios=ratios, hspace=0.18, wspace=0.08,
+    gs = fig.add_gridspec(len(ratios), ncols, height_ratios=ratios, hspace=0.18, wspace=0.08,
                           left=0.02, right=0.98, top=0.96, bottom=0.03)
+    offset = 0
+    if head is not None:
+        ax = fig.add_subplot(gs[0, :]); ax.imshow(head); ax.axis("off")
+        ax.set_title("(a)", loc="left", fontsize=label_size, pad=14)
+        offset = 1
     for r, row in enumerate(order):
         for c, i in enumerate(row):
-            ax = fig.add_subplot(gs[r, c])
+            ax = fig.add_subplot(gs[r + offset, c])
             ax.imshow(imgs[i]); ax.axis("off")
             name = f" {labels[i]}" if labels is not None else ""
-            ax.set_title(f"({chr(97 + i)}){name}", loc="left", fontsize=label_size, pad=14)
+            ax.set_title(f"({chr(97 + i + offset)}){name}", loc="left", fontsize=label_size, pad=14)
     return fig
 
 

@@ -264,3 +264,37 @@ def test_merge_panels_lays_saved_panels_out_column_major_with_letters(tmp_path):
     assert [a.get_title(loc="left") for a in fig.axes] == ["(a) w", "(c) y", "(b) x", "(d) z"]
     assert all(not a.axison for a in fig.axes)
     plt.close(fig)
+
+
+def test_merge_panels_header_spans_the_top_row_and_takes_the_first_letter(tmp_path):
+    """A wide header image (the task's factorization) sits above the tiled panels, spanning every
+    column, lettered (a); the panels follow as (b), (c), ..."""
+    import io
+    from src.code.plot_utils import merge_panels
+
+    def png(w, h):
+        f, ax = plt.subplots(figsize=(w, h)); ax.plot([0, 1]); buf = io.BytesIO()
+        f.savefig(buf, format="png"); plt.close(f); buf.seek(0); return buf
+
+    head = png(6, 1)
+    plt.close(merge_panels([png(2, 1) for _ in range(4)], ncols=2, header=head))   # a buffer survives reuse
+    fig = merge_panels([png(2, 1) for _ in range(4)], ncols=2, header=head)
+    titles = [a.get_title(loc="left") for a in fig.axes]
+    assert titles == ["(a)", "(b)", "(d)", "(c)", "(e)"]
+    head, *panels = fig.axes
+    assert head.get_position().width > 0.9                       # the header spans the figure
+    assert all(p.get_position().width < 0.5 for p in panels)
+    assert head.get_position().y0 > max(p.get_position().y1 for p in panels)   # and sits above them
+    plt.close(fig)
+
+
+def test_save_figure_rasters_the_pdf_at_print_resolution_whatever_the_png_dpi(tmp_path):
+    """``dpi`` sets the browsable png; the pdf's embedded rasters (heatmaps, tiled panel images) are
+    always written at ``pdf_dpi`` (600 by default), so a cheap png never degrades the paper figure."""
+    fig, ax = plt.subplots(); ax.plot([0, 1])
+    seen = {}
+    real = fig.savefig
+    fig.savefig = lambda path, **kw: seen.__setitem__(Path(path).suffix, kw.get("dpi")) or real(path, **kw)
+    save_figure(fig, tmp_path / "f.png", dpi=200)
+    plt.close(fig)
+    assert seen == {".png": 200, ".pdf": 600}

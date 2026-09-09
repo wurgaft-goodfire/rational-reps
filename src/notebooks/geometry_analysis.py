@@ -73,6 +73,11 @@ def _(
 ):
     ITEM_CMAP = plot_utils.FIG.item_cmap           # twilight minus its grey ends (house item map)
 
+    def as_block(fig, dpi=600):
+        """A figure rendered to an in-memory png, for `merge_panels`; only the merged figure is saved."""
+        buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight"); plot_utils.plt.close(fig)
+        buf.seek(0); return buf
+
     def geometry_panel(name, runs, spec=None, classes=None):
         """Draw the predicted code beside each run's, and score them against it; returns the block as an
         in-memory png.
@@ -96,10 +101,9 @@ def _(
         show = (lambda X: class_means(X, classes)[0]) if classes is not None else (lambda X: X)
         fig = plot_utils.plot_embedding_panels(show(oracle), {k: show(v) for k, v in codes.items()},
                                                spec=spec, cmap=ITEM_CMAP, scores=scores)
-        buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=600, bbox_inches="tight"); plot_utils.plt.close(fig)
-        buf.seek(0); return buf                                        # a block for `merge_panels`; only the merged figure is saved
+        return as_block(fig)
 
-    return (geometry_panel,)
+    return as_block, geometry_panel
 
 
 @app.cell(hide_code=True)
@@ -113,7 +117,7 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, graph_conditional, plot_utils, predicted_geometry):
+def _(FIGURES, as_block, graph_conditional, plot_utils, predicted_geometry):
     # cooccurrence (diffusion | geodesic | adjacency | heat | gaussian) flows to both the
     # prediction and the training; a hypercube wants "heat" so its bits stay independent.
     # Gaussian tuning on a ring is exactly von Mises, so the log-conditional is rank 2 and the
@@ -123,7 +127,10 @@ def _(FIGURES, graph_conditional, plot_utils, predicted_geometry):
     E_pred = predicted_geometry(L)
     fig_fact, _ = plot_utils.plot_factorization(L, k=2)
     plot_utils.save_figure(fig_fact, FIGURES / f"{spec['structure']}_factorization.png")
-    return E_pred, L, spec
+    # the same factorization, wide, as the header of the merged geometry figure (rendered large so its
+    # fonts land near the blocks' after scaling)
+    header_ring = as_block(plot_utils.plot_factorization(L, k=2, figsize=(26, 5.2), font_scale=2.0)[0])
+    return E_pred, L, header_ring, spec
 
 
 @app.cell(hide_code=True)
@@ -154,10 +161,10 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, geometry_panel, graph_overrides, plot_utils):
+def _(FIGURES, geometry_panel, graph_overrides, header_ring, plot_utils):
     ARCHS = ["transformer", "linear", "mlp", "rnn"]
     SPECS = {
-        "ring": {"structure": "ring", "cooccurrence": "diffusion", "n": 30},
+        "ring": {"structure": "ring", "cooccurrence": "gaussian", "n": 30},   # von Mises: exactly rank 2, the header's factorization
         "grid": {"structure": "grid", "cooccurrence": "heat", "n": 5, "m": 5},   # heat: additive over the chain factors, so the lattice sides stay straight
         "helix": {"structure": "product", "cooccurrence": "heat", "view": "3d",  # line x circle
                   "factors": [{"structure": "chain", "n": 8}, {"structure": "ring", "n": 8}]},
@@ -173,8 +180,8 @@ def _(FIGURES, geometry_panel, graph_overrides, plot_utils):
     }
 
     # Merge the panels into one figure
-    fig_main = plot_utils.merge_panels(list(figs_settings.values()))
-    plot_utils.save_figure(fig_main, FIGURES / "geometry_predictions_main.png", dpi=600)
+    fig_main = plot_utils.merge_panels(list(figs_settings.values()), header=header_ring)
+    plot_utils.save_figure(fig_main, FIGURES / "geometry_predictions_main.png", dpi=200)
     return
 
 
@@ -204,7 +211,14 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, apply_lapse, factor_logcond, log_conditional, plot_utils):
+def _(
+    FIGURES,
+    apply_lapse,
+    as_block,
+    factor_logcond,
+    log_conditional,
+    plot_utils,
+):
     from src.code.data import relation_tensor
 
     # the helix relation's conditional, every (note, interval) pair as a row, factored whole; the
@@ -217,11 +231,20 @@ def _(FIGURES, apply_lapse, factor_logcond, log_conditional, plot_utils):
         pitch_log[rows], k=4, factors=(E_pitch[rows], D_pitch), item_label=r"inputs  $(a,b)$", outcome_label=r"outputs  $c$",
         figsize=(16, 5.6), embedding_width=0.1, decoder_height=0.15, conditional_aspect=0.5)
     plot_utils.save_figure(fig_fact_rel, FIGURES / "relational_factorization.png")
-    return
+
+    # approx_add's conditional, exactly rank 2 (the log(a+b) line and its curvature), as the header of the
+    # merged relational figure: factored whole, the first four a-blocks drawn
+    add = relation_tensor({"relation": "approx_add"})
+    add_log = log_conditional(apply_lapse(add.reshape(-1, add.shape[-1])))
+    _, E_add, D_add, _ = factor_logcond(add_log)
+    header_add = as_block(plot_utils.plot_factorization(
+        add_log[rows], k=2, factors=(E_add[rows], D_add), item_label=r"inputs  $(a,b)$", outcome_label=r"outputs  $c$",
+        figsize=(26, 5.2), embedding_width=0.1, decoder_height=0.15, conditional_aspect=0.5, font_scale=2.0)[0])
+    return (header_add,)
 
 
 @app.cell
-def _(FIGURES, geometry_panel, plot_utils):
+def _(FIGURES, geometry_panel, header_add, plot_utils):
     from src.code.data import answer_classes
 
     RUNNERS = {"rel_transformer": "transformer", "rel_rnn": "rnn", "rel_mlp": "mlp", "rel_linear_paired": "linear"}
@@ -235,8 +258,8 @@ def _(FIGURES, geometry_panel, plot_utils):
         figs_rel[relation] = geometry_panel(f"relational_{relation}", runs,
                                             spec=draw_spec, classes=classes)
 
-    fig_rel_main = plot_utils.merge_panels(list(figs_rel.values()))
-    plot_utils.save_figure(fig_rel_main, FIGURES / "relational_predictions_main.png", dpi=600)
+    fig_rel_main = plot_utils.merge_panels(list(figs_rel.values()), header=header_add)
+    plot_utils.save_figure(fig_rel_main, FIGURES / "relational_predictions_main.png", dpi=200)
     return
 
 

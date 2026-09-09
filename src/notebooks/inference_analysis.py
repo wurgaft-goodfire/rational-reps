@@ -321,7 +321,7 @@ def _(
         _b = pick_stream(_pl["pred"]["pts"], toward=3 * np.pi / 4) if _name == "week" else 0   # the ring: a far stream heading up-left
         _blocks.append(plane_block(_pl, latent_colors(_name, hist[_name]["D"].shape[1]), _b, fits[_name]["cka"]))
     fig_latent = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
-    plot_utils.save_figure(fig_latent, FIGURES / "inference_latent.png", dpi=600)
+    plot_utils.save_figure(fig_latent, FIGURES / "inference_latent.png", dpi=200)
     return
 
 
@@ -485,7 +485,7 @@ def _(
                                    pick_stream(_pl["pred"]["pts"], lowest=_br),   # a far stream that ends specific
                                    fits_hyp[_name]["cka"], rays=False, background=False, cloud=_br))
     fig_hyp = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
-    plot_utils.save_figure(fig_hyp, FIGURES / "inference_hypotheses.png", dpi=600)
+    plot_utils.save_figure(fig_hyp, FIGURES / "inference_hypotheses.png", dpi=200)
     return (breadth,)
 
 
