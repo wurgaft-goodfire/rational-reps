@@ -241,7 +241,7 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
         for _ang, _rk in zip(d_angs, np.argsort(np.argsort(np.abs(d_angs - e_ang)))):
             _r = r0 + dr * _rk
             ax.add_patch(mpatches.Arc((0, 0), 2 * _r, 2 * _r, theta1=min(e_ang, _ang),
-                                      theta2=max(e_ang, _ang), color="0.78", lw=1.0))
+                                      theta2=max(e_ang, _ang), color="0.45", lw=1.2))
 
     def region_fill(ax, D, rgb, R, fade=0.5, res=7200):
         """Each decoder's argmax cone as a vector wedge from the origin (crisp at any zoom, editable
@@ -326,7 +326,7 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
         the corners, word i read out by the feature-1 pair; regions = that pair's yes/no half-planes."""
         e, _g = E[i], max(np.abs(E).max(), np.abs(D).max()); R = 1.5 * _g
         if regions:
-            region_fill(ax, D[[0, 2]], yes_no, R, fade=0.16)
+            region_fill(ax, D[[0, 2]], yes_no, R, fade=0.1)
         ax.scatter(*E.T, s=70, color="0.6", zorder=3)                                   # the four words
         for _j, _w in enumerate(WORDS):
             ax.annotate(_w, E[_j] + 0.1 * R * E[_j] / np.linalg.norm(E[_j]), fontsize=19,
@@ -346,7 +346,7 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
         e, _g = E[i], max(np.abs(E).max(), np.abs(D).max()); R = 1.2 * _g
         _d = E[-1] - E[0]
         if regions:
-            region_fill(ax, D, cols5, R, fade=0.55)
+            region_fill(ax, D, cols5, R, fade=0.35)
         code_axes(ax, 0.92 * R, -0.92 * R, 0.92 * R)
         ax.plot(*np.stack([E[0] - 0.15 * _d, E[-1] + 0.15 * _d]).T, ls=":", lw=1.2, zorder=0,
                 color="0.3" if regions else "0.8")                                       # the embedding line
@@ -362,7 +362,7 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
         sectors."""
         e, _g = E[i], max(np.abs(E).max(), np.abs(D).max()); R = 1.3 * _g
         if regions:
-            region_fill(ax, D, hue7, R, fade=0.45)
+            region_fill(ax, D, hue7, R, fade=0.3)
         code_axes(ax, 0.92 * R, -0.92 * R, 0.92 * R)
         _rr, _tt = np.linalg.norm(E, axis=1).mean(), np.linspace(0, 2 * np.pi, 200)
         ax.plot(_rr * np.cos(_tt), _rr * np.sin(_tt), ls=":", lw=1.2, zorder=0,
@@ -397,8 +397,9 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
         """The three worlds side by side from ``vectors[name] = (E, D)``, kernel equations above and each
         token's argmax cone behind."""
         fig, ax = plt.subplots(1, 3, figsize=(28, 9.6))
-        for _a, _name in zip(ax, DRAW):
+        for _j, (_a, _name) in enumerate(zip(ax, DRAW)):
             DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=regions)
+            _a.set_title(f"({chr(97 + _j)})", loc="left", fontsize=26, pad=14)
         fig.tight_layout(rect=(0, 0, 1, 0.84), pad=0.6)
         for _a, _eq in zip(ax, EQS):
             _p = _a.get_position()                     # one shared height for the three equations
