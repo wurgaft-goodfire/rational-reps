@@ -105,6 +105,7 @@ def _(
     load_run,
     modes,
     np,
+    rigid_map,
 ):
     # loaded cells, filled on demand the first time a figure asks for one
     SW = {}
@@ -126,6 +127,16 @@ def _(
 
     HEAD = 3                                          # figure 4: the first three features by alpha are the head ...
     CUT = 0.2                                         # ... the rest with leverage >= 1/5 are the superposed band; below is not drawn
+
+    def whiten(V):
+        """V (V'V)^{-1/2} up to a rotation: rows are the whitened vectors, squared lengths the leverage."""
+        _U, _, _Vt = np.linalg.svd(np.asarray(V, float), full_matrices=False)
+        return _U @ _Vt
+
+    def aligned_mean(mats, ref):
+        """The shared geometry of a set of frames: whiten each, rotate it rigidly onto ``ref`` (orthogonal
+        Procrustes over all rows), average. Seed-specific wobble cancels; what every seed agrees on stays."""
+        return np.mean([whiten(_M) @ rigid_map(whiten(_M), ref) for _M in mats], 0)
 
     def projector(V):
         """Whitened Gram of the rows of V: V (V'V)^+ V', the leverage projector. Gauge-free (V -> V A leaves
@@ -149,7 +160,7 @@ def _(
             SW[(p, b, r, d)] = sweep_rows(p, b, r, d, _have) if {"linear", "theory"} <= set(_have) else None
         return SW[(p, b, r, d)]
 
-    return CUT, HEAD, balanced_factors, load_cell, projector
+    return CUT, HEAD, aligned_mean, balanced_factors, load_cell, whiten
 
 
 @app.cell
@@ -312,8 +323,11 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 3 — feature Grams
-    Whitened Gram $E(E^\top E)^{+}E^\top$ of the first-order vectors, top 16 features, seed means:
-    gauge-free, its diagonal the leverage of Figure 1, its entries the cosines of the whitened vectors.
+    Gram of the shared frame: the first-order vectors whitened, $E(E^\top E)^{-1/2}$, every seed rotated
+    rigidly onto the first predicted frame, averaged, then $WW^\top$ over the top 16 features. Averaging the
+    frames before the Gram cancels seed-specific wobble, so this is the geometry every seed shares (the mean
+    of per-seed Grams would keep each seed's own overlaps). Gauge-free; the diagonal is the leverage of the
+    mean vectors.
     """)
     return
 
@@ -331,24 +345,25 @@ def _(
     NOT_YET,
     RUNNERS,
     SEL_F3,
+    aligned_mean,
     mo,
-    np,
     plot_utils,
     plt,
-    projector,
     rows_for,
     selector_row,
+    whiten,
 ):
     _sel = rows_for(SEL_F3.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
     _K = 16
-    _gram = lambda _row, _c: projector(_row["E"][_c])[:_K, :_K]                  # whitened: gauge-free
+    _gram = lambda _rows, _c, _ref: (lambda _W: _W @ _W.T)(aligned_mean([_row["E"][_c] for _row in _rows], _ref))[:_K, :_K]
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
     _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
     for _c, _d in enumerate(D_GRID):
-        _panels = [(np.mean([_gram(_row, "linear") for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
-                   (np.mean([_gram(_row, "theory") for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
-        _panels += [(np.mean([_gram(_row, _run) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
+        _ref = whiten(_sel["rows"][_d][0]["E"]["theory"])                       # every frame is aligned to the first predicted one
+        _panels = [(_gram(_sel["rows"][_d], "linear", _ref), "trained (5-seed mean)"),
+                   (_gram(_sel["rows"][_d], "theory", _ref), "theory (5-draw mean)")]
+        _panels += [(_gram(_sel["rows"][_d], _run, _ref), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]
             _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
@@ -392,21 +407,17 @@ def _(
     HEAD,
     NOT_YET,
     SEL_F4,
+    aligned_mean,
     mo,
     np,
     plot_utils,
     plt,
-    rigid_map,
     rows_for,
     selector_row,
+    whiten,
 ):
     _sel = rows_for(SEL_F4.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
-
-    def _whiten(E):
-        """E (E'E)^{-1/2} up to a rotation: rows are the whitened feature vectors."""
-        _U, _, _Vt = np.linalg.svd(np.asarray(E, float), full_matrices=False)
-        return _U @ _Vt
 
     # two groups, each drawn in its own frame: the head (first HEAD features by alpha, a near-orthogonal
     # tripod) and the superposed band (the rest with leverage >= 1/5: where the frame's overlaps live)
@@ -464,9 +475,9 @@ def _(
         _sf.suptitle(f"d = {_d}", fontsize=15)
         _gs = _sf.add_gridspec(len(_GROUPS), 2, wspace=0, hspace=0, left=0, right=1, top=0.9, bottom=0)
         _rows = _sel["rows"][_d]
-        _ref = _whiten(_rows[0]["E"]["theory"])                                     # the frame every seed is aligned to
-        _Wp = np.mean([_whiten(_row["E"]["theory"]) @ rigid_map(_whiten(_row["E"]["theory"]), _ref) for _row in _rows], 0)
-        _Wt = np.mean([_whiten(_row["E"]["linear"]) @ rigid_map(_whiten(_row["E"]["linear"]), _ref) for _row in _rows], 0)
+        _ref = whiten(_rows[0]["E"]["theory"])                                      # the frame every seed is aligned to
+        _Wp = aligned_mean([_row["E"]["theory"] for _row in _rows], _ref)
+        _Wt = aligned_mean([_row["E"]["linear"] for _row in _rows], _ref)
         _lev = (_Wp ** 2).sum(1)
         for _r, (_name, _pick, _tripod) in enumerate(_GROUPS):
             _idx = _pick(_lev)
@@ -490,7 +501,8 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 5 — features and pairs together
-    Whitened Gram of the regression vectors of the saved representation on $[1, z - \bar z, \phi(z)]$ (gauge-free): the top 16 features
+    Gram of the shared frame of the regression vectors of the saved representation on $[1, z - \bar z, \phi(z)]$
+    (whitened, seeds aligned to the first predicted frame, averaged; gauge-free): the top 16 features
     and the 15 pairs among the top 6, colour scale set by the pair blocks (the feature block
     saturates).
     """)
@@ -509,14 +521,15 @@ def _(
     D_GRID,
     NOT_YET,
     SEL_F6,
+    aligned_mean,
     mo,
     np,
     pair_features,
     plot_utils,
     plt,
-    projector,
     rows_for,
     selector_row,
+    whiten,
 ):
     _sel = rows_for(SEL_F6.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
@@ -525,23 +538,26 @@ def _(
     _pairs_all = list(_it.combinations(range(18), 2))
     _pairsel = [_pairs_all.index(p) for p in _it.combinations(range(_TOP), 2)]   # 15 pairs among the top 6
 
-    def _ext_gram(_H, _X):
-        """Whitened Gram of the regression vectors of the representation on [1, x, phi(x)]: top-K
-        features and the selected pairs."""
+    def _ext_vectors(_H, _X):
+        """Regression vectors of the representation on [1, x, phi(x)], the intercept dropped: (64 + pairs, d)."""
         _A = np.column_stack([np.ones(len(_X)), _X - _X.mean(0), pair_features(_X, 18)])
-        _B = np.linalg.lstsq(_A, _H, rcond=None)[0]
-        _P = projector(_B[1:])                                          # whitened over every regressor: gauge-free
+        return np.linalg.lstsq(_A, _H, rcond=None)[0][1:]
+
+    def _ext_gram(_rows, _c, _ref):
+        """Gram of the shared frame of those vectors (whitened, aligned to _ref, averaged): top-K features
+        and the selected pairs."""
+        _W = aligned_mean([_ext_vectors(_row["model"][_c][0], _row["X"]) for _row in _rows], _ref)
         _idx = np.r_[np.arange(_K), 64 + np.asarray(_pairsel)]
-        return _P[np.ix_(_idx, _idx)]
+        return (_W @ _W.T)[np.ix_(_idx, _idx)]
 
     _has_pairs = "paired_features" in _sel["runners"]
     _fig, _axes = plt.subplots(3 if _has_pairs else 2, 3, figsize=(13.2, 12.4 if _has_pairs else 8.4), squeeze=False, layout="constrained")
     for _c, _d in enumerate(D_GRID):
         _rows = _sel["rows"][_d]
-        _panels = [(np.mean([_ext_gram(_row["model"]["linear"][0], _row["X"]) for _row in _rows], 0), "trained (5-seed mean)"),
-                   (np.mean([_ext_gram(_row["model"]["theory"][0], _row["X"]) for _row in _rows], 0), "theory (5-draw mean)")]
+        _ref = whiten(_ext_vectors(_rows[0]["model"]["theory"][0], _rows[0]["X"]))
+        _panels = [(_ext_gram(_rows, "linear", _ref), "trained (5-seed mean)"), (_ext_gram(_rows, "theory", _ref), "theory (5-draw mean)")]
         if _has_pairs:
-            _panels.append((np.mean([_ext_gram(_row["model"]["paired_features"][0], _row["X"]) for _row in _rows], 0), "pairs model (5-seed mean)"))
+            _panels.append((_ext_gram(_rows, "paired_features", _ref), "pairs model (5-seed mean)"))
         _v = max(np.abs(_Gm[_K:, :]).max() for _Gm, _lbl in _panels)   # scale to the pair blocks; the feature block saturates
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]
@@ -560,9 +576,10 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 6 — readout Grams
-    Whitened Gram $D(D^\top D)^{+}D^\top$ over outcomes of the balanced readout, `factor_logcond` of the
-    logit table at rank $d$ (row-centring the logits removes the softmax shift, a common offset of every
-    saved readout row that would soak up leverage), top 16, seed means; gauge-free.
+    Gram of the shared readout frame over outcomes: the balanced readout (`factor_logcond` of the logit
+    table at rank $d$; row-centring the logits removes the softmax shift, a common offset of every saved
+    readout row that would soak up leverage), whitened, every seed rotated onto the first predicted one,
+    averaged, then the Gram, top 16; gauge-free.
     """)
     return
 
@@ -580,27 +597,29 @@ def _(
     NOT_YET,
     RUNNERS,
     SEL_F5,
+    aligned_mean,
     balanced_factors,
     mo,
-    np,
     plot_utils,
     plt,
-    projector,
     rows_for,
     selector_row,
+    whiten,
 ):
     _sel = rows_for(SEL_F5.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
     _K = 16
     # the balanced readout from the logit table: row-centring the logits removes the softmax shift (one
     # vector added to every saved readout row, 0.8 of a row's norm when trained) that would soak up leverage
-    _gram = lambda _row, _c, _d: projector(balanced_factors(*_row["model"][_c], int(_d))[1])[:_K, :_K]
+    _dec = lambda _row, _c, _d: balanced_factors(*_row["model"][_c], int(_d))[1]
+    _gram = lambda _rows, _c, _d, _ref: (lambda _W: _W @ _W.T)(aligned_mean([_dec(_row, _c, _d) for _row in _rows], _ref))[:_K, :_K]
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
     _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
     for _c, _d in enumerate(D_GRID):
-        _panels = [(np.mean([_gram(_row, "linear", _d) for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
-                   (np.mean([_gram(_row, "theory", _d) for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
-        _panels += [(np.mean([_gram(_row, _run, _d) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
+        _ref = whiten(_dec(_sel["rows"][_d][0], "theory", _d))
+        _panels = [(_gram(_sel["rows"][_d], "linear", _d, _ref), "trained (5-seed mean)"),
+                   (_gram(_sel["rows"][_d], "theory", _d, _ref), "theory (5-draw mean)")]
+        _panels += [(_gram(_sel["rows"][_d], _run, _d, _ref), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]
             _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
