@@ -210,6 +210,7 @@ def _(mo):
 
     Binary features, temperature line, time-of-week circle, each from a trained 2-D linear net in
     canonical gauge: one embedding, the decoders, and their dot products, with the kernel above.
+    Second row: the same networks with each token's argmax region, cones from the origin.
     """)
     return
 
@@ -393,12 +394,15 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
     DRAW = {"binary": draw_binary, "line": draw_line, "week": draw_circle}
 
     def draw_worlds(vectors, regions, path):
-        """The three worlds side by side from ``vectors[name] = (E, D)``, kernel equations above."""
-        fig, ax = plt.subplots(1, 3, figsize=(28, 9.6))
-        for _a, _name in zip(ax, DRAW):
-            DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=regions)
-        fig.tight_layout(rect=(0, 0, 1, 0.84), pad=0.6)
-        for _a, _eq in zip(ax, EQS):
+        """The three worlds side by side from ``vectors[name] = (E, D)``, kernel equations above; one row
+        per entry of ``regions`` (a bool: draw each token's argmax cone)."""
+        fig, ax = plt.subplots(len(regions), 3, figsize=(28, 9.6 * len(regions)), squeeze=False)
+        for _row, _reg in zip(ax, regions):
+            for _a, _name in zip(_row, DRAW):
+                DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=_reg)
+        _top = 1 - 0.16 / len(regions)                 # the equations' band, one row's worth
+        fig.tight_layout(rect=(0, 0, 1, _top), pad=0.6)
+        for _a, _eq in zip(ax[0], EQS):
             _p = _a.get_position()                     # one shared height for the three equations
             fig.text((_p.x0 + _p.x1) / 2, 0.99, _eq, ha="center", va="top", fontsize=27, linespacing=1.5)
         return plot_utils.save_figure(fig, FIGURES / path)
@@ -443,23 +447,7 @@ def _(WORLDS, cka, gauge, graph_overrides, load_run, np, oracle):
 
 @app.cell
 def _(draw_worlds, learned):
-    draw_worlds(learned, regions=False, path="concepts_worlds_learned.png")
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 2b. The readout's decision regions
-
-    The same trained networks with each token's argmax region: cones from the origin.
-    """)
-    return
-
-
-@app.cell
-def _(draw_worlds, learned):
-    draw_worlds(learned, regions=True, path="concepts_decision_regions_learned.png")
+    draw_worlds(learned, regions=(False, True), path="concepts_worlds_learned.png")
     return
 
 
