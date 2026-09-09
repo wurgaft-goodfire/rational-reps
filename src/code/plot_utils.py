@@ -375,7 +375,7 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None, colors=None, xy=None):
 def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"outputs  $x$",
                        caption=None, highlight_row=None, highlight_col=None, factors=None,
                        figsize=(13, 4.2), embedding_width=0.05, decoder_height=0.09,
-                       conditional_aspect="equal", font_scale=1.0):
+                       conditional_aspect="equal", fig=None, font_scale=1.0):
     """Decomposition schematic: centered log-conditional = embedding × decoder, three aligned
     heatmaps with per-panel symmetric color scales. ``k=None`` shows the full-rank factorization
     (exact, drawn with ``=``); an int truncates (drawn with ``≈``). ``factors`` supplies an
@@ -384,8 +384,8 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
     height of one decoder row (as a fraction of the panel row); ``conditional_aspect="auto"``
     stretches the conditional to fill its cell like the embedding, instead of square cells. The
     decoder is centered on the operator row. ``highlight_row``/``highlight_col`` box one decoder
-    row/column. ``font_scale`` multiplies every font (a header drawn large, then shrunk).
-    Returns ``(fig, {"L","E","D"})``."""
+    row/column. ``fig`` draws into an existing (sub)figure instead of a new one; ``font_scale``
+    multiplies every font (a header drawn large, then shrunk). Returns ``(fig, {"L","E","D"})``."""
     from matplotlib.patches import Rectangle
     from .geometry import factor_logcond
     Lc, E, D, S = factor_logcond(L)
@@ -396,7 +396,7 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
     Ek, Dk = E[:, :k], D[:k]
     n_i, n_o = Lc.shape
 
-    fig = plt.figure(figsize=figsize)
+    fig = fig or plt.figure(figsize=figsize)
     fig.subplots_adjust(bottom=0.16)
     gap = 0.14 * n_o
     gs = fig.add_gridspec(1, 5, width_ratios=[n_o, gap, embedding_width * n_o * k, gap, n_o],
@@ -430,7 +430,7 @@ def plot_factorization(L, k=None, item_label=r"inputs  $z$", outcome_label=r"out
                       pos.width, pos.height * shrink])
     # E is (n, k) and D is (k, n): mirror their cell geometry — E's column width (inches)
     # equals D's row thickness
-    figw, figh = fig.get_size_inches()
+    figw, figh = fig.bbox.width / fig.dpi, fig.bbox.height / fig.dpi   # also right for a subfigure
     cell_in = axD.get_position().height * figh / k
     posE = axE.get_position()
     new_w = k * cell_in / figw
@@ -467,10 +467,11 @@ def conditional_heatmap(ax, L, title=r"$\log \tilde{p}(x \mid z)$", xlabel=r"out
     ax.set(title=title, xlabel=xlabel, ylabel=ylabel)     # keep just the axis labels
 
 
-def plot_predicted_geometry(spec, L, E, cmap=None):
+def plot_predicted_geometry(spec, L, E, cmap=None, fig=None):
     """Triptych: latent structure -> conditional -> the geometry it encodes. ``spec['view']`` picks
     the third panel (tree: ``"ultrametric"`` | ``"pca"`` | ``"simplex"``; else ``"2d"``/``"3d"`` PCA);
-    ``spec['leaves_only']`` makes only leaves items. ``cmap`` overrides the house cyclic colormap."""
+    ``spec['leaves_only']`` makes only leaves items. ``cmap`` overrides the house cyclic colormap;
+    ``fig`` draws into an existing (sub)figure (13 x 3.9 inches for non-tree structures)."""
     A, pos = _structure_graph(spec)
     is3d = pos.shape[1] == 3
     is_tree = spec["structure"] == "tree"
@@ -482,7 +483,7 @@ def plot_predicted_geometry(spec, L, E, cmap=None):
         if view == "simplex":
             n = sum(len(v) >= 2 for v in _tree_children(parents).values())
             H = max(3.9, 2.2 * int(np.ceil(n / np.ceil(np.sqrt(n)))))
-    fig = plt.figure(figsize=(13, H))
+    fig = fig or plt.figure(figsize=(13, H))
     gs = fig.add_gridspec(1, 3, wspace=0.45)
     item_ids = items if is_tree and len(items) != len(A) else None
     labels = _hypercube_labels(spec) if spec["structure"] == "hypercube" else None
@@ -610,6 +611,18 @@ def gram_heatmap(ax, reps, title="Gram", cmap=None):
     lim = np.abs(G).max()
     ax.imshow(G, cmap=cmap or FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect="equal")
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
+
+
+def stack_figures(panels, width=13, gap=0.6):
+    """One tall figure of stacked rows: ``panels`` is ``[(height_inches, draw), ...]`` and each
+    ``draw(fig)`` renders into the subfigure it is handed, so the composite stays vector."""
+    heights = [h for h, _ in panels]
+    fig = plt.figure(figsize=(width, sum(heights) + gap * (len(panels) - 1)))
+    ratios = sum(([h, gap] for h in heights), [])[:-1]              # a spacer row between panels
+    gs = fig.add_gridspec(len(ratios), 1, height_ratios=ratios, hspace=0, left=0, right=1, bottom=0, top=1)
+    for i, (_, draw) in enumerate(panels):
+        draw(fig.add_subfigure(gs[2 * i]))
+    return fig
 
 
 def merge_panels(paths, labels=None, ncols=2, width=21, label_size=26, header=None):

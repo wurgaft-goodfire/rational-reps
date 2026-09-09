@@ -82,12 +82,6 @@ def _(mo):
 
 @app.cell
 def _(E, FIGURES, KDIMS, L, N, SPEC, hue, np, plot_utils, plt):
-    # the whole 1 story in one image: predicted geometry, the factorization, the dual reading
-    _figA = plot_utils.plot_predicted_geometry(SPEC, L, E)
-    plot_utils.save_figure(_figA, FIGURES / "concepts_ring_predicted.png")
-    _figB, _ = plot_utils.plot_factorization(L, k=KDIMS)
-    plot_utils.save_figure(_figB, FIGURES / "concepts_factorization.png")
-
     # fix the rotation gauge so the two columns are literally cos(theta), sin(theta):
     # item 0 on the +x axis, theta increasing counterclockwise
     _E2 = E[:, :2].copy()
@@ -104,56 +98,52 @@ def _(E, FIGURES, KDIMS, L, N, SPEC, hue, np, plot_utils, plt):
         for _sp in ax.spines.values():
             _sp.set_visible(True); _sp.set_color(edge); _sp.set_linewidth(2.2)
 
-    _figC = plt.figure(figsize=(11.5, 3.8))
-    _gs = _figC.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.3)
+    def _dual_reading(fig):
+        _gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.3)
 
-    # the intrinsic angle -> the two linear dimensions (the columns of E over inputs z)
-    _axc = _figC.add_subplot(_gs[0, 0])
-    _axc.plot(_E2[:, 0], color="0.15", lw=1.5, label=r"$\propto \cos\theta$")
-    _axc.plot(_E2[:, 1], color="0.15", lw=1.5, ls="--", label=r"$\propto \sin\theta$")
-    _axc.axvline(_XSTAR2, ls=":", color="0.6", lw=1.0)
-    _axc.scatter([_XSTAR2, _XSTAR2], _E2[_XSTAR2], c="0.15", s=42, zorder=4)
-    _axc.set_xlim(-0.5, N - 0.5)
-    _axc.set_xlabel(r"input $z$  (angle $\theta$)")
-    _axc.legend(frameon=False)
-    _axc.set_title(r"$\theta \to$ two linear dimensions", fontsize=12)
-    plot_utils.FIG.style_axes(_axc)
+        # the intrinsic angle -> the two linear dimensions (the columns of E over inputs z)
+        _axc = fig.add_subplot(_gs[0, 0])
+        _axc.plot(_E2[:, 0], color="0.15", lw=1.5, label=r"$\propto \cos\theta$")
+        _axc.plot(_E2[:, 1], color="0.15", lw=1.5, ls="--", label=r"$\propto \sin\theta$")
+        _axc.axvline(_XSTAR2, ls=":", color="0.6", lw=1.0)
+        _axc.scatter([_XSTAR2, _XSTAR2], _E2[_XSTAR2], c="0.15", s=42, zorder=4)
+        _axc.set_xlim(-0.5, N - 0.5)
+        _axc.set_xlabel(r"input $z$  (angle $\theta$)")
+        _axc.legend(frameon=False)
+        _axc.set_title(r"$\theta \to$ two linear dimensions", fontsize=12)
+        plot_utils.FIG.style_axes(_axc)
 
-    # e(z): the 2-vector, and its point on the circle in activation space
-    _gsB = _gs[0, 1].subgridspec(1, 2, width_ratios=[0.09, 1], wspace=0.12)
-    _axv = _figC.add_subplot(_gsB[0]); _strip(_axv, _E2[_XSTAR2][:, None], "black")
-    _axv.set_xlabel(r"$e(z)$", fontsize=13)
-    _axp = _figC.add_subplot(_gsB[1])
-    _r = _lim * 1.35
-    _axp.annotate("", (_r, 0), (-_r, 0), arrowprops=dict(arrowstyle="->", color="0.45", lw=1.6))
-    _axp.annotate("", (0, _r), (0, -_r), arrowprops=dict(arrowstyle="->", color="0.7", lw=1.6))
-    _axp.scatter(_E2[:, 0], _E2[:, 1], c=hue, s=16, zorder=3)
-    _px, _py = _E2[_XSTAR2]
-    _axp.scatter(_px, _py, s=190, facecolor="none", edgecolor="black", lw=2.4, zorder=4)
-    _axp.plot([_px, _px], [0, _py], ls="--", color="0.15", lw=1.1, zorder=2)
-    _axp.plot([0, _px], [_py, _py], ls="--", color="0.15", lw=1.1, zorder=2)
-    _axp.set_xlim(-_r * 1.15, _r * 1.15); _axp.set_ylim(-_r * 1.15, _r * 1.15)
-    _axp.set_aspect("equal")
-    _axp.set_xlabel("activation space", fontsize=11, color="0.5")
-    plot_utils.FIG.clean(_axp)
-    plot_utils.save_figure(_figC, FIGURES / "concepts_dual_reading.png")
-    for _f in (_figA, _figB, _figC):
-        plt.close(_f)
+        # e(z): the 2-vector, and its point on the circle in activation space
+        _gsB = _gs[0, 1].subgridspec(1, 2, width_ratios=[0.09, 1], wspace=0.12)
+        _axv = fig.add_subplot(_gsB[0]); _strip(_axv, _E2[_XSTAR2][:, None], "black")
+        _axv.set_xlabel(r"$e(z)$", fontsize=13)
+        _axp = fig.add_subplot(_gsB[1])
+        _r = _lim * 1.35
+        _axp.annotate("", (_r, 0), (-_r, 0), arrowprops=dict(arrowstyle="->", color="0.45", lw=1.6))
+        _axp.annotate("", (0, _r), (0, -_r), arrowprops=dict(arrowstyle="->", color="0.7", lw=1.6))
+        _axp.scatter(_E2[:, 0], _E2[:, 1], c=hue, s=16, zorder=3)
+        _px, _py = _E2[_XSTAR2]
+        _axp.scatter(_px, _py, s=190, facecolor="none", edgecolor="black", lw=2.4, zorder=4)
+        _axp.plot([_px, _px], [0, _py], ls="--", color="0.15", lw=1.1, zorder=2)
+        _axp.plot([0, _px], [_py, _py], ls="--", color="0.15", lw=1.1, zorder=2)
+        _axp.set_xlim(-_r * 1.15, _r * 1.15); _axp.set_ylim(-_r * 1.15, _r * 1.15)
+        _axp.set_aspect("equal")
+        _axp.set_xlabel("activation space", fontsize=11, color="0.5")
+        plot_utils.FIG.clean(_axp)
 
-    from PIL import Image
-
-    _names = ["concepts_ring_predicted", "concepts_factorization", "concepts_dual_reading"]
-    _imgs = [Image.open(FIGURES / "png" / f"{_n}.png") for _n in _names]
-    _w = min(_i.width for _i in _imgs)
-    _scaled = [_i.resize((_w, round(_i.height * _w / _i.width))) for _i in _imgs]
-    _gap = 60
-    story = Image.new("RGB", (_w, sum(_i.height for _i in _scaled) + _gap * 2), "white")
-    _y = 0
-    for _i in _scaled:
-        story.paste(_i, (0, _y)); _y += _i.height + _gap
-    story.save(FIGURES / "concepts_embedding_story.png")
-    story
-    return (Image,)
+    # the whole story: predicted geometry, the factorization, the dual reading — each panel saved
+    # on its own and then drawn again into one stacked vector figure
+    _panels = [
+        (3.9, "concepts_ring_predicted", lambda fig: plot_utils.plot_predicted_geometry(SPEC, L, E, fig=fig)),
+        (4.2, "concepts_factorization", lambda fig: plot_utils.plot_factorization(L, k=KDIMS, fig=fig)),
+        (3.8, "concepts_dual_reading", _dual_reading),
+    ]
+    for _h, _name, _draw in _panels:
+        _f = plt.figure(figsize=(13, _h)); _draw(_f)
+        plot_utils.save_figure(_f, FIGURES / f"{_name}.png"); plt.close(_f)
+    story = plot_utils.stack_figures([(_h, _draw) for _h, _, _draw in _panels])
+    plot_utils.save_figure(story, FIGURES / "concepts_embedding_story.png")
+    return
 
 
 @app.cell(hide_code=True)
@@ -168,16 +158,7 @@ def _(mo):
 
 
 @app.cell
-def _(
-    FIGURES,
-    Image,
-    N,
-    factor_logcond,
-    graph_conditional,
-    np,
-    plot_utils,
-    plt,
-):
+def _(FIGURES, N, factor_logcond, graph_conditional, np, plot_utils, plt):
     # the same ring under the diffusion kernel: every harmonic present, geometrically decaying.
     # Each harmonic pair shares a singular value, so the SVD fixes it only up to a phase: the
     # columns are cos(k theta + phi_k), sin(k theta + phi_k) with an arbitrary phi_k per pair
@@ -189,44 +170,36 @@ def _(
     _ratio = S2[2] / S2[0]
     print(f"diffusion ring: centered rank {_rank} of {N2 - 1}; harmonic pairs decay by x{_ratio:.2f} "
           f"({(np.cumsum(S2 ** 2) / (S2 ** 2).sum() < 0.99).sum() + 1} dims for 99% of the energy)")
-
-    _figA = plot_utils.plot_predicted_geometry(SPEC2, L2, E2)
-    plot_utils.save_figure(_figA, FIGURES / "concepts_ring_predicted_diffusion.png")
-    _KD = 6                                                        # harmonic pairs drawn as curves
     print(f"symmetric kernel: max |E - D^T| = {np.abs(E2 - D2.T).max():.1e}")
-    _figB, _ = plot_utils.plot_factorization(L2, k=N2 - 1, embedding_width=1 / N2,
-                                            figsize=(15, 5))        # the full decomposition, equal cells
-    plot_utils.save_figure(_figB, FIGURES / "concepts_factorization_diffusion.png")
+    _KD = 6                                                        # harmonic pairs drawn as curves
 
-    _figC = plt.figure(figsize=(11.5, 3.8))
-    _gs = _figC.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.3)
-    _axc = _figC.add_subplot(_gs[0, 0])                            # the harmonics over the input
-    for _k in range(_KD):
-        _axc.plot(E2[:, _k], color=str(0.15 + 0.2 * (_k // 2)), lw=1.5, ls="-" if _k % 2 == 0 else "--")
-    _axc.set_xlim(-0.5, N2 - 0.5)
-    _axc.set_xlabel(r"input $z$  (angle $\theta$)")
-    _axc.set_title(r"$\theta \to$ harmonic pairs at $k = 1$ (dark) to $3$ (light), each up to a phase", fontsize=12)
-    plot_utils.FIG.style_axes(_axc)
-    _axs = _figC.add_subplot(_gs[0, 1])                            # the spectrum: one bar per dimension
-    _axs.bar(np.arange(1, N2), S2[:N2 - 1], color=["0.25" if _k % 4 < 2 else "0.6" for _k in range(N2 - 1)], width=0.8)
-    _axs.set(xticks=[1, 10, 20, 30, 40, 50, N2 - 1], xlabel="dimension", yscale="log")
-    _axs.set_title("singular values decay by harmonic pair", fontsize=12)
-    plot_utils.FIG.style_axes(_axs)
-    plot_utils.save_figure(_figC, FIGURES / "concepts_harmonics_diffusion.png")
-    for _f in (_figA, _figB, _figC):
-        plt.close(_f)
+    def _harmonics(fig):
+        _gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.3)
+        _axc = fig.add_subplot(_gs[0, 0])                          # the harmonics over the input
+        for _k in range(_KD):
+            _axc.plot(E2[:, _k], color=str(0.15 + 0.2 * (_k // 2)), lw=1.5, ls="-" if _k % 2 == 0 else "--")
+        _axc.set_xlim(-0.5, N2 - 0.5)
+        _axc.set_xlabel(r"input $z$  (angle $\theta$)")
+        _axc.set_title(r"$\theta \to$ harmonic pairs at $k = 1$ (dark) to $3$ (light), each up to a phase", fontsize=12)
+        plot_utils.FIG.style_axes(_axc)
+        _axs = fig.add_subplot(_gs[0, 1])                          # the spectrum: one bar per dimension
+        _axs.bar(np.arange(1, N2), S2[:N2 - 1], color=["0.25" if _k % 4 < 2 else "0.6" for _k in range(N2 - 1)], width=0.8)
+        _axs.set(xticks=[1, 10, 20, 30, 40, 50, N2 - 1], xlabel="dimension", yscale="log")
+        _axs.set_title("singular values decay by harmonic pair", fontsize=12)
+        plot_utils.FIG.style_axes(_axs)
 
-    _names = ["concepts_ring_predicted_diffusion", "concepts_factorization_diffusion", "concepts_harmonics_diffusion"]
-    _imgs = [Image.open(FIGURES / "png" / f"{_n}.png") for _n in _names]
-    _w = min(_i.width for _i in _imgs)
-    _scaled = [_i.resize((_w, round(_i.height * _w / _i.width))) for _i in _imgs]
-    _gap = 60
-    story2 = Image.new("RGB", (_w, sum(_i.height for _i in _scaled) + _gap * 2), "white")
-    _y = 0
-    for _i in _scaled:
-        story2.paste(_i, (0, _y)); _y += _i.height + _gap
-    story2.save(FIGURES / "concepts_embedding_story_diffusion.png")
-    story2
+    _panels = [
+        (3.9, "concepts_ring_predicted_diffusion",
+         lambda fig: plot_utils.plot_predicted_geometry(SPEC2, L2, E2, fig=fig)),
+        (5.0, "concepts_factorization_diffusion",                  # the full decomposition, equal cells
+         lambda fig: plot_utils.plot_factorization(L2, k=N2 - 1, embedding_width=1 / N2, fig=fig)),
+        (3.8, "concepts_harmonics_diffusion", _harmonics),
+    ]
+    for _h, _name, _draw in _panels:
+        _f = plt.figure(figsize=(13, _h)); _draw(_f)
+        plot_utils.save_figure(_f, FIGURES / f"{_name}.png"); plt.close(_f)
+    story2 = plot_utils.stack_figures([(_h, _draw) for _h, _, _draw in _panels])
+    plot_utils.save_figure(story2, FIGURES / "concepts_embedding_story_diffusion.png")
     return
 
 
