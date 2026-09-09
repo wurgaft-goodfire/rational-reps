@@ -428,10 +428,12 @@ def _(
             self.set_positions((_x0, _y0), (_x1, _y1))
             return min(_z0, _z1)
 
+    ALPHA_CMAP = plt.get_cmap(plot_utils.FIG.diverging_cmap)                      # alpha on the house diverging map (vlag)
+
     def _frame_panel(_ax, _W, _idx, _B, _title, _alpha, _norm):
         _xyz = _W[_idx] @ _B.T
         for _k, _v in zip(_idx, _xyz):
-            _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=plt.cm.turbo(_norm(_alpha[_k])), shrinkA=0, shrinkB=0))
+            _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=ALPHA_CMAP(_norm(_alpha[_k])), shrinkA=0, shrinkB=0))
         _ax.set_xlim(-0.85, 0.85); _ax.set_ylim(-0.85, 0.85); _ax.set_zlim(-0.85, 0.85); _ax.set_box_aspect((1, 1, 1), zoom=1.6)
         _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_zticks([])
         for _pane in (_ax.xaxis, _ax.yaxis, _ax.zaxis):
@@ -461,7 +463,7 @@ def _(
                 if _c == 0 and _j == 0:
                     _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
     _fig.suptitle(_sel["title"])
-    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap="turbo"), cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
+    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
     _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
     mo.vstack([selector_row(SEL_F4), _out])
