@@ -124,6 +124,8 @@ def _(
                               E={_c: feature_vectors(_H, _X)[0] for _c, (_H, _D) in _model.items()}))
         return _rows
 
+    CUTS = {"represented": 0.5, "partial": 0.05}      # leverage levels on the theory's allocation: >= 1/2 a dimension; >= 1/20
+
     def projector(V):
         """Whitened Gram of the rows of V: V (V'V)^+ V', the leverage projector. Gauge-free (V -> V A leaves
         it fixed); its diagonal is the leverage, its entries the inner products of the whitened vectors."""
@@ -146,7 +148,7 @@ def _(
             SW[(p, b, r, d)] = sweep_rows(p, b, r, d, _have) if {"linear", "theory"} <= set(_have) else None
         return SW[(p, b, r, d)]
 
-    return balanced_factors, load_cell, projector
+    return CUTS, balanced_factors, load_cell, projector
 
 
 @app.cell
@@ -184,7 +186,8 @@ def _(mo):
     ## Figure 1 — allocation
     Leverage $d_i$ of the first-order vectors (diagonal of the hat matrix $E (E^\top E)^{+} E^\top$,
     gauge-invariant): per-seed trained dots, reference means $\pm$ se, and the predicted
-    allocation (water filling plus the soft tail).
+    allocation (water filling plus the soft tail). Dotted levels: the leverage cuts that group features in
+    Figure 4, $\tfrac12$ and $\tfrac1{20}$.
     """)
     return
 
@@ -199,6 +202,7 @@ def _(setting_ui):
 def _(
     COL,
     CONFIG,
+    CUTS,
     D_GRID,
     NOT_YET,
     RUNNERS,
@@ -230,6 +234,8 @@ def _(
         _pr = np.array([_lev(_row, "theory") for _row in _sel["rows"][_d]])
         _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
         _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
+        for _lvl in CUTS.values():                                    # the groups of figure 4
+            _ax.axhline(_lvl, color="0.75", lw=0.8, ls=":", zorder=0)
         _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
         _ax.set_title(f"d = {_d}")
         _ax.set_xlabel("feature $i$" if _sel["rho"] == 0.0 else "mode $k$")
@@ -362,11 +368,11 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 4 — the frame, feature by feature
-    Whitened first-order vectors $E(E^\top E)^{-1/2}$ (rows of unit-or-shorter length, squared length the
-    leverage), grouped by the theory's allocation: represented ($d_i \ge 0.5$) and partial
-    ($0.05 \le d_i < 0.5$). Each panel is the top two principal directions of the theory group's span;
-    theory in grey, trained in colour by feature rank. Every seed's frame is rotated rigidly onto the
-    first seed's theory frame before averaging, so the means are of aligned vectors.
+    Whitened first-order vectors $E(E^\top E)^{-1/2}$ (squared length the leverage), grouped by the theory's
+    allocation: represented, $d_i \ge \tfrac12$ (more than half a dimension), and partial, $\tfrac1{20} \le d_i
+    < \tfrac12$; the dropped features below $\tfrac1{20}$ are not drawn. Trained beside theory in the same
+    plane, the top two principal directions of the theory group's span, colour by feature rank. Every seed's
+    frame is rotated rigidly onto the first seed's theory frame before averaging.
     """)
     return
 
@@ -380,6 +386,7 @@ def _(setting_ui):
 @app.cell
 def _(
     CONFIG,
+    CUTS,
     D_GRID,
     NOT_YET,
     SEL_F4,
@@ -399,8 +406,8 @@ def _(
         _U, _, _Vt = np.linalg.svd(np.asarray(E, float), full_matrices=False)
         return _U @ _Vt
 
-    _GROUPS = [("represented", 0.5, 1.01), ("partial", 0.05, 0.5)]
-    _fig, _axes = plt.subplots(len(_GROUPS), 3, figsize=(13.2, 4.4 * len(_GROUPS)), layout="constrained", squeeze=False)
+    _GROUPS = [("represented", CUTS["represented"], 1.01), ("partial", CUTS["partial"], CUTS["represented"])]
+    _fig, _axes = plt.subplots(len(_GROUPS), 6, figsize=(19.8, 3.6 * len(_GROUPS)), layout="constrained", squeeze=False)
     for _c, _d in enumerate(D_GRID):
         _rows = _sel["rows"][_d]
         _ref = _whiten(_rows[0]["E"]["theory"])                                     # the frame every seed is aligned to
@@ -408,16 +415,17 @@ def _(
         _Wt = np.mean([_whiten(_row["E"]["linear"]) @ rigid_map(_whiten(_row["E"]["linear"]), _ref) for _row in _rows], 0)
         _lev = (_Wp ** 2).sum(1)
         for _r, (_name, _lo, _hi) in enumerate(_GROUPS):
-            _idx = np.flatnonzero((_lev >= _lo) & (_lev < _hi)); _ax = _axes[_r, _c]
-            _ax.set_title(f"d = {_d} — {_name} ({len(_idx)} features)", fontsize=11)
-            _ax.set_xlim(-1.1, 1.1); _ax.set_ylim(-1.1, 1.1); _ax.set_aspect("equal"); _ax.set_xticks([]); _ax.set_yticks([])
-            if len(_idx) < 2:
-                continue
-            _P = np.linalg.svd(_Wp[_idx], full_matrices=False)[2][:2]                # the theory group's top-2 span
-            for _W, _col, _lw, _z in [(_Wp, "0.65", 2.4, 2), (_Wt, None, 1.3, 3)]:
+            _idx = np.flatnonzero((_lev >= _lo) & (_lev < _hi))
+            _P = np.linalg.svd(_Wp[_idx], full_matrices=False)[2][:2] if len(_idx) >= 2 else None   # the theory group's top-2 span
+            for _j, (_W, _lbl) in enumerate([(_Wt, "trained"), (_Wp, "theory")]):
+                _ax = _axes[_r, 2 * _c + _j]
+                _ax.set_title(f"d = {_d} — {_lbl}, {_name} ({len(_idx)})", fontsize=11)
+                _ax.set_xlim(-1.1, 1.1); _ax.set_ylim(-1.1, 1.1); _ax.set_aspect("equal"); _ax.set_xticks([]); _ax.set_yticks([])
+                if _P is None:
+                    continue
                 for _k, (_x, _y) in zip(_idx, _W[_idx] @ _P.T):
-                    _ax.annotate("", xy=(_x, _y), xytext=(0, 0), zorder=_z,
-                                 arrowprops=dict(arrowstyle="->", lw=_lw, color=_col or plt.cm.plasma(min(_k, 30) / 30)))
+                    _ax.annotate("", xy=(_x, _y), xytext=(0, 0), zorder=3,
+                                 arrowprops=dict(arrowstyle="->", lw=1.6, color=plt.cm.plasma(min(_k, 30) / 30)))
     _fig.suptitle(_sel["title"])
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
     mo.vstack([selector_row(SEL_F4), _out])
