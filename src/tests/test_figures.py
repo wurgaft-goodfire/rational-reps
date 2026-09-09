@@ -264,3 +264,24 @@ def test_merge_panels_lays_saved_panels_out_column_major_with_letters(tmp_path):
     assert [a.get_title(loc="left") for a in fig.axes] == ["(a) w", "(c) y", "(b) x", "(d) z"]
     assert all(not a.axison for a in fig.axes)
     plt.close(fig)
+
+
+def test_stack_figures_draws_each_panel_into_its_own_subfigure_row():
+    """The story figures are three saved panels stacked vertically; drawing them into one
+    figure's subfigures keeps the composite vector (pdf) instead of pasting PNGs."""
+    import numpy as np
+    from src.code.plot_utils import stack_figures
+
+    def _draw(tag):
+        def draw(fig):
+            fig.add_subplot().set_title(tag)
+        return draw
+
+    fig = stack_figures([(3.0, _draw("a")), (5.0, _draw("b")), (2.0, _draw("c"))], width=10)
+    assert [a.get_title() for a in fig.axes] == ["a", "b", "c"]
+    # each panel lives in its own subfigure, at the requested height ratio, top to bottom
+    heights = [a.figure.bbox.height for a in fig.axes]
+    assert np.allclose(np.array(heights) / heights[2], [1.5, 2.5, 1.0])
+    tops = [a.figure.bbox.y1 for a in fig.axes]
+    assert tops[0] > tops[1] > tops[2]
+    plt.close(fig)
