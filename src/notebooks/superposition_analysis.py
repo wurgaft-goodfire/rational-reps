@@ -398,6 +398,60 @@ def _(mo):
     return
 
 
+@app.cell
+def _(CUT, HEAD, np, plot_utils, plt):
+    # the frame drawing, shared by figures 4 and 7
+    from matplotlib.patches import FancyArrowPatch
+    from mpl_toolkits.mplot3d.proj3d import proj_transform
+
+    class Arrow3D(FancyArrowPatch):
+        """A FancyArrowPatch from the origin to a 3-D point: a filled head, unlike quiver's three lines."""
+        def __init__(self, xyz, **kw):
+            super().__init__((0, 0), (0, 0), **kw); self._xyz = xyz
+        def do_3d_projection(self, renderer=None):
+            _x0, _y0, _z0 = proj_transform(0, 0, 0, self.axes.M)
+            _x1, _y1, _z1 = proj_transform(*self._xyz, self.axes.M)
+            self.set_positions((_x0, _y0), (_x1, _y1))
+            return min(_z0, _z1)
+
+    def band(lev):
+        """The superposed band: features with leverage above CUT, the head excluded."""
+        return np.flatnonzero(lev > CUT)[HEAD:]
+
+    def basis3(group, frame, tripod):
+        """A view of the group. The head: Gram-Schmidt on its three vectors, the first along z, the next along
+        x, the third along y. A superposed set: its top-3 principal directions, which spread it. Completed
+        from the whole frame when the group has fewer than three vectors."""
+        if tripod:
+            _Qm, _R = np.linalg.qr(group[:3].T)
+            _Q = (_Qm * np.sign(np.diag(_R))).T                                         # each axis points along its own vector
+        else:
+            _Q = np.linalg.svd(group, full_matrices=False)[2][:3]
+        if len(_Q) < 3:
+            _rest = frame - frame @ _Q.T @ _Q                                           # the frame outside the group's span
+            _Q = np.vstack([_Q, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_Q)]])
+        return _Q[[1, 2, 0]]                                                            # x <- second, y <- third, z <- head
+
+    # the house diverging map with its pale middle cut out: blue -> light blue | light red -> red over log alpha,
+    # so no arrow washes out on the white page
+    _vlag = plt.get_cmap(plot_utils.FIG.diverging_cmap)
+    ALPHA_CMAP = plt.matplotlib.colors.ListedColormap(np.vstack([_vlag(np.linspace(0.0, 0.36, 128)), _vlag(np.linspace(0.64, 1.0, 128))]), name="vlag_cut")
+
+    def frame_panel(ax, W, idx, B, title, alpha, norm):
+        """The vectors W[idx] in the 3-D view B (3, d), each an arrow coloured by alpha."""
+        _xyz = W[idx] @ B.T
+        for _k, _v in zip(idx, _xyz):
+            ax.add_artist(Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=ALPHA_CMAP(norm(alpha[_k])), shrinkA=0, shrinkB=0))
+        ax.set_xlim(-0.85, 0.85); ax.set_ylim(-0.85, 0.85); ax.set_zlim(-0.85, 0.85); ax.set_box_aspect((1, 1, 1), zoom=1.6)
+        ax.set_proj_type("ortho"); ax.view_init(elev=24, azim=-45)                     # no perspective, x and y foreshortened alike
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+        for _pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+            _pane.pane.set_facecolor((1, 1, 1, 0))
+        ax.set_title(title, fontsize=11)
+
+    return ALPHA_CMAP, band, basis3, frame_panel
+
+
 @app.cell(hide_code=True)
 def _(setting_ui):
     SEL_F4 = setting_ui()
@@ -406,6 +460,7 @@ def _(setting_ui):
 
 @app.cell
 def _(
+    ALPHA_CMAP,
     CONFIG,
     CUT,
     D_GRID,
@@ -413,6 +468,9 @@ def _(
     NOT_YET,
     SEL_F4,
     aligned_mean,
+    band,
+    basis3,
+    frame_panel,
     mo,
     np,
     plot_utils,
@@ -427,50 +485,7 @@ def _(
     # two groups, each drawn in its own frame: the head (first HEAD features by alpha, a near-orthogonal
     # tripod) and the superposed band (the rest with leverage >= 1/5: where the frame's overlaps live)
     _GROUPS = [(f"Top {HEAD} $d_i$", lambda _lev: np.arange(HEAD), True),
-               (f"Rest with $d_i > {CUT}$", lambda _lev: np.flatnonzero(_lev > CUT)[HEAD:], False)]
-
-    def _basis3(_group, _frame, _tripod):
-        """A view of the group. The head: Gram-Schmidt on its three vectors, the first along z, the next along
-        x, the third along y. A superposed set: its top-3 principal directions, which spread it. Completed
-        from the whole frame when the group has fewer than three vectors."""
-        if _tripod:
-            _Qm, _R = np.linalg.qr(_group[:3].T)
-            _Q = (_Qm * np.sign(np.diag(_R))).T                                         # each axis points along its own vector
-        else:
-            _Q = np.linalg.svd(_group, full_matrices=False)[2][:3]
-        if len(_Q) < 3:
-            _rest = _frame - _frame @ _Q.T @ _Q                                         # the frame outside the group's span
-            _Q = np.vstack([_Q, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_Q)]])
-        return _Q[[1, 2, 0]]                                                            # x <- second, y <- third, z <- head
-
-    from matplotlib.patches import FancyArrowPatch as _FancyArrowPatch
-    from mpl_toolkits.mplot3d.proj3d import proj_transform as _proj_transform
-
-    class _Arrow3D(_FancyArrowPatch):
-        """A FancyArrowPatch from the origin to a 3-D point: a filled head, unlike quiver's three lines."""
-        def __init__(self, xyz, **kw):
-            super().__init__((0, 0), (0, 0), **kw); self._xyz = xyz
-        def do_3d_projection(self, renderer=None):
-            _x0, _y0, _z0 = _proj_transform(0, 0, 0, self.axes.M)
-            _x1, _y1, _z1 = _proj_transform(*self._xyz, self.axes.M)
-            self.set_positions((_x0, _y0), (_x1, _y1))
-            return min(_z0, _z1)
-
-    # the house diverging map with its pale middle cut out: blue -> light blue | light red -> red over log alpha,
-    # so no arrow washes out on the white page
-    _vlag = plt.get_cmap(plot_utils.FIG.diverging_cmap)
-    ALPHA_CMAP = plt.matplotlib.colors.ListedColormap(np.vstack([_vlag(np.linspace(0.0, 0.36, 128)), _vlag(np.linspace(0.64, 1.0, 128))]), name="vlag_cut")
-
-    def _frame_panel(_ax, _W, _idx, _B, _title, _alpha, _norm):
-        _xyz = _W[_idx] @ _B.T
-        for _k, _v in zip(_idx, _xyz):
-            _ax.add_artist(_Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=ALPHA_CMAP(_norm(_alpha[_k])), shrinkA=0, shrinkB=0))
-        _ax.set_xlim(-0.85, 0.85); _ax.set_ylim(-0.85, 0.85); _ax.set_zlim(-0.85, 0.85); _ax.set_box_aspect((1, 1, 1), zoom=1.6)
-        _ax.set_proj_type("ortho"); _ax.view_init(elev=24, azim=-45)                   # no perspective, x and y foreshortened alike
-        _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_zticks([])
-        for _pane in (_ax.xaxis, _ax.yaxis, _ax.zaxis):
-            _pane.pane.set_facecolor((1, 1, 1, 0))
-        _ax.set_title(_title, fontsize=11)
+               (f"Rest with $d_i > {CUT}$", band, False)]
 
     _alpha = np.asarray(_sel["rows"][D_GRID[0]][0]["alpha"], float)                # the ladder: colour by alpha_i
     _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())               # the ladder is a power law: log spreads it
@@ -486,12 +501,12 @@ def _(
         _lev = (_Wp ** 2).sum(1)
         for _r, (_name, _pick, _tripod) in enumerate(_GROUPS):
             _idx = _pick(_lev)
-            _B = _basis3(_Wp[_idx], _Wp, _tripod) if len(_idx) else None
+            _B = basis3(_Wp[_idx], _Wp, _tripod) if len(_idx) else None
             for _j, (_W, _lbl) in enumerate([(_Wp, "predicted"), (_Wt, "linear")]):
                 _ax = _sf.add_subplot(_gs[_r, _j], projection="3d")
                 _ax.set_title(_lbl, fontsize=11)
                 if _B is not None:
-                    _frame_panel(_ax, _W, _idx, _B, _lbl, _alpha, _norm)
+                    frame_panel(_ax, _W, _idx, _B, _lbl, _alpha, _norm)
                 if _c == 0 and _j == 0:
                     _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
     _fig.suptitle(_sel["title"])
@@ -639,6 +654,95 @@ def _(
     _fig.suptitle(_sel["title"])
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig6_decoder_grams"))
     mo.vstack([selector_row(SEL_F5), _out])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Figure 7 — the sparsity sweep
+    Sparsity $p$ falls left to right at one $d$. Per column, a predicted block and a trained block: the
+    superposed band ($d_i > 0.2$, the second row of figure 4) in its PCA frame, the Gram of the shared frame
+    (top 16 features, one colour scale over every panel, set by the largest off-diagonal entry), and the
+    leverage $d_i$ of the first 24 features (seed mean).
+    """)
+    return
+
+
+@app.cell
+def _(B_KEY, D_GRID, GRID, R_KEY, mo):
+    P_SWEEP = ["0.3", "0.15", "0.05"]
+    SEL_F7 = mo.ui.dictionary({
+        "beta": mo.ui.dropdown(options=GRID[B_KEY], value="0.5", label="ladder slope β"),
+        "rho": mo.ui.dropdown(options=GRID[R_KEY], value="0.0", label="correlation ρ"),
+        "d": mo.ui.dropdown(options=D_GRID, value="6", label="d"),
+    })
+    return P_SWEEP, SEL_F7
+
+
+@app.cell
+def _(
+    ALPHA_CMAP,
+    CONFIG,
+    CUT,
+    NOT_YET,
+    P_SWEEP,
+    SEL_F7,
+    aligned_mean,
+    band,
+    basis3,
+    frame_panel,
+    leverage,
+    load_cell,
+    mo,
+    np,
+    plot_utils,
+    plt,
+    whiten,
+):
+    _b, _r, _d = SEL_F7.value["beta"], SEL_F7.value["rho"], SEL_F7.value["d"]
+    _cells = {_p: load_cell(_p, _b, _r, _d) for _p in P_SWEEP}
+    mo.stop(any(_rows is None for _rows in _cells.values()), NOT_YET)
+    _K, _NBAR = 16, 18
+    _SIDES = [("theory", "predicted"), ("linear", "trained")]
+
+    _frames = {_p: {_c: aligned_mean([_row["E"][_c] for _row in _rows], whiten(_rows[0]["E"]["theory"])) for _c, _ in _SIDES}
+               for _p, _rows in _cells.items()}
+    _grams = {(_p, _c): _W[:_K] @ _W[:_K].T for _p, _fr in _frames.items() for _c, _W in _fr.items()}
+    _v = max(np.abs(_Gm - np.diag(np.diag(_Gm))).max() for _Gm in _grams.values())      # one scale: the largest off-diagonal entry
+    _levs = {(_p, _c): np.mean([leverage(_row["E"][_c])[0][:_NBAR] for _row in _rows], 0) for _p, _rows in _cells.items() for _c, _ in _SIDES}
+    _alpha = np.asarray(_cells[P_SWEEP[0]][0]["alpha"], float)
+    _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())
+
+    _fig = plt.figure(figsize=(15.5, 8.2), layout="constrained")
+    *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.12, width_ratios=[1, 1, 1, 0.12])
+    for _col, (_p, _sf) in enumerate(zip(P_SWEEP, _sfs)):
+        _sf.suptitle(f"$p$ = {_p}", fontsize=15)
+        _gs = _sf.add_gridspec(3, 2, wspace=0.08, hspace=0.0, height_ratios=[1, 0.95, 0.85], left=0, right=1, top=0.94, bottom=0)
+        _Wp = _frames[_p]["theory"]
+        _idx = band((_Wp ** 2).sum(1))
+        _B = basis3(_Wp[_idx], _Wp, False)
+        for _j, (_c, _lbl) in enumerate(_SIDES):
+            _ax3 = _sf.add_subplot(_gs[0, _j], projection="3d")
+            frame_panel(_ax3, _frames[_p][_c], _idx, _B, _lbl, _alpha, _norm)
+            _axg = _sf.add_subplot(_gs[1, _j])
+            _im = _axg.imshow(_grams[_p, _c], cmap="vlag", vmin=-_v, vmax=_v)
+            _axg.set_xticks([]); _axg.set_yticks([])
+            _axb = _sf.add_subplot(_gs[2, _j])
+            _axb.barh(np.arange(_NBAR), _levs[_p, _c], color="black", height=0.75)
+            _axb.set_xlim(0, 1); _axb.set_ylim(_NBAR - 0.5, -0.5); _axb.set_yticks([]); _axb.set_xticks([0, 0.5, 1])
+            _axb.set_xlabel("leverage $d_i$")
+            plot_utils.FIG.style_axes(_axb)
+            if _col == 0 and _j == 0:
+                _ax3.text2D(-0.12, 0.5, f"band, $d_i > {CUT}$", transform=_ax3.transAxes, rotation=90, va="center", ha="center", fontsize=12)
+                _axg.set_ylabel("Gram", fontsize=12)
+                _axb.set_ylabel("feature $i$", fontsize=12)
+    _fig.suptitle(rf"$d$ = {_d}, $\beta$ = {_b}, $\rho$ = {_r}")
+    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.7, 0.25, 0.25]), label=r"$\alpha_i$")
+    _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
+    _fig.colorbar(_im, cax=_sf_bar.add_axes([0.15, 0.36, 0.25, 0.25]))
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig7_sparsity"))
+    mo.vstack([mo.hstack([SEL_F7["beta"], SEL_F7["rho"], SEL_F7["d"]], justify="start", gap=2), _out])
     return
 
 
