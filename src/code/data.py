@@ -203,7 +203,8 @@ class KernelDataset(Dataset):
         return self.batch()
 
     def batch(self, size=None):
-        """One sampled batch as the dict the model consumes (``input_ids``, ``labels``, ...);
+        """One sampled batch as the dict the model consumes: ``input_ids``, ``labels``, and for
+        hidden-input streams ``latents`` (B, L), the z behind each position (models ignore it).
         ``size`` streams for a sequence task, default ``training_kwargs.batch_size``."""
         B = size or self._batch_size()
         if not self.sequential:
@@ -221,7 +222,7 @@ class KernelDataset(Dataset):
         labels = seq.clone()
         if self.infer_latent:
             labels[:, 1:] = z + self.n_outcomes + 1
-        return {"input_ids": seq, "labels": labels}
+        return {"input_ids": seq, "labels": labels, "latents": z}     # z: the hidden input, whatever the target
 
     def _pointwise_batch(self):
         """Every input tuple as ``[z..., x]`` with a sampled outcome, plus the exact row: a

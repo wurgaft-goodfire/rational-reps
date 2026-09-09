@@ -31,7 +31,7 @@ def _(mo):
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
     from src.code.train import graph_overrides
-    from src.code.analysis_utils import load_run
+    from src.code.analysis_utils import load_run, rigid_map
     from src.code.geometry import factor_logcond, predicted_inference_geometry
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -49,6 +49,7 @@ def _(mo):
         plot_utils,
         plt,
         predicted_inference_geometry,
+        rigid_map,
     )
 
 
@@ -73,11 +74,10 @@ def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt):
 
     def world(spec, infer, extra=()):
         """The saved run of a world: its dataset, the streams the evaluator scored (`inputs`) and
-        the forward pass on them, hidden states in the readout's row space. When the latent is the
-        target its labels name it: ``latent`` (B,) is the true z behind each stream."""
+        the forward pass on them, hidden states in the readout's row space; ``latent`` (B,) is the
+        true z behind each stream."""
         run = load_run(overrides(spec, infer) + list(extra))
-        if infer:
-            run["latent"] = run["labels"][:, 1] - run["dataset"].n_outcomes - 1
+        run["latent"] = run["latents"][:, 0]
         return run
 
     def log_posteriors(ds, obs):
@@ -88,9 +88,9 @@ def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt):
                                   np.cumsum(ll[:, obs].transpose(1, 2, 0), 1)], 1)
         return s - logsumexp(s, -1, keepdims=True)
 
-    def frame(ax, title, xlim, ylim, pad=8):
+    def frame(ax, title, xlim, ylim, pad=8, fontsize=13):
         """Square panel; the axes are SVD modes, so their relative scale is not a shape claim."""
-        ax.set_title(title, fontsize=13, pad=pad)
+        ax.set_title(title, fontsize=fontsize, pad=pad)
         ax.set_xlim(*xlim); ax.set_ylim(*ylim)
         ax.set_box_aspect(1); plot_utils.FIG.clean(ax)
 
@@ -113,16 +113,7 @@ def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt):
             return plt.cm.twilight(np.arange(n) / n)
         return plt.cm.Set2(np.arange(n))
 
-    return (
-        T,
-        WORLDS,
-        argmax_regions,
-        frame,
-        latent_colors,
-        log_posteriors,
-        region_bg,
-        world,
-    )
+    return T, WORLDS, frame, latent_colors, log_posteriors, world
 
 
 @app.cell
@@ -151,7 +142,10 @@ def _(mo):
 
     **Rays.** Streams are grouped by the true latent behind them (the run's labels); each ray runs
     from the origin through the group's mean state at the last scored position $t = T{-}1$: the
-    direction a $z$-stream heads on average. Cones are the readout's argmax regions.
+    direction a $z$-stream heads on average. Background: what the readout believes at each point of
+    the plane, $\mathrm{softmax}(p \cdot D)$, as the posterior-weighted mean of the latent colours.
+    Certainty is not painted; it is distance from the origin along a ray. (Argmax regions would be a
+    knife-edge where neighbouring decoders are nearly parallel, as on the line and ring.)
     """)
     return
 
@@ -183,83 +177,137 @@ def _(T, hist, logsumexp, np, predicted_inference_geometry):
 
 
 @app.cell
-def _(T, fits, hist, logsumexp, np):
-    def rotate_onto(X, Y):
-        """Orthogonal 2x2 map (rotation or reflection) minimizing |X R - Y|: a gauge, not a fit."""
-        _U, _, _Vt = np.linalg.svd(X.T @ Y)
-        return _U @ _Vt
-
-    def expected_rows(ds, ts):
-        """Expected Bayes log-posterior rows for each true latent after t observations, t in ts:
-        (n_z, len(ts), n_z), from log p0(z') - t KL(z || z')."""
-        _ll = np.asarray(ds.conditional); _lp0 = np.log(ds.prior.cpu().numpy())
-        _K = np.einsum("zm,zwm->zw", np.exp(_ll), _ll[:, None, :] - _ll[None, :, :])   # KL(z || z')
-        _rows = _lp0 - np.asarray(ts)[None, :, None] * _K[:, None, :]
-        return _rows - logsumexp(_rows, -1, keepdims=True)
-
+def _(T, factor_logcond, fits, frame, hist, np, plot_utils, plt, rigid_map):
     def latent_means(pts, z, n):
         """Mean state per true latent at every position: pts (B, T, d), z (B,) -> (n, T, d)."""
         return np.stack([pts[z == _k].mean(0) for _k in range(n)])
 
-    planes = {}
+    def planes_for(E, D, H, W, z):
+        """The two planes of one world. Predicted: the code's top-2 modes. Trained: the hidden states
+        rotated (not stretched) onto the predicted code in the full space, then the same two modes.
+        Each side carries its states (B, T, 2),
+        the readout columns in the plane (2, C), the mean state per true latent (n, T, 2) and the
+        representative rows for its Gram: the mean path per latent, ordered (latent, t)."""
+        _n = int(z.max()) + 1
+        _E2 = E[..., :2]
+        _Hf = H.reshape(-1, H.shape[-1])
+        _R = rigid_map(_Hf, E.reshape(-1, E.shape[-1]))                            # (k, r): hidden -> code coordinates, an isometry
+        _Q = _R[:, :2].T                                                           # the predicted top-2 modes, read from the hidden state
+        _X = (_Hf @ _Q.T).reshape(*H.shape[:2], 2)
+        _rep = lambda pts: latent_means(pts, z, _n).reshape(_n * pts.shape[1], -1)
+        return dict(pred=dict(pts=_E2, cones=D[:2], mean=latent_means(_E2, z, _n), rep=_rep(E)),
+                    trained=dict(pts=_X, cones=_Q @ W.T, mean=latent_means(_X, z, _n), rep=_rep(H)))
+
+    def belief_bg(ax, Dcols, r_x, r_y, colors, fade=0.3, res=500):
+        """Background from the readout's belief at each plane point, softmax(p . D): the posterior-weighted
+        mean of the outcome colours."""
+        _gx, _gy = np.linspace(*r_x, res), np.linspace(*r_y, res)
+        _C = np.stack(np.meshgrid(_gx, _gy), -1)                                   # [i, j] = (x_j, y_i)
+        _L = _C @ Dcols; _p = np.exp(_L - _L.max(-1, keepdims=True)); _p /= _p.sum(-1, keepdims=True)
+        _rgb = _p @ np.asarray(colors)[:, :3]
+        ax.imshow(1 - fade * (1 - _rgb), origin="lower", extent=(*r_x, *r_y), zorder=0, aspect="auto")
+
+    def semantic_planes(E, H, z, targets):
+        """A semantic gauge for one world: each code is projected, by rotation only, onto the plane of the
+        directions that best predict two Bayes quantities (``targets``: {name: (B, T)}). Each side carries
+        its states, mean paths, Gram rows, and the decoding R^2 of the two targets."""
+        _n = int(z.max()) + 1
+        _Y = np.stack([_v.reshape(-1) for _v in targets.values()], 1)             # (B T, 2)
+        _Yc = _Y - _Y.mean(0)
+        def _side(code):
+            _C = code.reshape(-1, code.shape[-1])
+            _W = np.linalg.lstsq(_C, _Yc, rcond=None)[0]                          # directions predicting the targets
+            _Q = np.linalg.qr(_W)[0]                                              # orthonormal: a rotation within the code
+            _pts = (_C @ _Q).reshape(*code.shape[:2], 2)
+            _r2 = 1 - ((_C @ _W - _Yc) ** 2).sum(0) / (_Yc ** 2).sum(0)
+            return dict(pts=_pts, cones=None, mean=latent_means(_pts, z, _n),
+                        rep=latent_means(code, z, _n).reshape(_n * code.shape[1], -1), r2=_r2)
+        return dict(pred=_side(E), trained=_side(H), axes=list(targets))
+
+    def state_panel(ax, title, pl, colors, b, rays=True, background=True, cloud=None):
+        """One plane: the readout's belief as background (optional), sampled states (grey, or coloured by
+        ``cloud`` (B, T) on plasma, dark at its min, yellow at its max), optionally a ray per true latent through its mean end state, and one
+        highlighted stream (light to dark with t)."""
+        _flat = pl["pts"].reshape(-1, 2)
+        _lo, _hi = _flat.min(0), _flat.max(0); _pad = 0.12 * (_hi - _lo).max()
+        _xr, _yr = (_lo[0] - _pad, _hi[0] + _pad), (_lo[1] - _pad, _hi[1] + _pad)
+        if background:
+            belief_bg(ax, pl["cones"], _xr, _yr, colors)
+        if cloud is None:
+            ax.scatter(*_flat.T, s=7, color="0.55", alpha=0.18, lw=0, zorder=2)
+        else:
+            _u = (cloud.ravel() - cloud.min()) / np.ptp(cloud)
+            ax.scatter(*_flat.T, s=7, color=plt.cm.plasma(0.05 + 0.9 * _u), alpha=0.45, lw=0, zorder=2)
+        if rays:
+            for _z, (_dx, _dy) in enumerate(pl["mean"][:, -1]):
+                _s = min(((_xr[1] if _dx > 0 else _xr[0]) / _dx) if _dx else np.inf,
+                         ((_yr[1] if _dy > 0 else _yr[0]) / _dy) if _dy else np.inf)
+                ax.plot([0, _s * _dx], [0, _s * _dy], color=np.asarray(colors[_z][:3]) * 0.8,
+                        lw=1.1 if len(colors) <= 12 else 0.7, alpha=0.6, zorder=3)
+        ax.plot(*pl["pts"][b].T, color="0.2", lw=1.2, zorder=4)
+        ax.scatter(*pl["pts"][b].T, c=np.linspace(0.2, 1.0, pl["pts"].shape[1]), cmap="Greys", vmin=0, vmax=1,
+                   s=55, zorder=5, edgecolor="white", lw=0.7)
+        frame(ax, title, _xr, _yr, fontsize=FONT); ax.set_box_aspect(None)          # fill the cell
+        if "axes" in pl:
+            ax.set_xlabel(pl["axes"][0], fontsize=FONT - 4); ax.set_ylabel(pl["axes"][1], fontsize=FONT - 4)
+
+    def pick_stream(pts, toward=None, lowest=None, lo=0.85, hi=0.95):
+        """A far-reaching stream (end radius between the lo and hi quantiles): with ``toward`` (an angle),
+        the one heading closest to it; with ``lowest`` (B, T), the one ending at its smallest value; else
+        the one nearest the middle of that band."""
+        _end = pts[:, -1]; _r = np.linalg.norm(_end, axis=1)
+        _far = np.flatnonzero((_r > np.quantile(_r, lo)) & (_r < np.quantile(_r, hi)))
+        if toward is not None:
+            return int(_far[np.argmin(np.abs(np.angle(_end[_far] @ [1, 1j]) - toward))])
+        if lowest is not None:
+            return int(_far[np.argmin(lowest[_far, -1])])
+        return int(_far[np.argmin(np.abs(_r[_far] - np.quantile(_r, (lo + hi) / 2)))])
+
+    FONT = 18                                                                     # panel-title size inside a block
+
+    def plane_block(pl, colors, b, cka_all, path, rays=True, background=True, cloud=None):
+        """One world's block, laid out like `plot_embedding_panels`: predicted beside transformer (states
+        above; below, Grams of the mean path per true latent with the CKA over every state). Saved as png.
+        """
+        _fig = plt.figure(figsize=(7.6, 9.0))                                      # large in inches: merged fonts match the geometry figure
+        _gs = _fig.add_gridspec(2, 2, height_ratios=[1.15, 1], hspace=0.2, wspace=0.25)
+        for _j, (_side, _label) in enumerate([("pred", "predicted"), ("trained", "transformer")]):
+            if "axes" in pl:                                                       # semantic gauge: name the axes, report decoding R^2
+                pl[_side]["axes"] = pl["axes"]
+                _label += "   $R^2$ " + ", ".join(f"{_r:.2f}" for _r in pl[_side]["r2"])
+            state_panel(_fig.add_subplot(_gs[0, _j]), _label, pl[_side], colors, b, rays=rays, background=background, cloud=cloud)
+            _ax = _fig.add_subplot(_gs[1, _j])
+            plot_utils.gram_heatmap(_ax, pl[_side]["rep"],
+                                    title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {cka_all:.3f}")
+            _ax.title.set_fontsize(FONT)
+        plot_utils.save_figure(_fig, path, format="png"); plt.close(_fig)
+
+    planes = {_name: planes_for(factor_logcond(_h["LP"].reshape(-1, _h["D"].shape[1]))[1].reshape(*_h["LP"].shape[:2], -1)[:, :T],
+                                _h["D"], fits[_name]["H"], fits[_name]["W"], _h["run"]["latent"])
+              for _name, _h in hist.items()}
     for _name, _h in hist.items():
-        _f = fits[_name]; _n = _h["D"].shape[1]; _z = _h["run"]["latent"]
-        _E2 = _h["E"][:, :T, :2]                                       # predicted states at the scored positions
-        _H = _f["H"].reshape(-1, _f["H"].shape[-1])                    # (B T, k) hidden states, readout row space
-        _P = np.linalg.svd(_H, full_matrices=False)[2][:2]             # top-2 plane through the origin
-        _Q = rotate_onto(_H @ _P.T, _E2.reshape(-1, 2)).T @ _P          # rotated plane basis (2, k)
-        _X = (_H @ _Q.T).reshape(-1, T, 2)
-        _rows = expected_rows(_h["ds"], [T - 1])[:, 0]                  # Bayes' expected row per latent at the last scored position
-        _pz = np.exp(_rows[np.arange(_n), np.arange(_n)])              # expected posterior on the true latent
-        planes[_name] = dict(pred=dict(pts=_E2, cones=_h["D"][:2], mean=latent_means(_E2, _z, _n)),
-                             trained=dict(pts=_X, cones=_Q @ _f["W"].T, mean=latent_means(_X, _z, _n)),
-                             count=np.bincount(_z, minlength=_n))
-        print(f"{_name}: streams per latent {planes[_name]['count'].min()}-{planes[_name]['count'].max()} | "
-              f"expected p(z | {T - 1} obs) median {np.median(_pz):.3f}")
-    return (planes,)
+        print(f"{_name}: streams per latent {np.bincount(_h['run']['latent']).min()}-{np.bincount(_h['run']['latent']).max()}")
+    return pick_stream, plane_block, planes, planes_for
 
 
 @app.cell
 def _(
     FIGURES,
-    argmax_regions,
     fits,
-    frame,
     hist,
     latent_colors,
     np,
+    pick_stream,
+    plane_block,
     planes,
     plot_utils,
-    plt,
-    region_bg,
 ):
-    def _state_panel(ax, title, pl, colors, b, fade=0.25):
-        """One plane: cones, sampled states, a ray per true latent through its mean end state, one highlighted stream."""
-        _flat = pl["pts"].reshape(-1, 2)
-        _lo, _hi = _flat.min(0), _flat.max(0); _pad = 0.12 * (_hi - _lo).max()
-        _xr, _yr = (_lo[0] - _pad, _hi[0] + _pad), (_lo[1] - _pad, _hi[1] + _pad)
-        region_bg(ax, *argmax_regions(pl["cones"], _xr, _yr), colors, fade=fade, aspect="auto")
-        ax.scatter(*pl["pts"].reshape(-1, 2).T, s=4, color="0.45", alpha=0.25, lw=0, zorder=2)
-        for _z, (_dx, _dy) in enumerate(pl["mean"][:, -1]):             # ray through the mean end state of each true latent
-            _s = min(((_xr[1] if _dx > 0 else _xr[0]) / _dx) if _dx else np.inf,
-                     ((_yr[1] if _dy > 0 else _yr[0]) / _dy) if _dy else np.inf)
-            ax.plot([0, _s * _dx], [0, _s * _dy], color=np.asarray(colors[_z][:3]) * 0.8,
-                    lw=0.8 if len(colors) <= 12 else 0.5, alpha=0.6, zorder=3)
-        ax.plot(*pl["pts"][b].T, color="0.2", lw=0.9, zorder=4)
-        ax.scatter(*pl["pts"][b].T, c=np.arange(pl["pts"].shape[1]), cmap="viridis", s=26, zorder=5, edgecolor="none")
-        frame(ax, title, _xr, _yr)
-
-    fig_latent, _axs = plt.subplots(2, 3, figsize=(15, 10))
-    _b = 0
-    for _j, (_name, _pl) in enumerate(planes.items()):
-        _cols = latent_colors(_name, hist[_name]["D"].shape[1])
-        _state_panel(_axs[0, _j], f"{_name}: predicted", _pl["pred"], _cols, _b)
-        _axs[0, _j].set(xlabel="mode 1", ylabel="mode 2")
-        _f = fits[_name]
-        _state_panel(_axs[1, _j], f"{_name}: trained, affine $R^2$ {_f['r2']:.3f}, CKA {_f['cka']:.2f}", _pl["trained"], _cols, _b)
-        _axs[1, _j].set(xlabel="hidden PC 1 (rotated)", ylabel="hidden PC 2 (rotated)")
-    fig_latent.tight_layout()
-    plot_utils.save_figure(fig_latent, FIGURES / "inference_latent.png")
+    for _name, _pl in planes.items():
+        _b = pick_stream(_pl["pred"]["pts"], toward=3 * np.pi / 4) if _name == "week" else 0   # the ring: a far stream heading up-left
+        plane_block(_pl, latent_colors(_name, hist[_name]["D"].shape[1]), _b, fits[_name]["cka"],
+                    FIGURES / f"inference_{_name}_panels.png")
+    fig_latent = plot_utils.merge_panels([FIGURES / "png" / f"inference_{_n}_panels.png" for _n in planes], ncols=3, label_size=30)
+    plot_utils.save_figure(fig_latent, FIGURES / "inference_latent.png", dpi=200)
     return
 
 
@@ -322,10 +370,15 @@ def _(mo):
     mo.md(r"""
     ## 3. Hypothesis spaces
 
-    Bayesian generalization on a line and a grid (Tenenbaum & Griffiths 2001), a taxonomy
-    (Xu & Tenenbaum 2007), and key finding (Krumhansl & Schmuckler). The first three predict the
-    next example (the belief over hypotheses is near full rank); keys infer the key. States in the
-    top two modes over the readout's cones, one stream highlighted.
+    Bayesian generalization on a line and a grid (Tenenbaum & Griffiths 2001) and a taxonomy
+    (Xu & Tenenbaum 2007): the model predicts the next example, so the rows are log-predictives over
+    items and the belief over hypotheses is near full rank. Same figure as section 1, one block per
+    world: predicted beside transformer, states in the top two modes coloured by generalization
+    breadth, the posterior's expected predictive entropy (yellow: broad, dark: specific), one far-reaching
+    stream; below, Grams of the mean path per true hypothesis, rows ordered (hypothesis, $t$), with the
+    CKA over every state. No rays or belief background: with 55 to 225 hypotheses the rays would only
+    clutter, and the predictive over 10 to 27 items is broad wherever states sit. Printed above: affine
+    $R^2$, CKA with its null, and the mean KL(Bayes $\|$ model).
     """)
     return
 
@@ -333,9 +386,8 @@ def _(mo):
 @app.cell
 def _(factor_logcond, log_posteriors, logsumexp, np, world):
     HYP = {"intervals": ({"structure": "intervals", "n": 10}, False),
-           "rectangles": ({"structure": "rectangles", "n": 5}, False),    # 225 hypotheses over 25 cells
-           "subtrees": ({"structure": "subtrees", "n": 3, "k": 3}, False),
-           "keys": ({"structure": "keys", "beta": 1.5}, True)}
+           "rectangles": ({"structure": "rectangles", "n": 4}, False),    # 100 hypotheses over 16 cells
+           "subtrees": ({"structure": "subtrees", "n": 3, "k": 3}, False)}
     HYP_EXTRA = {"rectangles": ["model_kwargs.model_config.num_hidden_layers=2",       # two axes to bound
                                 "training_kwargs.train_steps=60000"]}
 
@@ -364,40 +416,6 @@ def _(factor_logcond, log_posteriors, logsumexp, np, world):
 
 
 @app.cell
-def _(FIGURES, T, argmax_regions, frame, hyp, np, plot_utils, plt, region_bg):
-    fig_hyp, _axs = plt.subplots(1, 4, figsize=(19, 5.4))
-    for _j, (_name, _h) in enumerate(hyp.items()):
-        _E2, _D2 = _h["E"][..., :2], _h["D"][:2]
-        _a = _axs[_j]
-        _flat = _E2.reshape(-1, 2)
-        _lo, _hi = _flat.min(0), _flat.max(0); _pad = 0.12 * (_hi - _lo).max()
-        _xr, _yr = (_lo[0] - _pad, _hi[0] + _pad), (_lo[1] - _pad, _hi[1] + _pad)
-        _n_c = _D2.shape[1]
-        region_bg(_a, *argmax_regions(_D2, _xr, _yr), plt.cm.twilight(np.arange(_n_c) / _n_c) if _name == "keys"
-                  else plt.get_cmap(plot_utils.FIG.diverging_cmap)(np.linspace(0.05, 0.95, _n_c)), fade=0.35, aspect="auto")
-        _a.scatter(*_flat.T, c=np.tile(np.arange(T + 1), len(_E2)), cmap="viridis", s=5, alpha=0.25, lw=0, zorder=2)
-        _b = 0
-        _a.plot(*_E2[_b].T, color="0.15", lw=1.0, zorder=3)
-        _a.scatter(*_E2[_b].T, c=np.arange(T + 1), cmap="viridis", s=28, zorder=4, edgecolor="k", lw=0.4)
-        frame(_a, f"{_name}: {'posterior' if _h['infer'] else 'predictive'} states", _xr, _yr)
-        _a.set(xlabel="mode 1", ylabel="mode 2")
-    fig_hyp.tight_layout()
-    plot_utils.save_figure(fig_hyp, FIGURES / "inference_hypotheses_predicted.png")
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### Trained models
-
-    One transformer per world. Printed: the affine $R^2$ and CKA of the hidden state against the
-    predicted representation, with the CKA null, and the mean KL(Bayes $\|$ model).
-    """)
-    return
-
-
-@app.cell
 def _(T, hyp, logsumexp, np, predicted_inference_geometry):
     from src.code.analysis_utils import align_representations as _align
     from src.code.analysis_utils import cka as _cka, cka_null as _cka_null
@@ -414,6 +432,79 @@ def _(T, hyp, logsumexp, np, predicted_inference_geometry):
         _kl = (np.exp(_R) * (_R - _lq)).sum(-1).mean(0)
         fits_hyp[_name] = dict(r2=_r2, cka=_c, null=_n, kl=_kl, ds=_ds)
         print(f"{_name}: readout rank {_run['readout'].shape[1]} | affine R2 {_r2:.3f} | CKA {_c:.3f} (null {_n:.3f}) | KL mean {_kl.mean():.4f}")
+    return (fits_hyp,)
+
+
+@app.cell
+def _(
+    FIGURES,
+    T,
+    fits_hyp,
+    hyp,
+    log_posteriors,
+    np,
+    pick_stream,
+    plane_block,
+    planes_for,
+    plot_utils,
+    plt,
+):
+    def breadth(ds, obs):
+        """Generalization breadth per state: the posterior's expected log effective size of the hypothesis,
+        exp of its predictive entropy (about the span length, rectangle area, subtree leaf count; the lapse
+        rate keeps every item possible, so a hard support would be the whole space). obs (B, L) -> (B, L+1):
+        state t has seen obs[:, :t]."""
+        _ll = np.asarray(ds.conditional)
+        _logsize = -(np.exp(_ll) * _ll).sum(1)                         # entropy of p(x | h) = log effective size
+        return np.exp(log_posteriors(ds, obs)) @ _logsize
+
+    # the same figure for the hypothesis spaces: no belief background (the predictive over 10-27 items is
+    # broad wherever states sit) and no rays (55-225 hypotheses); the cloud is coloured by the posterior's
+    # expected breadth, yellow = broad, dark = specific; Grams of the mean path per true hypothesis
+    planes_hyp = {_name: planes_for(_h["E"][:, :T], _h["D"], _h["run"]["hidden_states"][-1][:, :T], _h["run"]["readout"],
+                                    _h["run"]["latent"]) for _name, _h in hyp.items()}
+    for _name, _pl in planes_hyp.items():
+        _C = hyp[_name]["D"].shape[1]
+        _br = breadth(hyp[_name]["ds"], hyp[_name]["obs"])[:, :T]
+        plane_block(_pl, plt.get_cmap(plot_utils.FIG.diverging_cmap)(np.linspace(0.05, 0.95, _C)),
+                    pick_stream(_pl["pred"]["pts"], lowest=_br),                # a far stream that ends specific
+                    fits_hyp[_name]["cka"], FIGURES / f"inference_{_name}_panels.png", rays=False, background=False, cloud=_br)
+    fig_hyp = plot_utils.merge_panels([FIGURES / "png" / f"inference_{_n}_panels.png" for _n in planes_hyp], ncols=3, label_size=30)
+    plot_utils.save_figure(fig_hyp, FIGURES / "inference_hypotheses.png", dpi=200)
+    return (breadth,)
+
+
+@app.cell
+def _(T, breadth, fits_hyp, hyp, mo, np, pick_stream, rigid_map):
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    def states_3d(name):
+        """Interactive top-3 view of one hypothesis world: predicted beside transformer (rotated onto the
+        prediction), states coloured by generalization breadth (dark = specific), one far stream drawn."""
+        _h = hyp[name]
+        _E3 = _h["E"][:, :T, :3]
+        _H = _h["run"]["hidden_states"][-1][:, :T]; _Hf = _H.reshape(-1, _H.shape[-1])
+        _R = rigid_map(_Hf, _h["E"][:, :T].reshape(-1, _h["E"].shape[-1]))       # full-space alignment, then the top-3 modes
+        _X3 = (_Hf @ _R[:, :3]).reshape(*_H.shape[:2], 3)
+        _br = breadth(_h["ds"], _h["obs"])[:, :T]
+        _b = pick_stream(_E3[..., :2], lowest=_br)
+        _fig = make_subplots(rows=1, cols=2, specs=[[{"type": "scene"}, {"type": "scene"}]],
+                             subplot_titles=("predicted", f"transformer   CKA {fits_hyp[name]['cka']:.3f}"))
+        for _j, _pts in enumerate([_E3, _X3], start=1):
+            _f = _pts.reshape(-1, 3)
+            _fig.add_trace(go.Scatter3d(x=_f[:, 0], y=_f[:, 1], z=_f[:, 2], mode="markers", showlegend=False,
+                                        marker=dict(size=1.6, color=_br.ravel(), colorscale="Plasma",
+                                                    opacity=0.5, cmin=_br.min(), cmax=_br.max())), row=1, col=_j)
+            _fig.add_trace(go.Scatter3d(x=_pts[_b, :, 0], y=_pts[_b, :, 1], z=_pts[_b, :, 2], mode="lines+markers", showlegend=False,
+                                        line=dict(color="black", width=3),
+                                        marker=dict(size=4, color=np.linspace(0.2, 1, T), colorscale="Greys", cmin=0, cmax=1,
+                                                    line=dict(color="white", width=1))), row=1, col=_j)
+        _fig.update_layout(height=520, width=1100, margin=dict(l=0, r=0, t=40, b=0))
+        _fig.update_scenes(xaxis_title="mode 1", yaxis_title="mode 2", zaxis_title="mode 3", aspectmode="data")
+        return _fig
+
+    mo.ui.tabs({_name: states_3d(_name) for _name in hyp})
     return
 
 

@@ -216,6 +216,8 @@ def resolve_config(overrides, name=None, cache_dir=None, make_run_dirs=False):
     ``{cache_dir}/{setting}/{clean_dirname}/{name}``. The path half of ``train_inline``, so a notebook
     that trains nothing still gets a config-keyed ``figure_path``."""
     overrides = list(overrides) + ([f"name={name}"] if name is not None else [])
+    # a key given twice: last value wins, as on the CLI, so the two paths name the same run dir
+    overrides = list({o.split("=", 1)[0]: o for o in overrides}.values())
     GlobalHydra.instance().clear()
     with initialize_config_dir(version_base=None, config_dir=str(here() / "conf")):
         cfg = compose(config_name="config", overrides=overrides, return_hydra_config=True)

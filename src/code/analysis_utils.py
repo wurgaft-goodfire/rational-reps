@@ -126,12 +126,13 @@ def leverage(W):
 #########################
 
 def cka(X, Y):
-    """Linear CKA between two representations (rows = items). Invariant to rotation/scale."""
+    """Linear CKA between two representations (rows = items). Invariant to rotation/scale.
+    <Kx, Ky> / (|Kx| |Ky|) over the item Grams, computed from the feature cross-covariance:
+    |X'Y|^2 / (|X'X| |Y'Y|), so the cost is linear in the number of rows."""
     X = np.asarray(X, dtype=np.float64); Y = np.asarray(Y, dtype=np.float64)
     X = X - X.mean(0); Y = Y - Y.mean(0)
-    Kx, Ky = X @ X.T, Y @ Y.T
-    denom = np.linalg.norm(Kx) * np.linalg.norm(Ky)
-    return float((Kx * Ky).sum() / denom) if denom > 0 else 0.0
+    denom = np.linalg.norm(X.T @ X) * np.linalg.norm(Y.T @ Y)
+    return float(np.linalg.norm(X.T @ Y) ** 2 / denom) if denom > 0 else 0.0
 
 
 def cca(X, Y, tol=1e-5, keep=None):
@@ -199,6 +200,22 @@ def rsa(X, Y):
     rx = rx - rx.mean(); ry = ry - ry.mean()
     denom = np.sqrt((rx ** 2).sum() * (ry ** 2).sum())
     return float((rx * ry).sum() / denom) if denom > 0 else 0.0
+
+
+def rigid_map(X, ref):
+    """The orthogonal map ``R`` (rotation or reflection; a partial isometry when the widths differ)
+    minimizing ``|X R - ref|`` over the whole space: a gauge, not a fit. Align first, then take the
+    modes to display; truncating each side first picks arbitrary bases of any tied modes.
+    X (N, k), ref (N, r) -> (k, r)."""
+    X = np.asarray(X, dtype=np.float64); ref = np.asarray(ref, dtype=np.float64)
+    U, _, Vt = np.linalg.svd(X.T @ ref)
+    m = min(U.shape[1], Vt.shape[0])
+    return U[:, :m] @ Vt[:m]
+
+
+def rigid_align(X, ref):
+    """``X`` expressed in ``ref``'s coordinates by `rigid_map`: (N, k) -> (N, r)."""
+    return np.asarray(X, dtype=np.float64) @ rigid_map(X, ref)
 
 
 def align_representations(X, ref, method="rotation", rank=None):

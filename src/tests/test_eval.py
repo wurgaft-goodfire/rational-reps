@@ -144,9 +144,9 @@ def test_hidden_input_evaluator_scores_sampled_streams_against_the_exact_posteri
 
 def test_evaluator_keeps_and_saves_the_sampled_batch_dict(tmp_path):
     # the streams the evaluator scores are the dataset's own batch dict: every key it returns
-    # (input_ids, labels, ...) is kept and saved, so the latent behind each stream survives in
-    # the labels of a hidden-input task; eval_kwargs.batch_size sets how many streams, apart
-    # from the training batch
+    # (input_ids, labels, latents) is kept and saved, so the hidden input behind each stream
+    # survives whatever the target; eval_kwargs.batch_size sets how many streams, apart from
+    # the training batch
     cfg = OmegaConf.create({
         "setting": "graph-cooccurrence", "structure": "feature_cube",
         "structure_kwargs": {"m": 2, "paired": True, "all_bundles": True},
@@ -157,10 +157,11 @@ def test_evaluator_keeps_and_saves_the_sampled_batch_dict(tmp_path):
     config = Config(cfg)
     dataset = KernelDataset(config)
     ev = Evaluator(config, dataset)
-    assert set(ev.batch) >= {"input_ids", "labels"}
+    assert set(ev.batch) >= {"input_ids", "labels", "latents"}
     assert ev.inputs.shape == (6, 9) and ev.targets.shape == (6, 8, dataset.n_items)
-    z = ev.batch["labels"][:, 1:] - dataset.n_outcomes - 1
-    assert (z == z[:, :1]).all() and (0 <= z).all() and (z < dataset.n_items).all()
+    z = ev.batch["latents"]                                              # (B, L): the hidden input behind each position
+    assert z.shape == (6, 8) and (z == z[:, :1]).all() and (0 <= z).all() and (z < dataset.n_items).all()
+    assert (ev.batch["labels"][:, 1:] - dataset.n_outcomes - 1 == z).all()   # the latent target names the same z
     assert dataset[0]["input_ids"].shape[0] == 4                        # training batch untouched
 
     class Model:

@@ -125,3 +125,18 @@ def test_cka_shuffle_null_keeps_the_spectrum_and_destroys_only_the_correspondenc
     line = np.arange(60, dtype=float)[:, None]
     assert cka_shuffle_null(line) < 0.2
     assert cka_shuffle_null(line, seed=1) == pytest.approx(cka_shuffle_null(line, seed=1))
+
+
+def test_cka_matches_the_gram_form_and_scales_with_rows_not_rows_squared():
+    """Linear CKA is <Kx, Ky> / (|Kx| |Ky|) over N x N Grams; the same number comes from the d x d
+    cross-covariance, so a 12k-row code costs O(N d^2) instead of a gigabyte of Grams."""
+    from src.code.analysis_utils import cka
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 5)); Y = X @ rng.normal(size=(5, 7)) + 0.3 * rng.normal(size=(300, 7))
+    Xc, Yc = X - X.mean(0), Y - Y.mean(0)
+    Kx, Ky = Xc @ Xc.T, Yc @ Yc.T
+    gram = (Kx * Ky).sum() / (np.linalg.norm(Kx) * np.linalg.norm(Ky))
+    assert abs(cka(X, Y) - gram) < 1e-12
+    import tracemalloc
+    tracemalloc.start(); cka(rng.normal(size=(20000, 3)), rng.normal(size=(20000, 4))); _, peak = tracemalloc.get_traced_memory(); tracemalloc.stop()
+    assert peak < 50e6                                           # a 20k x 20k Gram alone would be 3.2 GB

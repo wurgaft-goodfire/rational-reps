@@ -97,3 +97,28 @@ def test_heldout_decode_r2_ignores_units_flat_on_the_train_split():
     clean = heldout_decode_r2(H, F, groups, train_mask=train_mask)
     assert clean > 0.95
     assert heldout_decode_r2(np.c_[H, flat], F, groups, train_mask=train_mask) > clean - 0.01
+
+
+def test_rigid_align_matches_a_rotated_copy_where_truncate_then_rotate_cannot():
+    """Aligning a hidden code to a predicted one must rotate in the full space and only then take the
+    displayed modes. Truncating each side to its own top modes first fails whenever the spectrum is
+    degenerate: each side's PCA picks an arbitrary basis of the tied block, so the two slices differ
+    and no in-plane rotation can match them."""
+    import numpy as np
+    from src.code.analysis_utils import align_representations, rigid_align
+    rng = np.random.default_rng(0)
+    U = np.linalg.qr(rng.normal(size=(600, 4)))[0]
+    E = U * np.array([1.0, 0.6, 0.6, 0.3])                 # modes 2 and 3 tied, as for a grid or a tree
+    Q = np.linalg.qr(rng.normal(size=(4, 4)))[0]
+    H = E @ Q + 1e-6 * rng.normal(size=E.shape)             # the same code in another basis
+
+    X = rigid_align(H, E)                                   # H expressed in E's coordinates, by an isometry
+    assert np.allclose(X, E, atol=1e-4)
+    assert np.allclose(X[:, :2], E[:, :2], atol=1e-4)      # so the displayed modes agree point by point
+
+    plane, r2 = align_representations(H, E[:, :2], method="rotation")   # truncate H to 2 dims, then rotate
+    assert r2 < 0.9                                          # the slice is the wrong one
+
+    Hn = H[:, :3]                                            # narrower hidden code: a partial isometry
+    Xn = rigid_align(Hn, E)
+    assert Xn.shape == E.shape

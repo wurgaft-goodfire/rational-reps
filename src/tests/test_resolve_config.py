@@ -93,3 +93,15 @@ def test_only_keys_that_reach_the_weights_are_in_the_run_key():
                      "training_kwargs.weight_decay=0.1", "random_seed=3",
                      "model_kwargs.model_config.hidden_size=8"):
         assert key(base) != key(resolve_config(["setting=graph", override])), override
+
+
+def test_a_repeated_override_keys_the_run_like_the_cli_last_value_wins(tmp_path):
+    """The CLI dedups a key given twice (last wins) before naming the run dir; a notebook that appends
+    per-world overrides to a shared list must land on the same directory."""
+    base = ["setting=graph", "structure=ring", "training_kwargs.train_steps=30000",
+            "model_kwargs.model_config.num_hidden_layers=1"]
+    extra = ["model_kwargs.model_config.num_hidden_layers=2", "training_kwargs.train_steps=60000"]
+    twice = resolve_config(base + extra, cache_dir=str(tmp_path))
+    once = resolve_config(base[:2] + extra, cache_dir=str(tmp_path))
+    assert twice.run_dir == once.run_dir
+    assert twice.model_kwargs.model_config.num_hidden_layers == 2 and twice.training_kwargs.train_steps == 60000
