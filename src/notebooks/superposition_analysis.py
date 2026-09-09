@@ -437,16 +437,18 @@ def _(CUT, HEAD, np, plot_utils, plt):
     _vlag = plt.get_cmap(plot_utils.FIG.diverging_cmap)
     ALPHA_CMAP = plt.matplotlib.colors.ListedColormap(np.vstack([_vlag(np.linspace(0.0, 0.36, 128)), _vlag(np.linspace(0.64, 1.0, 128))]), name="vlag_cut")
 
-    def frame_panel(ax, W, idx, B, title, alpha, norm):
-        """The vectors W[idx] in the 3-D view B (3, d), each an arrow coloured by alpha."""
+    def frame_panel(ax, W, idx, B, title, alpha, norm, zoom=1.6, box=True):
+        """The vectors W[idx] in the 3-D view B (3, d), each an arrow coloured by alpha; ``box`` draws the axes' box."""
         _xyz = W[idx] @ B.T
         for _k, _v in zip(idx, _xyz):
             ax.add_artist(Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color=ALPHA_CMAP(norm(alpha[_k])), shrinkA=0, shrinkB=0))
-        ax.set_xlim(-0.85, 0.85); ax.set_ylim(-0.85, 0.85); ax.set_zlim(-0.85, 0.85); ax.set_box_aspect((1, 1, 1), zoom=1.6)
+        ax.set_xlim(-0.85, 0.85); ax.set_ylim(-0.85, 0.85); ax.set_zlim(-0.85, 0.85); ax.set_box_aspect((1, 1, 1), zoom=zoom)
         ax.set_proj_type("ortho"); ax.view_init(elev=24, azim=-45)                     # no perspective, x and y foreshortened alike
         ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
         for _pane in (ax.xaxis, ax.yaxis, ax.zaxis):
             _pane.pane.set_facecolor((1, 1, 1, 0))
+        if not box:
+            ax.set_axis_off()
         ax.set_title(title, fontsize=11)
 
     return ALPHA_CMAP, band, basis3, frame_panel
@@ -714,17 +716,17 @@ def _(
     _alpha = np.asarray(_cells[P_SWEEP[0]][0]["alpha"], float)
     _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())
 
-    _fig = plt.figure(figsize=(15.5, 8.2), layout="constrained")
-    *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.12, width_ratios=[1, 1, 1, 0.12])
+    _fig = plt.figure(figsize=(15.5, 7.2), layout="constrained")
+    *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.22, width_ratios=[1, 1, 1, 0.12])       # gaps between p, none within
     for _col, (_p, _sf) in enumerate(zip(P_SWEEP, _sfs)):
         _sf.suptitle(f"$p$ = {_p}", fontsize=15)
-        _gs = _sf.add_gridspec(3, 2, wspace=0.08, hspace=0.0, height_ratios=[1, 0.95, 0.85], left=0, right=1, top=0.94, bottom=0)
+        _gs = _sf.add_gridspec(3, 2, wspace=0.0, hspace=0.0, height_ratios=[0.8, 0.95, 0.85], left=0, right=1, top=0.94, bottom=0)
         _Wp = _frames[_p]["theory"]
         _idx = band((_Wp ** 2).sum(1))
         _B = basis3(_Wp[_idx], _Wp, False)
         for _j, (_c, _lbl) in enumerate(_SIDES):
             _ax3 = _sf.add_subplot(_gs[0, _j], projection="3d")
-            frame_panel(_ax3, _frames[_p][_c], _idx, _B, _lbl, _alpha, _norm)
+            frame_panel(_ax3, _frames[_p][_c], _idx, _B, _lbl, _alpha, _norm, zoom=2.0, box=False)
             _axg = _sf.add_subplot(_gs[1, _j])
             _im = _axg.imshow(_grams[_p, _c], cmap="vlag", vmin=-_v, vmax=_v)
             _axg.set_xticks([]); _axg.set_yticks([])
