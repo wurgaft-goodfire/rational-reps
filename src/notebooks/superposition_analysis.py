@@ -717,7 +717,8 @@ def _(
     _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())
 
     _fig = plt.figure(figsize=(15.5, 7.2), layout="constrained")
-    *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.22, width_ratios=[1, 1, 1, 0.12])       # gaps between p, none within
+    _sf_main, _sf_bar = _fig.subfigures(1, 2, wspace=0.0, width_ratios=[1, 0.05])           # the colourbars hug the last block
+    _sfs = _sf_main.subfigures(1, 3, wspace=0.22)                                            # gaps between p, none within
     for _col, (_p, _sf) in enumerate(zip(P_SWEEP, _sfs)):
         _sf.suptitle(f"$p$ = {_p}", fontsize=15)
         _gs = _sf.add_gridspec(3, 2, wspace=0.0, hspace=0.0, height_ratios=[0.8, 0.95, 0.85], left=0, right=1, top=0.94, bottom=0)
@@ -740,9 +741,9 @@ def _(
                 _axg.set_ylabel("Gram", fontsize=12)
                 _axb.set_ylabel("feature $i$", fontsize=12)
     _fig.suptitle(rf"$d$ = {_d}, $\beta$ = {_b}, $\rho$ = {_r}")
-    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.56, 0.25, 0.25]), label=r"$\alpha_i$")
+    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.25, 0.56, 0.5, 0.25]), label=r"$\alpha_i$")
     _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
-    _fig.colorbar(_im, cax=_sf_bar.add_axes([0.15, 0.26, 0.25, 0.25]))
+    _fig.colorbar(_im, cax=_sf_bar.add_axes([0.25, 0.26, 0.5, 0.25]))
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig7_sparsity"))
     mo.vstack([mo.hstack([SEL_F7["beta"], SEL_F7["rho"], SEL_F7["d"]], justify="start", gap=2), _out])
     return
