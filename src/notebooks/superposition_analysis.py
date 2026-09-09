@@ -69,8 +69,8 @@ def _(mo):
                "additive_features": ("additive model", COL["green"])}
     CLASSES = list(RUNNERS) + ["theory"]                 # every model class a cell can hold
     return (
-        CLASSES,
         B_KEY,
+        CLASSES,
         COL,
         CONFIG,
         D_GRID,
@@ -93,7 +93,16 @@ def _(mo):
 
 
 @app.cell
-def _(CLASSES, SEEDS, cell_overrides, feature_vectors, has_run, load_run, modes):
+def _(
+    CLASSES,
+    SEEDS,
+    cell_overrides,
+    feature_vectors,
+    has_run,
+    load_run,
+    modes,
+    np,
+):
     # loaded cells, filled on demand the first time a figure asks for one
     SW = {}
 
@@ -112,6 +121,21 @@ def _(CLASSES, SEEDS, cell_overrides, feature_vectors, has_run, load_run, modes)
                               E={_c: feature_vectors(_H, _X)[0] for _c, (_H, _D) in _model.items()}))
         return _rows
 
+    def projector(V):
+        """Whitened Gram of the rows of V: V (V'V)^+ V', the leverage projector. Gauge-free (V -> V A leaves
+        it fixed); its diagonal is the leverage, its entries the inner products of the whitened vectors."""
+        _V = np.asarray(V, float)
+        return _V @ np.linalg.pinv(_V.T @ _V) @ _V.T
+
+    def balanced_code(H, D, d):
+        """A model's code in the balanced gauge, per state: row-centre its logit table H D', split the SVD
+        scale evenly at rank d, and scale so that E'E / N = diag(sigma_k / sqrt N), the per-state singular
+        values of figure 4. The gauge GD from small init learns; sizes here compare to alpha."""
+        _Lam = np.asarray(H, float) @ np.asarray(D, float).T
+        _Lc = _Lam - _Lam.mean(1, keepdims=True)
+        _U, _S, _ = np.linalg.svd(_Lc, full_matrices=False)
+        return len(_Lam) ** 0.25 * _U[:, :d] * np.sqrt(_S[:d])
+
     def load_cell(p, b, r, d):
         """One loaded cell, cached in SW: every model class whose seeds are all saved; None
         until the trained linear network and the theory are."""
@@ -120,7 +144,7 @@ def _(CLASSES, SEEDS, cell_overrides, feature_vectors, has_run, load_run, modes)
             SW[(p, b, r, d)] = sweep_rows(p, b, r, d, _have) if {"linear", "theory"} <= set(_have) else None
         return SW[(p, b, r, d)]
 
-    return (load_cell,)
+    return balanced_code, load_cell, projector
 
 
 @app.cell
@@ -149,7 +173,7 @@ def _(B_KEY, D_GRID, GRID, P_KEY, R_KEY, load_cell, mo):
     def selector_row(sel):
         return mo.hstack([sel["p"], sel["beta"], sel["rho"]], justify="start", gap=2)
 
-    return NOT_YET, load_cell, rows_for, selector_row, setting_ui
+    return NOT_YET, rows_for, selector_row, setting_ui
 
 
 @app.cell(hide_code=True)
@@ -220,7 +244,11 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 2 — feature sizes
-    $\|E_i\|^2$ of the first-order vectors, each model in its own gauge.
+    $\|E_i\|^2$ of the first-order vectors, every model (theory included) in the balanced gauge of its
+    per-state logit table: row-centred $h(z)D^\top$, SVD scale split evenly at rank $d$, $E^\top E/N =
+    \mathrm{diag}(\sigma_k/\sqrt N)$. The gauge GD from small init learns; the head's excess over
+    $\alpha_i$ is the amplification of the notes, a property of this gauge (the map's diagonal is
+    $\bar\alpha$ exactly).
     """)
     return
 
@@ -238,6 +266,8 @@ def _(
     NOT_YET,
     RUNNERS,
     SEL_F2,
+    balanced_code,
+    feature_vectors,
     mo,
     np,
     plot_utils,
@@ -247,9 +277,9 @@ def _(
 ):
     _sel = rows_for(SEL_F2.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
-    _sizes = lambda _row, _c: (_row["E"][_c] ** 2).sum(1)[:24]
     _fig, _axes = plt.subplots(1, 3, figsize=(15, 4.2), sharey=True)
     for _ax, _d in zip(_axes, D_GRID):
+        _sizes = lambda _row, _c: (feature_vectors(balanced_code(*_row["model"][_c], int(_d)), _row["X"])[0] ** 2).sum(1)[:24]
         _x = np.arange(24)
         for _run, (_lbl, _col) in RUNNERS.items():
             if _run not in _sel["runners"]:
@@ -277,7 +307,8 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 3 — feature Grams
-    $E E^\top$ of the first-order vectors, top 16 features, seed means.
+    Whitened Gram $E(E^\top E)^{+}E^\top$ of the first-order vectors, top 16 features, seed means:
+    gauge-free, its diagonal the leverage of Figure 1, its entries the cosines of the whitened vectors.
     """)
     return
 
@@ -299,27 +330,27 @@ def _(
     np,
     plot_utils,
     plt,
+    projector,
     rows_for,
     selector_row,
 ):
     _sel = rows_for(SEL_F3.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
     _K = 16
-    _gram = lambda _row, _c: (_row["E"][_c] @ _row["E"][_c].T)[:_K, :_K]
+    _gram = lambda _row, _c: projector(_row["E"][_c])[:_K, :_K]                  # whitened: gauge-free
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
-    _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False)
+    _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
     for _c, _d in enumerate(D_GRID):
         _panels = [(np.mean([_gram(_row, "linear") for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
                    (np.mean([_gram(_row, "theory") for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
         _panels += [(np.mean([_gram(_row, _run) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
-        _v = max(np.abs(_Gm).max() for _Gm, _lbl in _panels)
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]
-            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-_v, vmax=_v)
+            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
             _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
             _ax.set_xticks([]); _ax.set_yticks([])
-            _fig.colorbar(_im, ax=_ax, shrink=0.8)
-    _fig.suptitle(_sel["title"], y=1.0)
+    _fig.colorbar(_im, ax=_axes.ravel().tolist(), shrink=0.5, pad=0.02)
+    _fig.suptitle(_sel["title"])
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3_grams"))
     mo.vstack([selector_row(SEL_F3), _out])
     return
@@ -391,7 +422,7 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 5 — readout Grams
-    $D D^\top$ of the saved readout over outcomes, top 16, seed means; each model in its own gauge.
+    Whitened Gram $D(D^\top D)^{+}D^\top$ of the saved readout over outcomes, top 16, seed means; gauge-free.
     """)
     return
 
@@ -413,27 +444,27 @@ def _(
     np,
     plot_utils,
     plt,
+    projector,
     rows_for,
     selector_row,
 ):
     _sel = rows_for(SEL_F5.value)
     mo.stop(_sel["rows"] is None, NOT_YET)
     _K = 16
-    _gram = lambda _row, _c: (_row["model"][_c][1] @ _row["model"][_c][1].T)[:_K, :_K]
+    _gram = lambda _row, _c: projector(_row["model"][_c][1])[:_K, :_K]           # whitened: gauge-free
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
-    _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False)
+    _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
     for _c, _d in enumerate(D_GRID):
         _panels = [(np.mean([_gram(_row, "linear") for _row in _sel["rows"][_d]], axis=0), "trained (5-seed mean)"),
                    (np.mean([_gram(_row, "theory") for _row in _sel["rows"][_d]], axis=0), "theory (5-draw mean)")]
         _panels += [(np.mean([_gram(_row, _run) for _row in _sel["rows"][_d]], axis=0), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
-        _v = max(np.abs(_Gm).max() for _Gm, _lbl in _panels)
         for _r, (_Gm, _lbl) in enumerate(_panels):
             _ax = _axes[_r, _c]
-            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-_v, vmax=_v)
+            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
             _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
             _ax.set_xticks([]); _ax.set_yticks([])
-            _fig.colorbar(_im, ax=_ax, shrink=0.8)
-    _fig.suptitle(_sel["title"], y=1.0)
+    _fig.colorbar(_im, ax=_axes.ravel().tolist(), shrink=0.5, pad=0.02)
+    _fig.suptitle(_sel["title"])
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig5_decoder_grams"))
     mo.vstack([selector_row(SEL_F5), _out])
     return
@@ -443,7 +474,7 @@ def _(
 def _(mo):
     mo.md(r"""
     ## Figure 6 — features and pairs together
-    Gram of the regression vectors of the saved representation on $[1, z - \bar z, \phi(z)]$: the top 16 features
+    Whitened Gram of the regression vectors of the saved representation on $[1, z - \bar z, \phi(z)]$ (gauge-free): the top 16 features
     and the 15 pairs among the top 6, colour scale set by the pair blocks (the feature block
     saturates).
     """)
@@ -462,12 +493,12 @@ def _(
     D_GRID,
     NOT_YET,
     SEL_F6,
-    factor_logcond,
     mo,
     np,
     pair_features,
     plot_utils,
     plt,
+    projector,
     rows_for,
     selector_row,
 ):
@@ -479,15 +510,16 @@ def _(
     _pairsel = [_pairs_all.index(p) for p in _it.combinations(range(_TOP), 2)]   # 15 pairs among the top 6
 
     def _ext_gram(_H, _X):
-        """Gram of the regression vectors of the representation on [1, x, phi(x)]: top-K features
-        and the selected pairs."""
+        """Whitened Gram of the regression vectors of the representation on [1, x, phi(x)]: top-K
+        features and the selected pairs."""
         _A = np.column_stack([np.ones(len(_X)), _X - _X.mean(0), pair_features(_X, 18)])
         _B = np.linalg.lstsq(_A, _H, rcond=None)[0]
-        _E = np.vstack([_B[1:1 + _K], _B[1 + 64:][_pairsel]])
-        return _E @ _E.T
+        _P = projector(_B[1:])                                          # whitened over every regressor: gauge-free
+        _idx = np.r_[np.arange(_K), 64 + np.asarray(_pairsel)]
+        return _P[np.ix_(_idx, _idx)]
 
     _has_pairs = "paired_features" in _sel["runners"]
-    _fig, _axes = plt.subplots(3 if _has_pairs else 2, 3, figsize=(13.2, 12.4 if _has_pairs else 8.4), squeeze=False)
+    _fig, _axes = plt.subplots(3 if _has_pairs else 2, 3, figsize=(13.2, 12.4 if _has_pairs else 8.4), squeeze=False, layout="constrained")
     for _c, _d in enumerate(D_GRID):
         _rows = _sel["rows"][_d]
         _panels = [(np.mean([_ext_gram(_row["model"]["linear"][0], _row["X"]) for _row in _rows], 0), "trained (5-seed mean)"),
@@ -501,8 +533,8 @@ def _(
             _ax.axhline(_K - 0.5, color="0.3", lw=0.8); _ax.axvline(_K - 0.5, color="0.3", lw=0.8)
             _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
             _ax.set_xticks([]); _ax.set_yticks([])
-            _fig.colorbar(_im, ax=_ax, shrink=0.8)
-    _fig.suptitle(_sel["title"], y=1.0)
+        _fig.colorbar(_im, ax=_axes[:, _c].tolist(), shrink=0.5, pad=0.02)        # one bar per column: its own pair scale
+    _fig.suptitle(_sel["title"])
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig6_extended_grams"))
     mo.vstack([selector_row(SEL_F6), _out])
     return
