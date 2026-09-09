@@ -124,7 +124,8 @@ def _(
                               E={_c: feature_vectors(_H, _X)[0] for _c, (_H, _D) in _model.items()}))
         return _rows
 
-    CUTS = {"represented": 0.5, "partial": 0.05}      # leverage levels on the theory's allocation: >= 1/2 a dimension; >= 1/20
+    HEAD = 3                                          # figure 4: the first three features by alpha are the head ...
+    CUTS = {"saturated": 0.85, "middle": 0.2, "partial": 0.05}   # ... the superposed band is leverage in [1/5, 0.85); partial [1/20, 1/5)
 
     def projector(V):
         """Whitened Gram of the rows of V: V (V'V)^+ V', the leverage projector. Gauge-free (V -> V A leaves
@@ -148,7 +149,7 @@ def _(
             SW[(p, b, r, d)] = sweep_rows(p, b, r, d, _have) if {"linear", "theory"} <= set(_have) else None
         return SW[(p, b, r, d)]
 
-    return CUTS, balanced_factors, load_cell, projector
+    return CUTS, HEAD, balanced_factors, load_cell, projector
 
 
 @app.cell
@@ -369,8 +370,11 @@ def _(mo):
     the group has fewer than three vectors). Trained beside theory; the trained frame is carried onto the
     theory's by orthogonal Procrustes in the full $d$-dimensional space first, then projected, as in the
     inference figures; every seed's frame is aligned to the first seed's theory frame before averaging.
-    Rows are the theory's allocation groups, cuts on leverage: represented $d_i \ge \tfrac12$ and partial
-    $\tfrac1{20} \le d_i < \tfrac12$; dropped features ($d_i < \tfrac1{20}$) are not drawn. Colour: feature rank.
+    Rows are three groups, each in its own frame so the later ones are not squashed against the head's
+    axes: the head (the first three features by $\alpha$, Gram-Schmidt frame with the head along $z$), the
+    superposed band (leverage $\tfrac15 \le d_i < 0.85$, head excluded: the features that share dimensions,
+    in their own PCA frame) and the partial band ($\tfrac1{20} \le d_i < \tfrac15$, PCA frame); saturated
+    features outside the head and dropped features are not drawn. Colour: $\alpha_i$ on a log scale.
     """)
     return
 
@@ -386,6 +390,7 @@ def _(
     CONFIG,
     CUTS,
     D_GRID,
+    HEAD,
     NOT_YET,
     SEL_F4,
     mo,
@@ -404,14 +409,18 @@ def _(
         _U, _, _Vt = np.linalg.svd(np.asarray(E, float), full_matrices=False)
         return _U @ _Vt
 
-    _GROUPS = [(r"represented:  $d_i \geq \frac{1}{2}$", CUTS["represented"], 1.01),
-               (r"partial:  $\frac{1}{20} \leq d_i < \frac{1}{2}$", CUTS["partial"], CUTS["represented"])]
+    # three groups, each drawn in its own frame: the head (first HEAD features by alpha, a near-orthogonal
+    # tripod, Gram-Schmidt frame), the superposed band (leverage in [1/5, 0.85), the head excluded: where the
+    # frame's overlaps live, PCA frame) and the partial band (1/20 <= d_i < 1/5, PCA frame)
+    _GROUPS = [(f"head:  first {HEAD}", lambda _lev: np.arange(HEAD), True),
+               (r"superposed:  $\frac{1}{5} \leq d_i < 0.85$", lambda _lev: np.setdiff1d(np.flatnonzero((_lev >= CUTS["middle"]) & (_lev < CUTS["saturated"])), np.arange(HEAD)), False),
+               (r"partial:  $\frac{1}{20} \leq d_i < \frac{1}{5}$", lambda _lev: np.flatnonzero((_lev >= CUTS["partial"]) & (_lev < CUTS["middle"])), False)]
 
-    def _basis3(_group, _frame):
-        """A canonical view of the group: Gram-Schmidt on its vectors in alpha order (rows come sorted), the
-        head along z, the next along x, the third along y; completed from the whole frame when the group
-        has fewer than three vectors."""
-        _Q = np.linalg.qr(_group[:3].T)[0].T                                            # orthonormal, in alpha order
+    def _basis3(_group, _frame, _gram_schmidt):
+        """A view of the group. Gram-Schmidt on its vectors in alpha order (the head: first along z, next along
+        x, third along y) or its top-3 principal directions (a superposed set spreads best in its PCA frame);
+        completed from the whole frame when the group has fewer than three vectors."""
+        _Q = np.linalg.qr(_group[:3].T)[0].T if _gram_schmidt else np.linalg.svd(_group, full_matrices=False)[2][:3]
         if len(_Q) < 3:
             _rest = _frame - _frame @ _Q.T @ _Q                                         # the frame outside the group's span
             _Q = np.vstack([_Q, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_Q)]])
@@ -430,8 +439,8 @@ def _(
             self.set_positions((_x0, _y0), (_x1, _y1))
             return min(_z0, _z1)
 
-    # the house diverging map with its pale middle cut out: blue -> light blue | light red -> red, so no
-    # arrow washes out on the white page; the jump sits at the represented cut
+    # the house diverging map with its pale middle cut out: blue -> light blue | light red -> red over log alpha,
+    # so no arrow washes out on the white page
     _vlag = plt.get_cmap(plot_utils.FIG.diverging_cmap)
     ALPHA_CMAP = plt.matplotlib.colors.ListedColormap(np.vstack([_vlag(np.linspace(0.0, 0.36, 128)), _vlag(np.linspace(0.64, 1.0, 128))]), name="vlag_cut")
 
@@ -446,12 +455,7 @@ def _(
         _ax.set_title(_title, fontsize=11)
 
     _alpha = np.asarray(_sel["rows"][D_GRID[0]][0]["alpha"], float)                # the ladder: colour by alpha_i
-    # log alpha, the diverging map centred where the theory's leverage crosses the represented cut (alpha ~ 3
-    # at d = 3 and 6): represented features red, partial ones blue, pale only at the boundary
-    class _LogTwoSlope(plt.matplotlib.colors.TwoSlopeNorm):
-        def __call__(self, value, clip=None):
-            return super().__call__(np.log(np.asarray(value, float)), clip)
-    _norm = _LogTwoSlope(vcenter=np.log(3.0), vmin=np.log(_alpha.min()), vmax=np.log(_alpha.max()))
+    _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())               # the ladder is a power law: log spreads it
     _fig = plt.figure(figsize=(15.5, 2.7 * len(_GROUPS)), layout="constrained")
     *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.0, width_ratios=[1, 1, 1, 0.12])
     for _c, (_d, _sf) in enumerate(zip(D_GRID, _sfs)):
@@ -462,9 +466,9 @@ def _(
         _Wp = np.mean([_whiten(_row["E"]["theory"]) @ rigid_map(_whiten(_row["E"]["theory"]), _ref) for _row in _rows], 0)
         _Wt = np.mean([_whiten(_row["E"]["linear"]) @ rigid_map(_whiten(_row["E"]["linear"]), _ref) for _row in _rows], 0)
         _lev = (_Wp ** 2).sum(1)
-        for _r, (_name, _lo, _hi) in enumerate(_GROUPS):
-            _idx = np.flatnonzero((_lev >= _lo) & (_lev < _hi))
-            _B = _basis3(_Wp[_idx], _Wp) if len(_idx) else None
+        for _r, (_name, _pick, _head_frame) in enumerate(_GROUPS):
+            _idx = _pick(_lev)
+            _B = _basis3(_Wp[_idx], _Wp, _head_frame) if len(_idx) else None
             for _j, (_W, _lbl) in enumerate([(_Wt, "trained"), (_Wp, "theory")]):
                 _ax = _sf.add_subplot(_gs[_r, _j], projection="3d")
                 _ax.set_title(f"{_lbl} ({len(_idx)})", fontsize=11)
@@ -473,9 +477,8 @@ def _(
                 if _c == 0 and _j == 0:
                     _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
     _fig.suptitle(_sel["title"])
-    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=plt.matplotlib.colors.TwoSlopeNorm(np.log(3.0), np.log(_alpha.min()), np.log(_alpha.max())), cmap=ALPHA_CMAP),
-                        cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
-    _cb.set_ticks(np.log([1, 2, 3, 4, 8])); _cb.set_ticklabels(["1", "2", "3", "4", "8"]); _cb.ax.minorticks_off()
+    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
+    _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
     mo.vstack([selector_row(SEL_F4), _out])
     return
