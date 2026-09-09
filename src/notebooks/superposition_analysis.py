@@ -125,7 +125,7 @@ def _(
         return _rows
 
     HEAD = 3                                          # figure 4: the first three features by alpha are the head ...
-    CUTS = {"saturated": 0.85, "middle": 0.2, "partial": 0.05}   # ... the superposed band is leverage in [1/5, 0.85); partial [1/20, 1/5)
+    CUT = 0.2                                         # ... the rest with leverage >= 1/5 are the superposed band; below is not drawn
 
     def projector(V):
         """Whitened Gram of the rows of V: V (V'V)^+ V', the leverage projector. Gauge-free (V -> V A leaves
@@ -149,7 +149,7 @@ def _(
             SW[(p, b, r, d)] = sweep_rows(p, b, r, d, _have) if {"linear", "theory"} <= set(_have) else None
         return SW[(p, b, r, d)]
 
-    return CUTS, HEAD, balanced_factors, load_cell, projector
+    return CUT, HEAD, balanced_factors, load_cell, projector
 
 
 @app.cell
@@ -372,9 +372,8 @@ def _(mo):
     inference figures; every seed's frame is aligned to the first seed's theory frame before averaging.
     Rows are three groups, each in its own frame so the later ones are not squashed against the head's
     axes: the head (the first three features by $\alpha$, Gram-Schmidt frame with the head along $z$), the
-    superposed band (leverage $\tfrac15 \le d_i < 0.85$, head excluded: the features that share dimensions,
-    in their own PCA frame) and the partial band ($\tfrac1{20} \le d_i < \tfrac15$, PCA frame); saturated
-    features outside the head and dropped features are not drawn. Colour: $\alpha_i$ on a log scale.
+    superposed band (the rest with leverage $d_i \ge \tfrac15$: the features that share dimensions, in their
+    own PCA frame). Features below $\tfrac15$ are not drawn. Colour: $\alpha_i$ on a log scale.
     """)
     return
 
@@ -388,7 +387,7 @@ def _(setting_ui):
 @app.cell
 def _(
     CONFIG,
-    CUTS,
+    CUT,
     D_GRID,
     HEAD,
     NOT_YET,
@@ -409,12 +408,11 @@ def _(
         _U, _, _Vt = np.linalg.svd(np.asarray(E, float), full_matrices=False)
         return _U @ _Vt
 
-    # three groups, each drawn in its own frame: the head (first HEAD features by alpha, a near-orthogonal
-    # tripod, Gram-Schmidt frame), the superposed band (leverage in [1/5, 0.85), the head excluded: where the
-    # frame's overlaps live, PCA frame) and the partial band (1/20 <= d_i < 1/5, PCA frame)
+    # two groups, each drawn in its own frame: the head (first HEAD features by alpha, a near-orthogonal
+    # tripod, Gram-Schmidt frame) and the superposed band (the rest with leverage >= 1/5: where the frame's
+    # overlaps live, PCA frame)
     _GROUPS = [(f"head:  first {HEAD}", lambda _lev: np.arange(HEAD), True),
-               (r"superposed:  $\frac{1}{5} \leq d_i < 0.85$", lambda _lev: np.setdiff1d(np.flatnonzero((_lev >= CUTS["middle"]) & (_lev < CUTS["saturated"])), np.arange(HEAD)), False),
-               (r"partial:  $\frac{1}{20} \leq d_i < \frac{1}{5}$", lambda _lev: np.flatnonzero((_lev >= CUTS["partial"]) & (_lev < CUTS["middle"])), False)]
+               (r"superposed:  the rest with $d_i \geq \frac{1}{5}$", lambda _lev: np.flatnonzero(_lev >= CUT)[HEAD:], False)]
 
     def _basis3(_group, _frame, _gram_schmidt):
         """A view of the group. Gram-Schmidt on its vectors in alpha order (the head: first along z, next along
