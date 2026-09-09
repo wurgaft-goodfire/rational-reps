@@ -373,7 +373,7 @@ def _(mo):
     Rows are three groups, each in its own frame so the later ones are not squashed against the head's
     axes: the head (the first three features by $\alpha$, Gram-Schmidt frame with the head along $z$), the
     superposed band (the rest with leverage $d_i \ge \tfrac15$: the features that share dimensions, in their
-    own PCA frame). Features below $\tfrac15$ are not drawn. Colour: $\alpha_i$ on a log scale.
+    own frame, the same construction). Features below $\tfrac15$ are not drawn. Colour: $\alpha_i$ on a log scale.
     """)
     return
 
@@ -409,16 +409,14 @@ def _(
         return _U @ _Vt
 
     # two groups, each drawn in its own frame: the head (first HEAD features by alpha, a near-orthogonal
-    # tripod, Gram-Schmidt frame) and the superposed band (the rest with leverage >= 1/5: where the frame's
-    # overlaps live, PCA frame)
-    _GROUPS = [(f"head:  first {HEAD}", lambda _lev: np.arange(HEAD), True),
-               (r"superposed:  the rest with $d_i \geq \frac{1}{5}$", lambda _lev: np.flatnonzero(_lev >= CUT)[HEAD:], False)]
+    # tripod) and the superposed band (the rest with leverage >= 1/5: where the frame's overlaps live)
+    _GROUPS = [(f"head:  first {HEAD}", lambda _lev: np.arange(HEAD)),
+               (r"superposed:  the rest with $d_i \geq \frac{1}{5}$", lambda _lev: np.flatnonzero(_lev >= CUT)[HEAD:])]
 
-    def _basis3(_group, _frame, _gram_schmidt):
-        """A view of the group. Gram-Schmidt on its vectors in alpha order (the head: first along z, next along
-        x, third along y) or its top-3 principal directions (a superposed set spreads best in its PCA frame);
-        completed from the whole frame when the group has fewer than three vectors."""
-        _Q = np.linalg.qr(_group[:3].T)[0].T if _gram_schmidt else np.linalg.svd(_group, full_matrices=False)[2][:3]
+    def _basis3(_group, _frame):
+        """A canonical view of the group: Gram-Schmidt on its vectors in alpha order, the first along z, the
+        next along x, the third along y; completed from the whole frame when the group has fewer than three."""
+        _Q = np.linalg.qr(_group[:3].T)[0].T
         if len(_Q) < 3:
             _rest = _frame - _frame @ _Q.T @ _Q                                         # the frame outside the group's span
             _Q = np.vstack([_Q, np.linalg.svd(_rest, full_matrices=False)[2][:3 - len(_Q)]])
@@ -464,9 +462,9 @@ def _(
         _Wp = np.mean([_whiten(_row["E"]["theory"]) @ rigid_map(_whiten(_row["E"]["theory"]), _ref) for _row in _rows], 0)
         _Wt = np.mean([_whiten(_row["E"]["linear"]) @ rigid_map(_whiten(_row["E"]["linear"]), _ref) for _row in _rows], 0)
         _lev = (_Wp ** 2).sum(1)
-        for _r, (_name, _pick, _head_frame) in enumerate(_GROUPS):
+        for _r, (_name, _pick) in enumerate(_GROUPS):
             _idx = _pick(_lev)
-            _B = _basis3(_Wp[_idx], _Wp, _head_frame) if len(_idx) else None
+            _B = _basis3(_Wp[_idx], _Wp) if len(_idx) else None
             for _j, (_W, _lbl) in enumerate([(_Wt, "trained"), (_Wp, "theory")]):
                 _ax = _sf.add_subplot(_gs[_r, _j], projection="3d")
                 _ax.set_title(f"{_lbl} ({len(_idx)})", fontsize=11)
