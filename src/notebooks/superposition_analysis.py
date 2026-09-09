@@ -347,6 +347,7 @@ def _(
     SEL_F3,
     aligned_mean,
     mo,
+    np,
     plot_utils,
     plt,
     rows_for,
@@ -359,14 +360,18 @@ def _(
     _gram = lambda _rows, _c, _ref: (lambda _W: _W @ _W.T)(aligned_mean([_row["E"][_c] for _row in _rows], _ref))[:_K, :_K]
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
     _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
+    _grid = {}
     for _c, _d in enumerate(D_GRID):
         _ref = whiten(_sel["rows"][_d][0]["E"]["theory"])                       # every frame is aligned to the first predicted one
         _panels = [(_gram(_sel["rows"][_d], "linear", _ref), "trained (5-seed mean)"),
                    (_gram(_sel["rows"][_d], "theory", _ref), "theory (5-draw mean)")]
         _panels += [(_gram(_sel["rows"][_d], _run, _ref), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
-        for _r, (_Gm, _lbl) in enumerate(_panels):
+        _grid[_d] = _panels
+    _v = max(np.abs(_Gm - np.diag(np.diag(_Gm))).max() for _panels in _grid.values() for _Gm, _lbl in _panels)
+    for _c, (_d, _panels) in enumerate(_grid.items()):                                              # one scale for every panel, trained and theory: the
+        for _r, (_Gm, _lbl) in enumerate(_panels):                                 # largest off-diagonal entry; the diagonal saturates
             _ax = _axes[_r, _c]
-            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
+            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-_v, vmax=_v)
             _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
             _ax.set_xticks([]); _ax.set_yticks([])
     _fig.colorbar(_im, ax=_axes.ravel().tolist(), shrink=0.5, pad=0.02)
@@ -600,6 +605,7 @@ def _(
     aligned_mean,
     balanced_factors,
     mo,
+    np,
     plot_utils,
     plt,
     rows_for,
@@ -615,14 +621,18 @@ def _(
     _gram = lambda _rows, _c, _d, _ref: (lambda _W: _W @ _W.T)(aligned_mean([_dec(_row, _c, _d) for _row in _rows], _ref))[:_K, :_K]
     _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
     _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
+    _grid = {}
     for _c, _d in enumerate(D_GRID):
         _ref = whiten(_dec(_sel["rows"][_d][0], "theory", _d))
         _panels = [(_gram(_sel["rows"][_d], "linear", _d, _ref), "trained (5-seed mean)"),
                    (_gram(_sel["rows"][_d], "theory", _d, _ref), "theory (5-draw mean)")]
         _panels += [(_gram(_sel["rows"][_d], _run, _d, _ref), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
-        for _r, (_Gm, _lbl) in enumerate(_panels):
+        _grid[_d] = _panels
+    _v = max(np.abs(_Gm - np.diag(np.diag(_Gm))).max() for _panels in _grid.values() for _Gm, _lbl in _panels)
+    for _c, (_d, _panels) in enumerate(_grid.items()):                                              # one scale for every panel, trained and theory: the
+        for _r, (_Gm, _lbl) in enumerate(_panels):                                 # largest off-diagonal entry; the diagonal saturates
             _ax = _axes[_r, _c]
-            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-1, vmax=1)                       # a projector's entries lie in [-1, 1]
+            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-_v, vmax=_v)
             _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
             _ax.set_xticks([]); _ax.set_yticks([])
     _fig.colorbar(_im, ax=_axes.ravel().tolist(), shrink=0.5, pad=0.02)
