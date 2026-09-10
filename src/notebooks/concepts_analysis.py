@@ -318,10 +318,10 @@ def _(mpatches, np, plot_utils, plt):
         e, _g = E[i], max(np.abs(E).max(), np.abs(D).max()); R = 1.5 * _g
         if regions:
             region_fill(ax, D[[0, 2]], yes_no, R, fade=0.1)
-        ax.scatter(*E.T, s=70, color="0.6", zorder=3)                                   # the four words
+        ax.scatter(*E.T, s=70, color=WORD_COLORS, zorder=3)                             # the four words
         for _j, _w in enumerate(WORDS):
             ax.annotate(_w, E[_j] + 0.1 * R * E[_j] / np.linalg.norm(E[_j]), fontsize=19,
-                        ha="center", va="center", color="0.45")
+                        ha="center", va="center", color=WORD_COLORS[_j])
         _decoders(ax, e, D[[1, 3]], ["Female +", "Female −"], 0.1 * _g,
                   values=False, color="0.6", lw=1.2)
         _decoders(ax, e, D[[0, 2]], ["Royal +", "Royal −"], (0.15 if logits else 0.05) * _g, numbers=logits)
@@ -373,6 +373,8 @@ def _(mpatches, np, plot_utils, plt):
     adjs = ["freezing", "cold", "moderate", "warm", "hot"]
     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     WORDS = ["man", "king", "woman", "queen"]                 # bundles (royal, female) in cube_codes order
+    WORD_COLORS = [0.8 * np.array(yes_no[1]), 0.8 * np.array(yes_no[0]),   # royal as hue (the pair's colours),
+                   1 - 0.55 * (1 - np.array(yes_no[1])), 1 - 0.55 * (1 - np.array(yes_no[0]))]   # female as lightness
     HIGHLIGHT = {"binary": 3, "line": 8, "week": 10}           # queen, a warm-to-hot day, Wed night
     EQS = [  # each kernel as the explicit dot product it factorizes into, then its closed form
         "$\\log\\frac{p(\\mathrm{royal}{+} \\mid z)}{p(\\mathrm{royal}{-} \\mid z)} = (z_{\\mathrm{royal}},\\, z_{\\mathrm{female}})^{\\top}(\\alpha,\\, 0)$\n"
@@ -546,7 +548,6 @@ def _(
                    ["which output", "uncertainty"], loc="center", bbox_to_anchor=_gs[1, :].get_position(fig_all),
                    ncol=2, fontsize=26, frameon=False, handlelength=3.0, columnspacing=3.0)
     plot_utils.save_figure(fig_all, FIGURES / "concepts_worlds_uncertainty.png")
-
     return MOVES, ORDER
 
 
@@ -646,7 +647,6 @@ def _(DRAW, FIGURES, MOVES, ORDER, WORDS, adjs, days, learned, mo, np, plt):
               "</body></html>", "concepts_drag")
     mo.hstack([mo.Html(f'<iframe srcdoc="{html.escape(_doc)}" width="504" height="312" frameborder="0"></iframe>') for _doc in _docs.values()],
               justify="start", gap=1)
-
     return
 
 
