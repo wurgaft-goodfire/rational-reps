@@ -65,11 +65,11 @@ def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt, to_rgb):
     # the concepts one divided by a temperature (gamma and scale are exact temperatures: same centred
     # log-conditional up to a factor, so the same geometry), cooled so that a whole context of T
     # observations keeps every latent's logit in the range the loss scores (line: median end-of-context
-    # span 2 nats, 90th percentile 5; at gamma 0.03 the far latents fell to -13 and the trained states
+    # span 4 nats, 90th percentile 8; at gamma 0.03 the far latents fell to -13 and the trained states
     # bent away from the affine image of the Bayes code there)
     WORLDS = {"binary": {"structure": "feature_cube", "m": 2, "decay": 1.0, "scale": 1.25,
                          "paired": True, "all_bundles": True},
-              "line": {"structure": "chain", "cooccurrence": "gaussian", "n": 13, "m": 5, "gamma": 0.015},
+              "line": {"structure": "chain", "cooccurrence": "gaussian", "n": 13, "m": 5, "gamma": 0.02},
               "week": {"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 0.8}}
     T, B_TRAIN = 12, 256                                               # context length, training batch
 
