@@ -621,6 +621,25 @@ def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
     return Lc - logsumexp(Lc, axis=1, keepdims=True), {"Z": Z, "alpha": alpha, "bipartite": True}
 
 
+def factors(factors, N=256, p=0.3, decay=0.9, scale=8.0, seed=0):
+    """Words with sparse structured attributes: factor k (a structure spec) is active w.p. p at a
+    uniform position z_k; outcomes are the factors' node tokens. Lc(x,(k,j)) = a_k alpha_k
+    (1 + kappa_k(z_k, j)), kappa_k the factor's row-centered log-conditional, alpha_k = scale*decay^k.
+    Returns (L (N, sum n_k), {"Z" (N, K) activity, "positions" (N, K), "alpha", "blocks", "bipartite"})."""
+    from scipy.special import logsumexp
+    kappas = [graph_conditional(spec) for spec in factors]
+    kappas = [k - k.mean(1, keepdims=True) for k in kappas]
+    alpha = scale * decay ** np.arange(len(factors))
+    rng = np.random.default_rng(seed)
+    Z = (rng.random((N, len(factors))) < p).astype(float)
+    pos = np.stack([rng.integers(len(k), size=N) for k in kappas], 1)
+    Lc = np.concatenate([Z[:, [k]] * alpha[k] * (1 + kap[pos[:, k]]) for k, kap in enumerate(kappas)], 1)
+    ends = np.cumsum([len(k) for k in kappas])
+    blocks = [slice(int(e - len(k)), int(e)) for e, k in zip(ends, kappas)]
+    return Lc - logsumexp(Lc, axis=1, keepdims=True), {"Z": Z, "positions": pos, "alpha": alpha,
+                                                       "blocks": blocks, "bipartite": True}
+
+
 # ── Hypothesis spaces (bipartite): hypotheses -> observations, strong sampling p(x|h) = 1/|h| ──
 # Zero cells are exact zeros (log -inf) so the dataset's lapse applies; each structure supplies
 # its own prior over hypotheses.
@@ -715,6 +734,7 @@ _STRUCTURES = {
     "tree": _Structure(_tree_graph, tree_conditional),
     # bipartite (no adjacency): words -> features; hypothesis spaces -> observations
     "feature_cube": _Structure(None, feature_cube),
+    "factors": _Structure(None, factors),
     "intervals": _Structure(None, interval_hypotheses),
     "rectangles": _Structure(None, rectangle_hypotheses),
     "subtrees": _Structure(None, subtree_hypotheses),

@@ -239,5 +239,68 @@ def _(FIGURES, geometry_panel, plot_utils):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 5. Sparse structured attributes
+
+    $N$ words carry $K$ ring-valued attributes, each present independently with probability $p$ at a
+    uniform position $z_k$; the outcomes are the rings' node tokens,
+    $\log p((k,j)\mid x) = \operatorname{log\,softmax}\big(a_k\,\alpha_k\,(1 + \kappa_k(z_k, j))\big)$,
+    with $\kappa_k$ the ring's row-centred log-kernel and $\alpha_k = \text{scale}\cdot\text{decay}^k$.
+    The predicted code is one circle plane per factor, mutually orthogonal, plus $K-1$ presence
+    directions (rank $3K-1$): a word sits on factor $k$'s circle when the attribute is present and at
+    the plane's origin when absent. Union and product stacking are the $p\to0$ and $p\to1$ limits;
+    the feature cube is the one-node case.
+
+    Each panel projects every word onto the plane read off that code's own decoder block for the factor.
+    """)
+    return
+
+
+@app.cell
+def _(FIGURES, cka, factor_logcond, graph_overrides, load_run, plot_utils):
+    from src.code.data import graph_build
+
+    # SGD from small init lands on the balanced split the oracle predicts; AdamW keeps the init's
+    # imbalance, which CKA against the balanced code then charges. Gradient descent learns the
+    # modes in order of singular value, so the weak factors need the long schedule.
+    SGD = {"linear": 0.5, "mlp": 0.5, "rnn": 0.5, "transformer": 0.1}      # learning rate per runner
+    STEPS = 60000
+
+    def factor_planes_figure(decay, name):
+        """Predicted planes beside each SGD-trained architecture's, for one importance ladder."""
+        # full support, so no lapse floor: scale 2, gamma 1 keeps every token above p = 0.004 and scored
+        ring = {"structure": "ring", "n": 8, "cooccurrence": "gaussian", "gamma": 1.0}
+        spec = {"structure": "factors", "factors": [ring] * 3, "N": 1024, "p": 0.3, "decay": decay, "scale": 2.0, "seed": 0}
+        L, info = graph_build(spec)
+        _, E, D, _ = factor_logcond(L)
+        r = 3 * len(info["blocks"]) - 1                                    # exact rank of the code
+        E, D = E[:, :r], D[:r]
+        runs = {arch: load_run(graph_overrides(spec) + [f"runner={arch}", "training_kwargs.optimizer=sgd",
+                                                        f"training_kwargs.learning_rate={lr}",
+                                                        f"training_kwargs.train_steps={STEPS}"])
+                for arch, lr in SGD.items()}
+        models = {arch: (run["representation"], run["readout"]) for arch, run in runs.items()}
+        scores = {arch: cka(X, E) for arch, (X, _) in models.items()}
+        print(f"{name:26s} " + "  ".join(f"{arch} {s:.2f}" for arch, s in scores.items()), flush=True)
+        fig = plot_utils.plot_factor_planes(E, D, models, info, scores=scores)
+        return plot_utils.save_figure(fig, FIGURES / f"{name}_planes.png")
+
+    return (factor_planes_figure,)
+
+
+@app.cell
+def _(factor_planes_figure):
+    factor_planes_figure(0.8, "factors")                                   # alpha = 2, 1.6, 1.28
+    return
+
+
+@app.cell
+def _(factor_planes_figure):
+    factor_planes_figure(1.0, "factors_equal")                             # alpha = 2, 2, 2
+    return
+
+
 if __name__ == "__main__":
     app.run()

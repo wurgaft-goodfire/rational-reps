@@ -589,6 +589,36 @@ def plot_stacking(n=12, q=10):
     return fig
 
 
+def plot_factor_planes(E_pred, D_pred, models, info, cmap=None, scores=None):
+    """Sparse factors: every word projected onto each factor's plane, read off that code's own
+    decoder block (`factor_planes`). Rows: the predicted code, then each model in ``models``
+    ({name: (representation, readout (C, d))}); columns: the factors. Active words are coloured by
+    their position on the factor, inactive words sit grey at the plane's origin. ``scores``: {name:
+    CKA} for the row labels."""
+    from .geometry import factor_planes
+    cmap = cmap or FIG.cyclic_cmap
+    blocks, Z, pos = info["blocks"], info["Z"], info["positions"]
+    rows = [("predicted", E_pred, D_pred)] + [(name, E, D.T) for name, (E, D) in models.items()]
+    K = len(blocks)
+    fig, axes = plt.subplots(len(rows), K, figsize=(2.7 * K, 2.7 * len(rows)), squeeze=False)
+    for i, (name, E, D) in enumerate(rows):
+        for k, ((m, U), b) in enumerate(zip(factor_planes(D, blocks), blocks)):
+            ax = axes[i, k]
+            XY = np.asarray(E) @ U[:, :2]
+            on = Z[:, k] == 1
+            n_k = b.stop - b.start
+            ax.scatter(XY[~on, 0], XY[~on, 1], c="0.75", s=10, clip_on=False)
+            ax.scatter(XY[on, 0], XY[on, 1], c=pos[on, k] / n_k, cmap=cmap, vmin=0, vmax=1, s=22, clip_on=False)
+            _frame_2d(ax, XY, margin=0.15)
+            if i == 0:
+                ax.set_title(f"factor {k + 1}")
+            if k == 0:
+                label = name if scores is None or name not in scores else f"{name}\nCKA {scores[name]:.2f}"
+                ax.set_ylabel(label, fontsize=FIG.font_sizes["axis_label"])
+    fig.tight_layout()
+    return fig
+
+
 def rdm_heatmap(ax, reps, title="RDM", cmap=None):
     """Representational dissimilarity matrix (pairwise Euclidean distances between item reps),
     normalized by its max so panels share one [0, 1] scale regardless of representation norm.
