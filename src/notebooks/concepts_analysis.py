@@ -81,7 +81,7 @@ def _(mo):
 
 
 @app.cell
-def _(E, FIGURES, KDIMS, L, N, SPEC, hue, np, plot_utils, plt):
+def _(E, FIGURES, KDIMS, L, N, SPEC, hue, np, plot_utils):
     # fix the rotation gauge so the two columns are literally cos(theta), sin(theta):
     # item 0 on the +x axis, theta increasing counterclockwise
     _E2 = E[:, :2].copy()
@@ -131,17 +131,12 @@ def _(E, FIGURES, KDIMS, L, N, SPEC, hue, np, plot_utils, plt):
         _axp.set_xlabel("activation space", fontsize=11, color="0.5")
         plot_utils.FIG.clean(_axp)
 
-    # the whole story: predicted geometry, the factorization, the dual reading — each panel saved
-    # on its own and then drawn again into one stacked vector figure
-    _panels = [
-        (3.9, "concepts_ring_predicted", lambda fig: plot_utils.plot_predicted_geometry(SPEC, L, E, fig=fig)),
-        (4.2, "concepts_factorization", lambda fig: plot_utils.plot_factorization(L, k=KDIMS, fig=fig)),
-        (3.8, "concepts_dual_reading", _dual_reading),
-    ]
-    for _h, _name, _draw in _panels:
-        _f = plt.figure(figsize=(13, _h)); _draw(_f)
-        plot_utils.save_figure(_f, FIGURES / f"{_name}.png"); plt.close(_f)
-    story = plot_utils.stack_figures([(_h, _draw) for _h, _, _draw in _panels])
+    # the whole story in one stacked vector figure: predicted geometry, the factorization, the dual reading
+    story = plot_utils.stack_figures([
+        (3.9, lambda fig: plot_utils.plot_predicted_geometry(SPEC, L, E, fig=fig)),
+        (4.2, lambda fig: plot_utils.plot_factorization(L, k=KDIMS, fig=fig)),
+        (3.8, _dual_reading),
+    ])
     plot_utils.save_figure(story, FIGURES / "concepts_embedding_story.png")
     return
 
@@ -158,7 +153,7 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, N, factor_logcond, graph_conditional, np, plot_utils, plt):
+def _(FIGURES, N, factor_logcond, graph_conditional, np, plot_utils):
     # the same ring under the diffusion kernel: every harmonic present, geometrically decaying.
     # Each harmonic pair shares a singular value, so the SVD fixes it only up to a phase: the
     # columns are cos(k theta + phi_k), sin(k theta + phi_k) with an arbitrary phi_k per pair
@@ -188,17 +183,11 @@ def _(FIGURES, N, factor_logcond, graph_conditional, np, plot_utils, plt):
         _axs.set_title("singular values decay by harmonic pair", fontsize=12)
         plot_utils.FIG.style_axes(_axs)
 
-    _panels = [
-        (3.9, "concepts_ring_predicted_diffusion",
-         lambda fig: plot_utils.plot_predicted_geometry(SPEC2, L2, E2, fig=fig)),
-        (5.0, "concepts_factorization_diffusion",                  # the full decomposition, equal cells
-         lambda fig: plot_utils.plot_factorization(L2, k=N2 - 1, embedding_width=1 / N2, fig=fig)),
-        (3.8, "concepts_harmonics_diffusion", _harmonics),
-    ]
-    for _h, _name, _draw in _panels:
-        _f = plt.figure(figsize=(13, _h)); _draw(_f)
-        plot_utils.save_figure(_f, FIGURES / f"{_name}.png"); plt.close(_f)
-    story2 = plot_utils.stack_figures([(_h, _draw) for _h, _, _draw in _panels])
+    story2 = plot_utils.stack_figures([
+        (3.9, lambda fig: plot_utils.plot_predicted_geometry(SPEC2, L2, E2, fig=fig)),
+        (5.0, lambda fig: plot_utils.plot_factorization(L2, k=N2 - 1, embedding_width=1 / N2, fig=fig)),   # full decomposition, equal cells
+        (3.8, _harmonics),
+    ])
     plot_utils.save_figure(story2, FIGURES / "concepts_embedding_story_diffusion.png")
     return
 
