@@ -357,8 +357,9 @@ class RelationalDataset(KernelDataset):
 class HMMDataset(KernelDataset):
     """The hidden-input sequence with real dynamics: the state walks the structure's graph
     instead of standing still, and the kernel is an emission matrix. ``emission``: "bump"
-    (Gaussian in hop distance, symbols = states) or "permuted" (a peaked template permuted per
-    state); ``emission_sigma`` sets its width. As everywhere, ``infer_latent`` chooses between
+    (Gaussian in hop distance to the ``sensors`` states, default every state) or "permuted" (a
+    peaked template permuted per state); ``emission_sigma`` sets its width; ``transition_floor``
+    and ``emission_floor`` mix rows with uniform. As everywhere, ``infer_latent`` chooses between
     predicting the next symbol and predicting the state."""
 
     def _build(self, config):
@@ -389,10 +390,13 @@ class HMMDataset(KernelDataset):
         emission = config.get("emission", "bump")
         sigma = float(config.get("emission_sigma", 1.0))
         if emission == "bump":
-            # Gaussian in hop distance on the structure's graph; symbols correspond to states
-            # (M = n_states), so sigma reads as 'how many hops does an emission alias'
-            Em = np.exp(-(structure_distance(spec) ** 2) / (2 * sigma ** 2))
-            self.n_symbols = self.n_states
+            # Gaussian in hop distance on the structure's graph, so sigma reads as 'how many hops does
+            # an emission alias'. Symbols are centred on the states listed in ``sensors`` (default:
+            # every state, M = n_states); a short list makes a coarse sensor.
+            sensors = config.get("sensors", None)
+            centres = list(range(self.n_states)) if sensors is None else list(sensors)
+            Em = np.exp(-(structure_distance(spec)[:, centres] ** 2) / (2 * sigma ** 2))
+            self.n_symbols = len(centres)
             return torch.tensor(Em, dtype=torch.float64, device=self.device)
         if emission == "permuted":
             # one peaked template over the M symbols, independently permuted per state
@@ -656,6 +660,36 @@ def factors(factors, N=256, p=0.3, decay=0.9, scale=8.0, seed=0):
                                                        "blocks": blocks, "bipartite": True}
 
 
+def attribute_tree(attributes, n=1, k=2, parents=None):
+    """Category tree whose nodes own attribute factors; items are every (leaf, positions) combination.
+    ``attributes``: structure specs with ``node`` (owner) and ``alpha``; a leaf's active attributes are
+    those on its root path. Lc(x,(a,j)) = alpha_a [owner on path] (1 + kappa_a(z_a, j)), kappa_a the
+    attribute's row-centered log-conditional. Returns (L (n_items, sum n_a), {"leaf" (n_items,),
+    "Z" (n_items, A) activity, "positions" (n_items, A), "alpha", "blocks", "parents", "bipartite"})."""
+    from scipy.special import logsumexp
+    parents = tree_parents(n, k, parents)
+    owners = [a["node"] for a in attributes]
+    alpha = np.array([a["alpha"] for a in attributes], float)
+    kappas = [graph_conditional({key: v for key, v in a.items() if key not in ("node", "alpha")}) for a in attributes]
+    kappas = [kap - kap.mean(1, keepdims=True) for kap in kappas]
+    leaves = [v for v in range(len(parents)) if v not in set(parents)]
+    path = lambda v: [] if v < 0 else path(parents[v]) + [v]
+    leaf_col, Z, pos = [], [], []
+    for leaf in leaves:
+        active = [i for i, v in enumerate(owners) if v in path(leaf)]
+        for combo in itertools.product(*[range(kappas[i].shape[0]) for i in active]):
+            z = np.zeros(len(attributes)); p = np.zeros(len(attributes), int)
+            z[active] = 1.0; p[active] = combo
+            leaf_col.append(leaf); Z.append(z); pos.append(p)
+    Z, pos = np.array(Z), np.array(pos)
+    Lc = np.concatenate([Z[:, [i]] * alpha[i] * (1 + kap[pos[:, i]]) for i, kap in enumerate(kappas)], 1)
+    ends = np.cumsum([kap.shape[1] for kap in kappas])                    # an attribute may read out on fewer tokens than positions
+    blocks = [slice(int(e - kap.shape[1]), int(e)) for e, kap in zip(ends, kappas)]
+    return Lc - logsumexp(Lc, axis=1, keepdims=True), {"leaf": np.array(leaf_col), "Z": Z, "positions": pos,
+                                                       "alpha": alpha, "blocks": blocks, "parents": parents,
+                                                       "bipartite": True}
+
+
 # ── Hypothesis spaces (bipartite): hypotheses -> observations, strong sampling p(x|h) = 1/|h| ──
 # Zero cells are exact zeros (log -inf) so the dataset's lapse applies; each structure supplies
 # its own prior over hypotheses.
@@ -751,6 +785,7 @@ _STRUCTURES = {
     # bipartite (no adjacency): words -> features; hypothesis spaces -> observations
     "feature_cube": _Structure(None, feature_cube),
     "factors": _Structure(None, factors),
+    "attribute_tree": _Structure(None, attribute_tree),
     "intervals": _Structure(None, interval_hypotheses),
     "rectangles": _Structure(None, rectangle_hypotheses),
     "subtrees": _Structure(None, subtree_hypotheses),

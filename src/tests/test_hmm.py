@@ -209,3 +209,20 @@ def test_uniform_emissions_leave_the_belief_at_the_prior():
     x = ds.batch(64)["input_ids"][:, 1:]
     b = ds.forward_algorithm(x)
     torch.testing.assert_close(b, ds.prior.expand_as(b), atol=1e-9, rtol=0)
+
+
+def test_sensors_are_bumps_around_chosen_states():
+    """``sensors`` lists the states the symbols are centred on: symbol k is a bump in hop distance to
+    centre k, so ``n_symbols = len(sensors)``; ``sensors`` unset keeps one symbol per state."""
+    n = 12
+    Em_all = HMMDataset(_cfg(sigma=1.0, n=n)).P.cpu().numpy()
+    Em_listed = HMMDataset(_cfg(sigma=1.0, n=n, sensors=list(range(n)))).P.cpu().numpy()
+    np.testing.assert_allclose(Em_listed, Em_all, atol=1e-12)                        # all states: today's bump
+    ds = HMMDataset(_cfg(sigma=0.8, n=n, sensors=[0, 4, 8]))
+    Em = ds.P.cpu().numpy()
+    assert Em.shape == (n, 3) and ds.n_symbols == 3
+    np.testing.assert_allclose(Em.sum(1), np.ones(n), atol=1e-12)
+    hops = np.minimum(np.arange(n), n - np.arange(n)).astype(float)                     # from state 0
+    expected = np.exp(-hops[[0, 4, 8]] ** 2 / (2 * 0.8 ** 2)); expected /= expected.sum()
+    np.testing.assert_allclose(Em[0], expected, atol=1e-9)
+    np.testing.assert_allclose(Em[2, 0], Em[2, 1], atol=1e-12)                        # state 2 sits midway between centres 0 and 4
