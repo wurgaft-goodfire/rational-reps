@@ -314,14 +314,14 @@ def _(mpatches, np, plot_utils, plt):
 
     def draw_binary(ax, E, D, i, regions=False, arrow=True, logits=True):
         """Paired yes/no world in the feature-axes gauge (tokens [1+, 2+, 1-, 2-]): the four words at
-        the corners, word i read out by the feature-1 pair; regions = that pair's yes/no half-planes."""
+        the corners, word i read out by the feature-1 pair; regions = each word's quadrant."""
         e, _g = E[i], max(np.abs(E).max(), np.abs(D).max()); R = 1.5 * _g
         if regions:
-            region_fill(ax, D[[0, 2]], yes_no, R, fade=0.1)
+            region_fill(ax, E, WORD_COLORS, R, fade=0.2)                              # each word's quadrant
         ax.scatter(*E.T, s=70, color=WORD_COLORS, zorder=3)                             # the four words
         for _j, _w in enumerate(WORDS):
             ax.annotate(_w, E[_j] + 0.1 * R * E[_j] / np.linalg.norm(E[_j]), fontsize=19,
-                        ha="center", va="center", color=WORD_COLORS[_j])
+                        ha="center", va="center", color="0.45")
         _decoders(ax, e, D[[1, 3]], ["Female +", "Female −"], 0.1 * _g,
                   values=False, color="0.6", lw=1.2)
         _decoders(ax, e, D[[0, 2]], ["Royal +", "Royal −"], (0.15 if logits else 0.05) * _g, numbers=logits)
