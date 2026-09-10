@@ -35,6 +35,7 @@ def _(mo):
     from src.code.geometry import factor_logcond, predicted_inference_geometry
     from src.code import plot_utils
     import matplotlib.pyplot as plt
+    from matplotlib.colors import to_rgb
 
     from pathlib import Path
     FIGURES = Path(os.environ.get("CACHE_DIR", ROOT / "outputs")) / "figures"
@@ -51,18 +52,22 @@ def _(mo):
         plt,
         predicted_inference_geometry,
         rigid_map,
+        to_rgb,
     )
 
 
 @app.cell
-def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt):
-    # the two hidden-input worlds of the concepts notebook: a fine latent (13 temperatures, 28 times
-    # of week) emitting coarse mentions (5 adjectives, 7 days), bipartite so the input is hidden
-    # kernels calibrated so the log-posterior spans about 8 nats at the end of the context: every
-    # latent's logit stays in the range the loss scores
+def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt, to_rgb):
+    # the worlds of the concepts notebook, hidden: a fine latent (13 temperatures, 28 times of week)
+    # emitting coarse mentions (5 adjectives, 7 days), bipartite so the input is hidden. Each kernel is
+    # the concepts one divided by a temperature (gamma and scale are exact temperatures: same centred
+    # log-conditional up to a factor, so the same geometry), cooled so that a whole context of T
+    # observations keeps every latent's logit in the range the loss scores (line: median end-of-context
+    # span 4 nats, 90th percentile 8; at gamma 0.03 the far latents fell to -13 and the trained states
+    # bent away from the affine image of the Bayes code there)
     WORLDS = {"binary": {"structure": "feature_cube", "m": 2, "decay": 1.0, "scale": 1.25,
                          "paired": True, "all_bundles": True},
-              "line": {"structure": "chain", "cooccurrence": "gaussian", "n": 13, "m": 5, "gamma": 0.03},
+              "line": {"structure": "chain", "cooccurrence": "gaussian", "n": 13, "m": 5, "gamma": 0.02},
               "week": {"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 0.8}}
     T, B_TRAIN = 12, 256                                               # context length, training batch
 
@@ -107,12 +112,15 @@ def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt):
                   zorder=0, aspect=aspect)
 
     def latent_colors(name, n):
-        """One color per latent: ordered on the line, cyclic on the week, categorical for words."""
+        """One color per latent: ordered on the line, cyclic on the week; for the words, royal as hue
+        (orange no, blue yes, the concepts figure's pair) and female as lightness (dark no, light yes),
+        in cube_codes order [man, king, woman, queen]."""
         if name == "line":
             return plt.get_cmap(plot_utils.FIG.diverging_cmap)(np.linspace(0.05, 0.95, n))
         if name == "week":
             return plt.cm.twilight(np.arange(n) / n)
-        return plt.cm.Set2(np.arange(n))
+        _no, _yes = (np.array(to_rgb(plot_utils.FIG.colors[_k])) for _k in ("orange", "blue"))
+        return np.array([0.8 * _no, 0.8 * _yes, 1 - 0.55 * (1 - _no), 1 - 0.55 * (1 - _yes)])
 
     return T, WORLDS, frame, latent_colors, log_posteriors, world
 
@@ -137,16 +145,14 @@ def _(mo):
     ## 1. Latent target: predicted and trained states
 
     Top: the Bayes rows of sampled prefixes, factored; states in the top two modes. Bottom: the
-    trained model's hidden states in their own top-2 plane, rotated (no stretch) onto the prediction,
-    with the readout rows $w_z$ projected the same way. One stream is highlighted in both rows; the
-    title gives the affine $R^2$ and CKA of hidden state against prediction.
+    trained model's hidden states in their own top-2 plane, rotated (no stretch) onto the prediction.
+    One stream is highlighted in both rows; the title gives the affine $R^2$ and CKA of hidden state
+    against prediction.
 
-    **Rays.** Streams are grouped by the true latent behind them (the run's labels); each ray runs
-    from the origin through the group's mean state at the last scored position $t = T{-}1$: the
-    direction a $z$-stream heads on average. Background: what the readout believes at each point of
-    the plane, $\mathrm{softmax}(p \cdot D)$, as the posterior-weighted mean of the latent colours.
-    Certainty is not painted; it is distance from the origin along a ray. (Argmax regions would be a
-    knife-edge where neighbouring decoders are nearly parallel, as on the line and ring.)
+    **Colour.** Each state is the belief-weighted mix of the latent colours: the Bayes posterior on
+    the predicted side, the model's own readout $\mathrm{softmax}(h \cdot W)$ on the trained side, so
+    matching colours across the pair are a check in themselves. Certainty is not painted separately;
+    it is saturation, growing with distance from the origin, where every world sits at the prior's mix.
     """)
     return
 
@@ -236,16 +242,20 @@ def _(
                         rep=latent_means(code, z, _n).reshape(_n * code.shape[1], -1), r2=_r2)
         return dict(pred=_side(E), trained=_side(H), axes=list(targets))
 
-    def state_panel(ax, title, pl, colors, b, rays=True, background=True, cloud=None):
-        """One plane: the readout's belief as background (optional), sampled states (grey, or coloured by
-        ``cloud`` (B, T) on plasma, dark at its min, yellow at its max), optionally a ray per true latent through its mean end state, and one
-        highlighted stream (light to dark with t)."""
+    def state_panel(ax, title, pl, colors, b, rays=True, background=True, cloud=None, belief=None):
+        """One plane: the readout's belief as background (optional), sampled states (grey; coloured by
+        ``cloud`` (B, T) on plasma, dark at its min, yellow at its max; or by ``belief`` (B, T, n), each
+        state the belief-weighted mix of the latent colours), optionally a ray per true latent through
+        its mean end state, and one highlighted stream (light to dark with t)."""
         _flat = pl["pts"].reshape(-1, 2)
-        _lo, _hi = _flat.min(0), _flat.max(0); _pad = 0.12 * (_hi - _lo).max()
+        _lo, _hi = _flat.min(0), _flat.max(0); _pad = 0.06 * (_hi - _lo).max()
         _xr, _yr = (_lo[0] - _pad, _hi[0] + _pad), (_lo[1] - _pad, _hi[1] + _pad)
         if background:
             belief_bg(ax, pl["cones"], _xr, _yr, colors)
-        if cloud is None:
+        if belief is not None:
+            _rgb = belief.reshape(-1, belief.shape[-1]) @ np.asarray(colors)[:, :3]
+            ax.scatter(*_flat.T, s=34, color=_rgb, alpha=0.6, lw=0, zorder=2)
+        elif cloud is None:
             ax.scatter(*_flat.T, s=7, color="0.55", alpha=0.18, lw=0, zorder=2)
         else:
             _u = (cloud.ravel() - cloud.min()) / np.ptp(cloud)
@@ -277,10 +287,11 @@ def _(
 
     FONT = 18                                                                     # panel-title size inside a block
 
-    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None):
+    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None, belief=None):
         """One world's block, laid out like `plot_embedding_panels`: predicted beside transformer (states
         above; below, Grams of the mean path per true latent with the CKA over every state). Rendered to an
-        in-memory png for `merge_panels`; only the merged figure is saved.
+        in-memory png for `merge_panels`; only the merged figure is saved. ``belief``: {side: (B, T, n)}
+        colours each side's states by its own belief over the latents.
         """
         _fig = plt.figure(figsize=(7.6, 9.0))                                      # large in inches: merged fonts match the geometry figure
         _gs = _fig.add_gridspec(2, 2, height_ratios=[1.15, 1], hspace=0.2, wspace=0.25)
@@ -288,7 +299,8 @@ def _(
             if "axes" in pl:                                                       # semantic gauge: name the axes, report decoding R^2
                 pl[_side]["axes"] = pl["axes"]
                 _label += "   $R^2$ " + ", ".join(f"{_r:.2f}" for _r in pl[_side]["r2"])
-            state_panel(_fig.add_subplot(_gs[0, _j]), _label, pl[_side], colors, b, rays=rays, background=background, cloud=cloud)
+            state_panel(_fig.add_subplot(_gs[0, _j]), _label, pl[_side], colors, b, rays=rays, background=background, cloud=cloud,
+                        belief=None if belief is None else belief[_side])
             _ax = _fig.add_subplot(_gs[1, _j])
             plot_utils.gram_heatmap(_ax, pl[_side]["rep"],
                                     title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {cka_all:.3f}")
@@ -307,9 +319,11 @@ def _(
 @app.cell
 def _(
     FIGURES,
+    T,
     fits,
     hist,
     latent_colors,
+    logsumexp,
     np,
     pick_stream,
     plane_block,
@@ -319,7 +333,10 @@ def _(
     _blocks = []
     for _name, _pl in planes.items():
         _b = pick_stream(_pl["pred"]["pts"], toward=3 * np.pi / 4) if _name == "week" else 0   # the ring: a far stream heading up-left
-        _blocks.append(plane_block(_pl, latent_colors(_name, hist[_name]["D"].shape[1]), _b, fits[_name]["cka"]))
+        _lg = hist[_name]["run"]["logits"][:, :T].astype(float)                 # the model's belief over z, per state
+        _belief = dict(pred=np.exp(hist[_name]["LP"][:, :T]), trained=np.exp(_lg - logsumexp(_lg, -1, keepdims=True)))
+        _blocks.append(plane_block(_pl, latent_colors(_name, hist[_name]["D"].shape[1]), _b, fits[_name]["cka"],
+                                   rays=False, background=False, belief=_belief))
     fig_latent = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
     plot_utils.save_figure(fig_latent, FIGURES / "inference_latent.png", dpi=200)
     return
