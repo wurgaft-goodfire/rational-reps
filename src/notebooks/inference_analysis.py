@@ -273,7 +273,7 @@ def _(
                         rep=latent_means(code, z, _n).reshape(_n * code.shape[1], -1), r2=_r2)
         return dict(pred=_side(E), trained=_side(H), axes=list(targets))
 
-    def state_panel(ax, title, pl, colors, b, rays=True, background=True, cloud=None, belief=None):
+    def state_panel(ax, title, pl, colors, b, rays=True, background=True, cloud=None, belief=None, dot=34):
         """One plane: the readout's belief as background (optional), sampled states (grey; coloured by
         ``cloud`` (B, T) on plasma, dark at its min, yellow at its max; or by ``belief`` (B, T, n), each
         state the belief-weighted mix of the latent colours), optionally a ray per true latent through
@@ -286,7 +286,7 @@ def _(
             belief_bg(ax, pl["cones"], _xr, _yr, colors)
         if belief is not None:
             _rgb = belief.reshape(-1, belief.shape[-1]) @ np.asarray(colors)[:, :3]
-            ax.scatter(*_flat.T, s=34, color=_rgb, alpha=0.6, lw=0, zorder=2)
+            ax.scatter(*_flat.T, s=dot, color=_rgb, alpha=0.6, lw=0, zorder=2)
         elif cloud is None:
             ax.scatter(*_flat.T, s=7, color="0.55", alpha=0.18, lw=0, zorder=2)
         else:
@@ -320,7 +320,7 @@ def _(
 
     FONT = 18                                                                     # panel-title size inside a block
 
-    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None, belief=None):
+    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None, belief=None, dot=34):
         """One world's block, laid out like `plot_embedding_panels`: predicted beside transformer (states
         above; below, Grams of the mean path per true latent with the CKA over every state). Rendered to an
         in-memory png for `merge_panels`; only the merged figure is saved. ``belief``: {side: (B, T, n)}
@@ -333,7 +333,7 @@ def _(
                 pl[_side]["axes"] = pl["axes"]
                 _label += "   $R^2$ " + ", ".join(f"{_r:.2f}" for _r in pl[_side]["r2"])
             state_panel(_fig.add_subplot(_gs[0, _j]), _label, pl[_side], colors, b, rays=rays, background=background, cloud=cloud,
-                        belief=None if belief is None else belief[_side])
+                        belief=None if belief is None else belief[_side], dot=dot)
             _ax = _fig.add_subplot(_gs[1, _j])
             plot_utils.gram_heatmap(_ax, pl[_side]["rep"],
                                     title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {cka_all:.3f}")
@@ -712,7 +712,7 @@ def _(
     _blocks = []
     for _name, _pl in planes_hmm.items():
         _blocks.append(plane_block(_pl, hmm_colors(_name, hmms[_name]["ds"]), pick_stream(_pl["pred"]["pts"]), hmms[_name]["cka"],
-                                   rays=False, background=False, belief=hmms[_name]["belief"]))
+                                   rays=False, background=False, belief=hmms[_name]["belief"], dot=6))
     fig_hmm = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
     plot_utils.save_figure(fig_hmm, FIGURES / "inference_hmm.png", dpi=200)
     return
