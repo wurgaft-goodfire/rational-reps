@@ -638,33 +638,6 @@ def _draw_factor_plane(ax, E, D, info, k, cmap=None):
     _frame_2d(ax, XY, margin=0.15)
 
 
-def plot_attribute_tree(E_pred, D_pred, models, info, scores=None, colors=None, cmap=None):
-    """Category tree with attributes: per row (predicted, then each model) the top-3 PCA view, every
-    attribute's plane (`_draw_factor_plane`), and the item Gram in enumeration order (category, then
-    positions). The 3-D view is coloured by category, or by ``colors`` (one scalar per item, on
-    ``cmap``) when given. ``models``: {name: (representation, readout (C, d))}."""
-    from matplotlib.colors import ListedColormap
-    rows = _model_rows(E_pred, D_pred, models)
-    planes = [k for k, b in enumerate(info["blocks"]) if b.stop - b.start > 1]   # a one-token attribute has no plane
-    A = len(planes)
-    if colors is None:
-        colors = np.unique(info["leaf"], return_inverse=True)[1]
-        cmap = ListedColormap(FIG.categorical[:max(2, colors.max() + 1)])
-    fig = plt.figure(figsize=(2.7 * (A + 2), 2.7 * len(rows)))
-    gs = fig.add_gridspec(len(rows), A + 2, wspace=0.3, hspace=0.3)
-    for i, (name, E, D) in enumerate(rows):
-        ax3 = fig.add_subplot(gs[i, 0], projection="3d")
-        scatter_geometry(ax3, _pca(E, 3), "top 3 modes" if i == 0 else "", cmap or FIG.cyclic_cmap, colors=colors)
-        for j, k in enumerate(planes):
-            ax = fig.add_subplot(gs[i, j + 1])
-            _draw_factor_plane(ax, E, D, info, k)
-            if i == 0:
-                ax.set_title(f"attribute {k + 1}")
-        gram_heatmap(fig.add_subplot(gs[i, A + 1]), E, title=r"$E^{*}E^{*\top}$" if i == 0 else r"$EE^{\top}$")
-        _row_label(ax3, name, scores)
-    return fig
-
-
 def rdm_heatmap(ax, reps, title="RDM", cmap=None):
     """Representational dissimilarity matrix (pairwise Euclidean distances between item reps),
     normalized by its max so panels share one [0, 1] scale regardless of representation norm.

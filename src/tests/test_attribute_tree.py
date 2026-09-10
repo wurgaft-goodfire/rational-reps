@@ -122,11 +122,10 @@ def test_attribute_tree_dataset_is_bipartite():
     assert ds.bipartite and ds.n_items == 128 and ds.n_outcomes == 24 and ds.vocab_size == 128 + 24
 
 
-def test_attribute_tree_figure_renders():
+def test_attribute_tree_renders_in_the_standard_panels():
     from src.code import plot_utils
-    L, info, E, D, S = _code(**MINIMAL)
-    fig = plot_utils.plot_attribute_tree(E, D, {"model": (E, D.T)}, info, scores={"model": 1.0})
-    assert len(fig.axes) == 2 * (1 + 3 + 1)                                   # per row: 3-D view, 3 planes, Gram
     L, info, E, D, S = _code(**HEMISPHERES)
-    fig = plot_utils.plot_attribute_tree(E, D, {}, info, colors=info["positions"][:, 0] / 12)
-    assert len(fig.axes) == 1 + 1 + 1                                         # one-token attributes have no plane panel
+    spec = {"structure": "attribute_tree", "view": "3d"}
+    fig = plot_utils.plot_embedding_panels(E, {"model": E}, spec=spec, colors=info["positions"][:, 0] / 12,
+                                           scores={"model": 1.0})
+    assert len(fig.axes) == 2 * 2                                             # (predicted + model) x (3-D view, Gram)
