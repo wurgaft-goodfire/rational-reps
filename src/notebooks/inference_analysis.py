@@ -321,20 +321,14 @@ def _(
 
     FONT = 18                                                                     # panel-title size inside a block
 
-    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None, belief=None, dot=34, path=True, sketch=None):
+    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None, belief=None, dot=34, path=True):
         """One world's block, laid out like `plot_embedding_panels`: predicted beside transformer (states
         above; below, Grams of the mean path per true latent with the CKA over every state). Rendered to an
         in-memory png for `merge_panels`; only the merged figure is saved. ``belief``: {side: (B, T, n)}
-        colours each side's states by its own belief over the latents. ``sketch(ax)`` draws the world's
-        data-generating process (its latent graph) in a strip above the panels.
+        colours each side's states by its own belief over the latents.
         """
-        _fig = plt.figure(figsize=(7.6, 9.0 if sketch is None else 10.0))          # large in inches: merged fonts match the geometry figure
-        if sketch is None:
-            _gs = _fig.add_gridspec(2, 2, height_ratios=[1.15, 1], hspace=0.2, wspace=0.25)
-        else:
-            _outer = _fig.add_gridspec(2, 1, height_ratios=[0.32, 2.15], hspace=0.12)
-            sketch(_fig.add_subplot(_outer[0]))
-            _gs = _outer[1].subgridspec(2, 2, height_ratios=[1.15, 1], hspace=0.2, wspace=0.25)
+        _fig = plt.figure(figsize=(7.6, 9.0))                                      # large in inches: merged fonts match the geometry figure
+        _gs = _fig.add_gridspec(2, 2, height_ratios=[1.15, 1], hspace=0.2, wspace=0.25)
         for _j, (_side, _label) in enumerate([("pred", "predicted"), ("trained", "transformer")]):
             if "axes" in pl:                                                       # semantic gauge: name the axes, report decoding R^2
                 pl[_side]["axes"] = pl["axes"]
@@ -353,7 +347,7 @@ def _(
               for _name, _h in hist.items()}
     for _name, _h in hist.items():
         print(f"{_name}: streams per latent {np.bincount(_h['run']['latent']).min()}-{np.bincount(_h['run']['latent']).max()}")
-    return FONT, pick_stream, plane_block, planes, planes_for
+    return pick_stream, plane_block, planes, planes_for
 
 
 @app.cell
@@ -688,11 +682,11 @@ def _(
                            cka=cka(_H.reshape(-1, _H.shape[-1]), _Ep.reshape(-1, 2)))
         _kl = (np.exp(_LP) * (_LP - np.log(hmms[_name]["belief"]["trained"]))).sum(-1).mean()
         print(f"{_name}: belief spectrum {np.round(_S[:4] / _S[0], 3)} | affine R2 predicted->hidden {hmms[_name]['r2']:.3f} | CKA {hmms[_name]['cka']:.3f} | KL(Bayes||model) {_kl:.4f}")
-    return HMMS, hmms
+    return (hmms,)
 
 
 @app.cell
-def _(FIGURES, FONT, HMMS, hmms, np, plane_block, planes_for, plot_utils, plt):
+def _(FIGURES, hmms, np, plane_block, planes_for, plot_utils, plt):
     def hmm_colors(name, ds):
         """State colours: Mess3's three states pure red/green/blue (so the belief mixes RGB, as in Shai et
         al.); the ring on the cyclic map; the grid by column on a stark red-blue (coolwarm) darkened by row,
@@ -706,30 +700,11 @@ def _(FIGURES, FONT, HMMS, hmms, np, plane_block, planes_for, plot_utils, plt):
         _hue = plt.cm.coolwarm(_cols / 4)[:, :3]                                     # starker than vlag: crisper columns
         return _hue * (1 - 0.5 * _rows / 4)[:, None]
 
-    from src.code.data import structure_adjacency
-    from matplotlib.collections import LineCollection
-
-    def dgp_sketch(name, colors):
-        """Draw world ``name``'s latent graph: light edges, nodes in their state colours, the sensor
-        states ringed in black. Reads positions and adjacency from the structure gallery."""
-        _spec = HMMS[name]["spec"]; _A = structure_adjacency(_spec)
-        _pos = plot_utils._shape_positions(_spec["structure"], _spec)
-        _sensors = list(range(len(_pos))) if HMMS[name]["sensors"] is None else HMMS[name]["sensors"]
-        def _draw(ax):
-            _ii, _jj = np.where(np.triu(_A, 1) > 0)
-            ax.add_collection(LineCollection([[_pos[a], _pos[b]] for a, b in zip(_ii, _jj)], colors="0.8", linewidths=0.6, zorder=0))
-            ax.scatter(*_pos.T, c=colors, s=26, zorder=1, edgecolor="none")
-            ax.scatter(*_pos[_sensors].T, s=95, facecolor="none", edgecolor="0.1", lw=1.3, zorder=2)   # the sensors
-            ax.set_aspect("equal"); ax.set_axis_off()
-            ax.set_title(f"latent graph, {len(_sensors)} sensor{'s' if len(_sensors) > 1 else ''}", fontsize=FONT - 2)
-        return _draw
-
     planes_hmm = {_name: planes_for(_name, _c["E"], _c["D"], _c["H"], _c["W"], _c["Z"]) for _name, _c in hmms.items()}
     _blocks = []
     for _name, _pl in planes_hmm.items():
-        _cols = hmm_colors(_name, hmms[_name]["ds"])
-        _blocks.append(plane_block(_pl, _cols, 0, hmms[_name]["cka"],
-                                   rays=False, background=False, belief=hmms[_name]["belief"], dot=3, path=False, sketch=dgp_sketch(_name, _cols)))
+        _blocks.append(plane_block(_pl, hmm_colors(_name, hmms[_name]["ds"]), 0, hmms[_name]["cka"],
+                                   rays=False, background=False, belief=hmms[_name]["belief"], dot=3, path=False))
     fig_hmm = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
     plot_utils.save_figure(fig_hmm, FIGURES / "inference_hmm.png", dpi=200)
     return
