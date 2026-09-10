@@ -657,14 +657,14 @@ def attribute_tree(attributes, n=1, k=2, parents=None):
     leaf_col, Z, pos = [], [], []
     for leaf in leaves:
         active = [i for i, v in enumerate(owners) if v in path(leaf)]
-        for combo in itertools.product(*[range(len(kappas[i])) for i in active]):
+        for combo in itertools.product(*[range(kappas[i].shape[0]) for i in active]):
             z = np.zeros(len(attributes)); p = np.zeros(len(attributes), int)
             z[active] = 1.0; p[active] = combo
             leaf_col.append(leaf); Z.append(z); pos.append(p)
     Z, pos = np.array(Z), np.array(pos)
     Lc = np.concatenate([Z[:, [i]] * alpha[i] * (1 + kap[pos[:, i]]) for i, kap in enumerate(kappas)], 1)
-    ends = np.cumsum([len(kap) for kap in kappas])
-    blocks = [slice(int(e - len(kap)), int(e)) for e, kap in zip(ends, kappas)]
+    ends = np.cumsum([kap.shape[1] for kap in kappas])                    # an attribute may read out on fewer tokens than positions
+    blocks = [slice(int(e - kap.shape[1]), int(e)) for e, kap in zip(ends, kappas)]
     return Lc - logsumexp(Lc, axis=1, keepdims=True), {"leaf": np.array(leaf_col), "Z": Z, "positions": pos,
                                                        "alpha": alpha, "blocks": blocks, "parents": parents,
                                                        "bipartite": True}

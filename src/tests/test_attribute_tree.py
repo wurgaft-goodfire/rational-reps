@@ -83,6 +83,36 @@ def test_a_split_whose_children_own_nothing_is_invisible():
     assert np.allclose(E[leaf == 1], E[leaf == 2])                            # same items, same code
 
 
+SEASONS = {"structure": "ring", "n": 12, "m": 4, "cooccurrence": "gaussian", "gamma": 2.0, "alpha": 2.0}
+TAG = {"structure": "ring", "n": 1, "cooccurrence": "gaussian", "gamma": 1.0, "alpha": 2.0}
+# months x hemispheres -> seasons: a shared 12-position ring read out on 4 coarse tokens, and a hemisphere token each
+HEMISPHERES = dict(attributes=[dict(SEASONS, node=0), dict(TAG, node=1), dict(TAG, node=2)], n=1, k=2)
+
+
+def test_coarse_outcome_attribute_separates_positions_from_tokens():
+    L, info = attribute_tree(**HEMISPHERES)
+    assert L.shape == (2 * 12, 4 + 1 + 1)                                    # 24 items, 6 tokens
+    assert info["blocks"][0] == slice(0, 4) and info["blocks"][1] == slice(4, 5)
+    assert set(np.unique(info["positions"][:, 0])) == set(range(12))
+
+
+def test_hemispheres_are_two_stacked_season_circles():
+    L, info, E, D, S = _code(**HEMISPHERES)
+    Ec = E - E.mean(0)
+    s = np.linalg.svd(Ec, compute_uv=False)
+    assert s[2] > 1e-3 * s[0] and (s[3:] < 1e-8 * s[0]).all()               # rank 3: season pair + hemisphere axis
+    U, s, _ = np.linalg.svd(Ec, full_matrices=False)
+    ring = [k for k in range(3) if abs(np.corrcoef(U[:, k], info["leaf"])[0, 1]) < 1e-6]
+    assert len(ring) == 2                                                     # two components carry no hemisphere
+    X = Ec @ np.linalg.svd(Ec, full_matrices=False)[2][ring].T
+    r = np.linalg.norm(X, axis=1)
+    assert r.std() / r.mean() < 1e-6                                          # everyone on one circle
+    # the same season phase sits at the same angle in both hemispheres
+    th = np.arctan2(X[:, 1], X[:, 0])
+    north, south = info["leaf"] == 1, info["leaf"] == 2
+    assert np.allclose(np.sort(th[north]), np.sort(th[south]), atol=1e-8)
+
+
 def test_attribute_tree_dataset_is_bipartite():
     cfg = Config(OmegaConf.create({
         "setting": "graph-cooccurrence", "structure": "attribute_tree", "structure_kwargs": MINIMAL,

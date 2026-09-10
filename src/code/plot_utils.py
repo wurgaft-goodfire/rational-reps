@@ -638,21 +638,22 @@ def _draw_factor_plane(ax, E, D, info, k, cmap=None):
     _frame_2d(ax, XY, margin=0.15)
 
 
-def plot_attribute_tree(E_pred, D_pred, models, info, scores=None):
-    """Category tree with attributes: per row (predicted, then each model) the top-3 PCA view coloured
-    by category, every attribute's plane (`_draw_factor_plane`), and the item Gram in enumeration
-    order (category, then positions). ``models``: {name: (representation, readout (C, d))}."""
+def plot_attribute_tree(E_pred, D_pred, models, info, scores=None, colors=None, cmap=None):
+    """Category tree with attributes: per row (predicted, then each model) the top-3 PCA view, every
+    attribute's plane (`_draw_factor_plane`), and the item Gram in enumeration order (category, then
+    positions). The 3-D view is coloured by category, or by ``colors`` (one scalar per item, on
+    ``cmap``) when given. ``models``: {name: (representation, readout (C, d))}."""
     from matplotlib.colors import ListedColormap
     rows = _model_rows(E_pred, D_pred, models)
     A = len(info["blocks"])
-    leaf = info["leaf"]
-    cat = np.unique(leaf, return_inverse=True)[1]
-    cat_cmap = ListedColormap(FIG.categorical[:max(2, cat.max() + 1)])
+    if colors is None:
+        colors = np.unique(info["leaf"], return_inverse=True)[1]
+        cmap = ListedColormap(FIG.categorical[:max(2, colors.max() + 1)])
     fig = plt.figure(figsize=(2.7 * (A + 2), 2.7 * len(rows)))
     gs = fig.add_gridspec(len(rows), A + 2, wspace=0.3, hspace=0.3)
     for i, (name, E, D) in enumerate(rows):
         ax3 = fig.add_subplot(gs[i, 0], projection="3d")
-        scatter_geometry(ax3, _pca(E, 3), "top 3 modes" if i == 0 else "", cat_cmap, colors=cat)
+        scatter_geometry(ax3, _pca(E, 3), "top 3 modes" if i == 0 else "", cmap or FIG.cyclic_cmap, colors=colors)
         for k in range(A):
             ax = fig.add_subplot(gs[i, k + 1])
             _draw_factor_plane(ax, E, D, info, k)
