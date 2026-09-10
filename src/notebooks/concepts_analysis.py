@@ -488,18 +488,25 @@ def _(
         """Scalings s e of a representation, from the item to the origin: uncertainty, low to high."""
         return np.linspace(1.0, 0.0, n)[:, None] * e
 
-    def _probs(ax, P, D, colors, labels, ends, title, ylabel=True, order=None, column=True):
-        """The readout along a movement: p(x) = softmax(P D^T) per outcome; a fixed-order label
-        column at the right (``order``: indices top to bottom; default by final value)."""
+    def _softmax(P, D):
+        """p(x | z) = softmax(P D^T) along a path P (n, 2) of representations."""
         _lg = P @ D.T
-        _Q = np.exp(_lg - _lg.max(1, keepdims=True)); _Q /= _Q.sum(1, keepdims=True)
+        _Q = np.exp(_lg - _lg.max(1, keepdims=True))
+        return _Q / _Q.sum(1, keepdims=True)
+
+    def _probs(ax, P, D, colors, labels, ends, title, ylabel=True, order=None, column=True, ymax=1.0, xlabel=None):
+        """The readout along a movement, p(x | z) per outcome up to ``ymax``; a fixed-order label column
+        at the right (``order``: indices top to bottom; default by final value)."""
+        _Q = _softmax(P, D)
         _t = np.linspace(0, 1, len(P))
         for _k, _c in enumerate(colors):
             ax.plot(_t, _Q[:, _k], color=_c, lw=2.2)
         _order = list(order) if order is not None else list(np.argsort(_Q[-1])[::-1])
         for _rank, _k in enumerate(_order if column else []):
-            ax.text(1.04, 0.95 - 0.12 * _rank, labels[_k], color=colors[_k], fontsize=15, va="center")
-        ax.set(xlim=(0, 1), ylim=(0, 1), xticks=[0, 1], xticklabels=ends, yticks=[0, 0.5, 1])
+            ax.text(1.04, 0.95 - 0.12 * _rank, labels[_k], color=colors[_k], fontsize=15, va="center", transform=ax.transAxes)
+        ax.set(xlim=(0, 1), ylim=(0, ymax), xticks=[0, 1], xticklabels=ends, yticks=[0, ymax / 2, ymax])
+        if xlabel:
+            ax.set_xlabel(xlabel, fontsize=15, labelpad=2)
         for _lab, _ha in zip(ax.get_xticklabels(), ["left", "right"]):   # end ticks read inward
             _lab.set_ha(_ha)
         if column:
@@ -525,16 +532,19 @@ def _(
         along each movement below it (row ``probs``, a pair per world with a label column)."""
         for _k, _name in enumerate(DRAW):
             _a = fig.add_subplot(moves[_k])
-            _inner = probs[_k].subgridspec(1, 3, width_ratios=[1, 1, 0.4], wspace=0.2)   # third cell: label column
-            _pa, _pb = fig.add_subplot(_inner[0]), fig.add_subplot(_inner[1])
+            _inner = probs[_k].subgridspec(1, 4, width_ratios=[0.4, 1, 1, 0.4], wspace=0.2)   # pair centred under the
+            _pa, _pb = fig.add_subplot(_inner[1]), fig.add_subplot(_inner[2])                   # panel; last cell: labels
             _E, _D = learned[_name]
             DRAW[_name](_a, _E, _D, HIGHLIGHT[_name], regions=False, arrow=False, logits=False)
             _P, _ends, _i, _Dr, _colors, _labels = MOVES[_name]
             _Pr = _ray(_E[_i])
             _movements(_a, _P, _Pr)
-            _probs(_pa, _P, _Dr, _colors, _labels, _ends, "which output", ylabel=True, order=ORDER[_name], column=False)
+            # binary keeps the full [0, 1]; the crowded worlds share a top a tenth above the pair's peak
+            _ymax = 1.0 if _name == "binary" else np.ceil(10 * max(_softmax(_P, _Dr).max(), _softmax(_Pr, _Dr).max()) + 1) / 10
+            _probs(_pa, _P, _Dr, _colors, _labels, _ends, "which output", ylabel=True, order=ORDER[_name], column=False, ymax=_ymax)
             _pa.title.set_color(C_HYP)
-            _probs(_pb, _Pr, _Dr, _colors, _labels, ["low", "high"], "uncertainty", ylabel=False, order=ORDER[_name])
+            _probs(_pb, _Pr, _Dr, _colors, _labels, [f"{np.linalg.norm(_E[_i]):.1f}", "0"], "uncertainty", ylabel=False,
+                   order=ORDER[_name], ymax=_ymax, xlabel=r"$\|e_z\|$")
             _pb.title.set_color(C_CONF)
 
     # rows in panel units: worlds, a spacer for the movement legend, movements, readouts
