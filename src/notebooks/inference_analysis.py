@@ -273,7 +273,7 @@ def _(
                         rep=latent_means(code, z, _n).reshape(_n * code.shape[1], -1), r2=_r2)
         return dict(pred=_side(E), trained=_side(H), axes=list(targets))
 
-    def state_panel(ax, title, pl, colors, b, rays=True, background=True, cloud=None, belief=None, dot=34):
+    def state_panel(ax, title, pl, colors, b, rays=True, background=True, cloud=None, belief=None, dot=34, path=True):
         """One plane: the readout's belief as background (optional), sampled states (grey; coloured by
         ``cloud`` (B, T) on plasma, dark at its min, yellow at its max; or by ``belief`` (B, T, n), each
         state the belief-weighted mix of the latent colours), optionally a ray per true latent through
@@ -298,10 +298,11 @@ def _(
                          ((_yr[1] if _dy > 0 else _yr[0]) / _dy) if _dy else np.inf)
                 ax.plot([0, _s * _dx], [0, _s * _dy], color=np.asarray(colors[_z][:3]) * 0.8,
                         lw=1.1 if len(colors) <= 12 else 0.7, alpha=0.6, zorder=3)
-        ax.plot(*pl["pts"][b].T, color="0.1", lw=1.8, zorder=4,
-                path_effects=[pe.Stroke(linewidth=4.0, foreground="white"), pe.Normal()])   # a halo lifts the path off the cloud
-        ax.scatter(*pl["pts"][b].T, c=np.linspace(0.25, 1.0, pl["pts"].shape[1]), cmap="Greys", vmin=0, vmax=1,
-                   s=70, zorder=5, edgecolor="0.1", lw=0.9)
+        if path:                                                                            # one highlighted stream, light to dark with t
+            ax.plot(*pl["pts"][b].T, color="0.1", lw=1.8, zorder=4,
+                    path_effects=[pe.Stroke(linewidth=4.0, foreground="white"), pe.Normal()])   # a halo lifts the path off the cloud
+            ax.scatter(*pl["pts"][b].T, c=np.linspace(0.25, 1.0, pl["pts"].shape[1]), cmap="Greys", vmin=0, vmax=1,
+                       s=70, zorder=5, edgecolor="0.1", lw=0.9)
         frame(ax, title, _xr, _yr, fontsize=FONT); ax.set_box_aspect(None)          # fill the cell
         if "axes" in pl:
             ax.set_xlabel(pl["axes"][0], fontsize=FONT - 4); ax.set_ylabel(pl["axes"][1], fontsize=FONT - 4)
@@ -320,7 +321,7 @@ def _(
 
     FONT = 18                                                                     # panel-title size inside a block
 
-    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None, belief=None, dot=34):
+    def plane_block(pl, colors, b, cka_all, rays=True, background=True, cloud=None, belief=None, dot=34, path=True):
         """One world's block, laid out like `plot_embedding_panels`: predicted beside transformer (states
         above; below, Grams of the mean path per true latent with the CKA over every state). Rendered to an
         in-memory png for `merge_panels`; only the merged figure is saved. ``belief``: {side: (B, T, n)}
@@ -333,7 +334,7 @@ def _(
                 pl[_side]["axes"] = pl["axes"]
                 _label += "   $R^2$ " + ", ".join(f"{_r:.2f}" for _r in pl[_side]["r2"])
             state_panel(_fig.add_subplot(_gs[0, _j]), _label, pl[_side], colors, b, rays=rays, background=background, cloud=cloud,
-                        belief=None if belief is None else belief[_side], dot=dot)
+                        belief=None if belief is None else belief[_side], dot=dot, path=path)
             _ax = _fig.add_subplot(_gs[1, _j])
             plot_utils.gram_heatmap(_ax, pl[_side]["rep"],
                                     title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {cka_all:.3f}")
@@ -685,34 +686,25 @@ def _(
 
 
 @app.cell
-def _(
-    FIGURES,
-    hmms,
-    np,
-    pick_stream,
-    plane_block,
-    planes_for,
-    plot_utils,
-    plt,
-    to_rgb,
-):
+def _(FIGURES, hmms, np, plane_block, planes_for, plot_utils, plt):
     def hmm_colors(name, ds):
-        """State colours: Mess3's three on the categorical palette; the ring on the cyclic map; the grid by
-        column on the diverging map, darkened by row, so its sheet reads differently from the ring."""
+        """State colours: Mess3's three states pure red/green/blue (so the belief mixes RGB, as in Shai et
+        al.); the ring on the cyclic map; the grid by column on a stark red-blue (coolwarm) darkened by row,
+        so its sheet reads differently from the ring."""
         n = ds.n_states
         if name == "mess3":
-            return np.array([to_rgb(_c) for _c in plot_utils.FIG.categorical[:3]])
+            return np.eye(3)                                                         # RGB corners of the belief simplex
         if name == "ring":
             return plt.cm.twilight(np.arange(n) / n)[:, :3]
         _rows, _cols = np.divmod(np.arange(n), 5)
-        _hue = plt.get_cmap(plot_utils.FIG.diverging_cmap)(_cols / 4)[:, :3]
-        return _hue * (1 - 0.6 * _rows / 4)[:, None]
+        _hue = plt.cm.coolwarm(_cols / 4)[:, :3]                                     # starker than vlag: crisper columns
+        return _hue * (1 - 0.5 * _rows / 4)[:, None]
 
     planes_hmm = {_name: planes_for(_name, _c["E"], _c["D"], _c["H"], _c["W"], _c["Z"]) for _name, _c in hmms.items()}
     _blocks = []
     for _name, _pl in planes_hmm.items():
-        _blocks.append(plane_block(_pl, hmm_colors(_name, hmms[_name]["ds"]), pick_stream(_pl["pred"]["pts"]), hmms[_name]["cka"],
-                                   rays=False, background=False, belief=hmms[_name]["belief"], dot=6))
+        _blocks.append(plane_block(_pl, hmm_colors(_name, hmms[_name]["ds"]), 0, hmms[_name]["cka"],
+                                   rays=False, background=False, belief=hmms[_name]["belief"], dot=3, path=False))
     fig_hmm = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
     plot_utils.save_figure(fig_hmm, FIGURES / "inference_hmm.png", dpi=200)
     return
