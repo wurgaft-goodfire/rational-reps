@@ -1,0 +1,16 @@
+# @package _global_
+# Months x latitude bands -> seasons and band. A product of two kernels on one item set (no tree, root only):
+# a 12-position season ring read out on 4 coarse tokens, and a 3-node gaussian chain of bands (tropical,
+# temperate, polar) read out on 3 band tokens. -gamma/2 (z - j)^2 leaves only gamma z j after centring, so the
+# bands are collinear: rank 3, three equally spaced copies of the season circle stacked along the band axis.
+# gamma 1 on both keeps every token above p = 0.006 so the whole table is scored.
+defaults:
+  - attribute_tree
+  - _self_
+
+structure_kwargs:
+  n: 0
+  k: 2
+  attributes:
+    - {node: 0, alpha: 2.0, structure: ring, n: 12, m: 4, cooccurrence: gaussian, gamma: 1.0}
+    - {node: 0, alpha: 2.0, structure: chain, n: 3, cooccurrence: gaussian, gamma: 1.0}

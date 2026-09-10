@@ -113,6 +113,26 @@ def test_hemispheres_are_two_stacked_season_circles():
     assert np.allclose(np.sort(th[north]), np.sort(th[south]), atol=1e-8)
 
 
+def test_latitude_bands_are_three_equally_spaced_season_circles():
+    # no tree (root only): months -> seasons ring times a 3-node gaussian chain of latitude bands, read out on
+    # 3 band tokens. -gamma/2 (z - j)^2 leaves only gamma z j after the two centrings, so the bands are collinear
+    seasons = {"structure": "ring", "n": 12, "m": 4, "cooccurrence": "gaussian", "gamma": 1.0, "alpha": 2.0}
+    bands = {"structure": "chain", "n": 3, "cooccurrence": "gaussian", "gamma": 1.0, "alpha": 2.0}
+    L, info, E, D, S = _code(attributes=[dict(seasons, node=0), dict(bands, node=0)], n=0)
+    assert L.shape == (36, 7)
+    Ec = E - E.mean(0)
+    U, s, _ = np.linalg.svd(Ec, full_matrices=False)
+    assert s[2] > 1e-3 * s[0] and (s[3:] < 1e-8 * s[0]).all()               # rank 3
+    band = info["positions"][:, 1]
+    axis = [k for k in range(3) if abs(np.corrcoef(U[:, k], band)[0, 1]) > 1 - 1e-8]
+    assert len(axis) == 1                                                     # one component is the band ...
+    h = [U[band == b, axis[0]].mean() * s[axis[0]] for b in range(3)]
+    assert np.isclose(h[1] - h[0], h[2] - h[1]) and h[2] > h[0]               # ... at equal spacing
+    ring = [k for k in range(3) if k not in axis]
+    r = np.linalg.norm(U[:, ring] * s[ring], axis=1)
+    assert r.std() / r.mean() < 1e-6                                          # every item on one circle
+
+
 def test_attribute_tree_dataset_is_bipartite():
     cfg = Config(OmegaConf.create({
         "setting": "graph-cooccurrence", "structure": "attribute_tree", "structure_kwargs": MINIMAL,
