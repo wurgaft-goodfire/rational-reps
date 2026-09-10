@@ -564,7 +564,7 @@ def _(mo):
 
 
 @app.cell
-def _(DRAW, MOVES, ORDER, WORDS, adjs, days, learned, mo, np, plt):
+def _(DRAW, FIGURES, MOVES, ORDER, WORDS, adjs, days, learned, mo, np, plt):
     import json, html
     from matplotlib.colors import to_hex
 
@@ -618,8 +618,8 @@ def _(DRAW, MOVES, ORDER, WORDS, adjs, days, learned, mo, np, plt):
     </script></body></html>"""
 
     def world_widget(name, size=300, bars=180):
-        """Drag e_z around trained world ``name``; the bars are softmax(e_z D^T) over the readout tokens,
-        recomputed in the browser."""
+        """Standalone HTML page: drag e_z around trained world ``name``; the bars are softmax(e_z D^T) over
+        the readout tokens, recomputed in the browser."""
         _E, _D = learned[name]
         _P, _ends, _i, _Dr, _colors, _labels = MOVES[name]
         _R = {"binary": 1.5, "line": 1.2, "week": 1.3}[name] * max(np.abs(_E).max(), np.abs(_D).max())
@@ -631,10 +631,22 @@ def _(DRAW, MOVES, ORDER, WORDS, adjs, days, learned, mo, np, plt):
                      readout=_Dr.tolist(), colors=[to_hex(_c) for _c in _colors], labels=list(_labels), order=ORDER[name],
                      guide={"binary": None, "line": "open", "week": "closed"}[name],
                      pad={"binary": 9, "line": 24, "week": 9}[name])          # label step past the tip, px
-        _doc = DRAG_WORLD.replace("__DATA__", json.dumps(_data)).replace("__S__", str(size)).replace("__B__", str(bars))
-        return mo.Html(f'<iframe srcdoc="{html.escape(_doc)}" width="{size + bars + 24}" height="{size + 12}" frameborder="0"></iframe>')
+        return DRAG_WORLD.replace("__DATA__", json.dumps(_data)).replace("__S__", str(size)).replace("__B__", str(bars))
 
-    mo.hstack([world_widget(_name) for _name in DRAW], justify="start", gap=1)
+    def save_html(doc, name):
+        """Write a standalone page beside the figures (``figures/html/name.html``); returns its path."""
+        _path = FIGURES / "html" / f"{name}.html"
+        _path.parent.mkdir(exist_ok=True); _path.write_text(doc)
+        return _path
+
+    _docs = {_name: world_widget(_name) for _name in DRAW}
+    for _name, _doc in _docs.items():
+        save_html(_doc, f"concepts_drag_{_name}")
+    save_html("<!doctype html><html><body style='margin:0;display:flex;gap:16px'>" +
+              "".join(f'<iframe srcdoc="{html.escape(_doc)}" width="504" height="312" frameborder="0"></iframe>' for _doc in _docs.values()) +
+              "</body></html>", "concepts_drag")
+    mo.hstack([mo.Html(f'<iframe srcdoc="{html.escape(_doc)}" width="504" height="312" frameborder="0"></iframe>') for _doc in _docs.values()],
+              justify="start", gap=1)
 
     return
 
