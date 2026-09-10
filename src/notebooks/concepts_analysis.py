@@ -391,7 +391,7 @@ def _(mpatches, np, plot_utils, plt):
         (E, D)``: kernel equations above, each token's argmax cone behind."""
         for _k, (_name, _eq) in enumerate(zip(DRAW, EQS)):
             _a = fig.add_subplot(cells[_k])
-            DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=regions)
+            DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=regions, logits=False)
             _p = _a.get_position()                     # one shared height for the three equations
             fig.text((_p.x0 + _p.x1) / 2, _p.y1 + 0.01, _eq, ha="center", va="bottom", fontsize=27, linespacing=1.5)
 
