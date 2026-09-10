@@ -26,6 +26,7 @@ def _(mo):
 def _(mo):
     import io, os, sys
     import numpy as np
+    import torch
     from scipy.special import logsumexp
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
@@ -55,6 +56,7 @@ def _(mo):
         predicted_inference_geometry,
         rigid_map,
         to_rgb,
+        torch,
     )
 
 
@@ -182,7 +184,7 @@ def _(T, hist, logsumexp, np, predicted_inference_geometry):
                            kl=(np.exp(_LP) * (_LP - _lq)).sum(-1).mean(0))
         print(f"{_name}: readout rank {_run['readout'].shape[1]} | affine R2 predicted->hidden {_r2:.3f} | "
               f"CKA {fits[_name]['cka']:.3f} (null {fits[_name]['null']:.3f}) | KL(Bayes||model) mean {fits[_name]['kl'].mean():.4f}")
-    return (fits,)
+    return align_representations, cka, fits
 
 
 @app.cell
@@ -200,18 +202,21 @@ def _(
     rigid_map,
 ):
     def latent_means(pts, z, n):
-        """Mean state per true latent at every position: pts (B, T, d), z (B,) -> (n, T, d)."""
-        return np.stack([pts[z == _k].mean(0) for _k in range(n)])
+        """Mean state per true latent at every position: pts (B, T, d), z (B,) fixed or (B, T) moving -> (n, T, d)."""
+        _Z = np.broadcast_to(np.asarray(z).reshape(len(z), -1), pts.shape[:2])
+        return np.stack([np.stack([pts[:, _t][_Z[:, _t] == _k].mean(0) for _t in range(pts.shape[1])]) for _k in range(n)])
 
     def canonical_gauge(name, Dc, tokens=False):
         """The 2x2 rotation/reflection that puts a world's plane in the concepts notebook's position, from
         its readout directions Dc (2, n), one per latent (or per token, ``tokens``): binary, royal on +x
-        and female up; line, the middle one up and cold to hot left to right; week, the first up and the
-        rest clockwise; any other world keeps its SVD frame. The loss is blind to these isometries."""
-        if name not in ("binary", "line", "week"):
+        and female up; line, the middle one up and cold to hot left to right; week and ring, the first up
+        and the rest clockwise; any other world keeps its SVD frame. The loss is blind to these isometries."""
+        _pairs = {"binary": (([0], [2]), ([1], [3])) if tokens else (([1, 3], [0, 2]), ([2, 3], [0, 1])),   # (royal, female) as (yes, no) index sets
+                  "binary clock": (([1, 2], [0, 3]), ([2, 3], [0, 1]))}      # tokens [1+, 2+, 1-, 2-]; latents [man, king, woman, queen]; cycle [man, king, queen, woman]
+        if name not in (*_pairs, "line", "week", "ring"):
             return np.eye(2)
-        if name == "binary":                                                    # tokens [1+, 2+, 1-, 2-]; latents [man, king, woman, queen]
-            _royal, _female = (([0], [2]), ([1], [3])) if tokens else (([1, 3], [0, 2]), ([2, 3], [0, 1]))   # (yes, no) index sets
+        if name in _pairs:
+            _royal, _female = _pairs[name]
             v, up = Dc[:, _royal[0]].sum(1) - Dc[:, _royal[1]].sum(1), False
         elif name == "line":
             v, up = Dc[:, Dc.shape[1] // 2], True
@@ -221,8 +226,8 @@ def _(
         R = np.array([[np.cos(_a), -np.sin(_a)], [np.sin(_a), np.cos(_a)]])
         Dr = R @ Dc
         flip_x = (name == "line" and Dr[0, -1] < Dr[0, 0]) or \
-                 (name == "week" and Dr[0, 0] * Dr[1, 1] - Dr[1, 0] * Dr[0, 1] > 0)
-        flip_y = name == "binary" and (Dr[:, _female[0]].sum(1) - Dr[:, _female[1]].sum(1))[1] < 0
+                 (name in ("week", "ring") and Dr[0, 0] * Dr[1, 1] - Dr[1, 0] * Dr[0, 1] > 0)
+        flip_y = name in _pairs and (Dr[:, _female[0]].sum(1) - Dr[:, _female[1]].sum(1))[1] < 0
         return np.diag([-1.0 if flip_x else 1.0, -1.0 if flip_y else 1.0]) @ R
 
     def planes_for(name, E, D, H, W, z, tokens=False):
@@ -611,6 +616,105 @@ def _(T, breadth, fits_hyp, hyp, mo, np, pick_stream, rigid_map):
         return _fig
 
     mo.ui.tabs({_name: states_3d(_name) for _name in hyp})
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 4. A moving latent: hidden Markov worlds
+
+    The latent now walks its structure and is read through a few coarse, sharp sensors, so every
+    observation is one of a handful of contraction maps on the belief and the reachable beliefs form a
+    self-similar set. Three worlds: Mess3 (three states, sticky, one noisy symbol per state), a random
+    walk on a 12-ring with four sensors at the quarter marks, and a random walk on a 5 × 5 grid with four
+    sensors at the corners. Figure 1's layout: Bayes (the one-step predictive belief, the model's
+    target), factored, beside the transformer; states coloured by belief; one stream highlighted.
+    """)
+    return
+
+
+@app.cell
+def _(
+    align_representations,
+    cka,
+    factor_logcond,
+    graph_overrides,
+    load_run,
+    logsumexp,
+    np,
+    predicted_inference_geometry,
+    torch,
+):
+    HMMS = {"mess3": dict(spec={"structure": "complete", "n": 3, "gamma": 0.1062, "cooccurrence": "heat"},          # stay 0.82
+                          sigma=0.45, emission_floor=0.0, transition_floor=0.0, sensors=None),                            # symbol accuracy 0.86
+            "ring": dict(spec={"structure": "ring", "n": 12, "gamma": 0.5, "cooccurrence": "diffusion"},
+                         sigma=0.8, emission_floor=0.15, transition_floor=0.05, sensors=[0, 3, 6, 9]),
+            "grid": dict(spec={"structure": "grid", "n": 5, "m": 5, "gamma": 0.6, "cooccurrence": "diffusion"},
+                         sigma=1.5, emission_floor=0.15, transition_floor=0.05, sensors=[0, 4, 20, 24])}
+    T_HMM = 24
+
+    def hmm_run(w):
+        """The saved run of a hidden-Markov world: the hmm_transformer preset with the latent as target."""
+        _sensors = "null" if w["sensors"] is None else str(w["sensors"]).replace(" ", "")
+        return load_run(graph_overrides(w["spec"], "hmm") + [
+            "runner=hmm_transformer", "++infer_latent=true", f"training_kwargs.context_length={T_HMM}", "training_kwargs.train_steps=40000",
+            f"emission_sigma={w['sigma']}", f"emission_floor={w['emission_floor']}", f"transition_floor={w['transition_floor']}", f"sensors={_sensors}"])
+
+    hmms = {}
+    for _name, _w in HMMS.items():
+        _run = hmm_run(_w)
+        _ds, _obs = _run["dataset"], _run["inputs"][:, 1:]
+        # the label at position i is the state emitting the next symbol, so Bayes at position i is the one-step
+        # predictive belief: the filtered belief after i observations pushed through the transition (the prior at i = 0)
+        _b = _ds.forward_algorithm(torch.as_tensor(_obs, device=_ds.device)).cpu().numpy()        # filtered, after t + 1 observations
+        _prior = np.broadcast_to(_ds.prior.cpu().numpy(), (len(_obs), 1, _ds.n_states))
+        _LP = np.log(np.concatenate([_prior, _b[:, :-1] @ _ds.transition.cpu().numpy()], 1))     # (B, T, n)
+        _Z = _run["latents"]                                                                         # (B, T): the state each position predicts
+        _Lc, _Efull, _D, _S = factor_logcond(_LP.reshape(-1, _LP.shape[-1]))
+        _H = _run["hidden_states"][-1][:, :T_HMM]
+        _Ep = predicted_inference_geometry(_LP.reshape(-1, _LP.shape[-1]), _D[:2]).reshape(-1, T_HMM, 2)
+        _lg = _run["logits"][:, :T_HMM].astype(float)
+        hmms[_name] = dict(run=_run, ds=_ds, LP=_LP, E=_Efull.reshape(*_LP.shape[:2], -1), D=_D[:3], S=_S[:3], H=_H, W=_run["readout"], Z=_Z,
+                           belief=dict(pred=np.exp(_LP), trained=np.exp(_lg - logsumexp(_lg, -1, keepdims=True))),
+                           r2=align_representations(_Ep.reshape(-1, 2), _H.reshape(-1, _H.shape[-1]), "linear")[1],
+                           cka=cka(_H.reshape(-1, _H.shape[-1]), _Ep.reshape(-1, 2)))
+        _kl = (np.exp(_LP) * (_LP - np.log(hmms[_name]["belief"]["trained"]))).sum(-1).mean()
+        print(f"{_name}: belief spectrum {np.round(_S[:4] / _S[0], 3)} | affine R2 predicted->hidden {hmms[_name]['r2']:.3f} | CKA {hmms[_name]['cka']:.3f} | KL(Bayes||model) {_kl:.4f}")
+    return (hmms,)
+
+
+@app.cell
+def _(
+    FIGURES,
+    hmms,
+    np,
+    pick_stream,
+    plane_block,
+    planes_for,
+    plot_utils,
+    plt,
+    to_rgb,
+):
+    def hmm_colors(name, ds):
+        """State colours: Mess3's three on the categorical palette; the ring on the cyclic map; the grid by
+        column on the diverging map, darkened by row, so its sheet reads differently from the ring."""
+        n = ds.n_states
+        if name == "mess3":
+            return np.array([to_rgb(_c) for _c in plot_utils.FIG.categorical[:3]])
+        if name == "ring":
+            return plt.cm.twilight(np.arange(n) / n)[:, :3]
+        _rows, _cols = np.divmod(np.arange(n), 5)
+        _hue = plt.get_cmap(plot_utils.FIG.diverging_cmap)(_cols / 4)[:, :3]
+        return _hue * (1 - 0.6 * _rows / 4)[:, None]
+
+    planes_hmm = {_name: planes_for(_name, _c["E"], _c["D"], _c["H"], _c["W"], _c["Z"]) for _name, _c in hmms.items()}
+    _blocks = []
+    for _name, _pl in planes_hmm.items():
+        _blocks.append(plane_block(_pl, hmm_colors(_name, hmms[_name]["ds"]), pick_stream(_pl["pred"]["pts"]), hmms[_name]["cka"],
+                                   rays=False, background=False, belief=hmms[_name]["belief"]))
+    fig_hmm = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
+    plot_utils.save_figure(fig_hmm, FIGURES / "inference_hmm.png", dpi=200)
     return
 
 
