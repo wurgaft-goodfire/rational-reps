@@ -41,6 +41,14 @@ def test_graph_overrides_carries_kernel_params_in_structure_kwargs():
             "+structure_kwargs.gamma=0.5"}.issubset(ov)
 
 
+def test_graph_overrides_selects_the_setting():
+    # The same spec builds a hidden-Markov run: only the setting override changes.
+    from src.code.train import graph_overrides
+    ov = graph_overrides({"structure": "ring", "n": 24, "directed": True, "cooccurrence": "adjacency"}, setting="hmm")
+    assert ov[0] == "setting=hmm" and "+structure_kwargs.directed=True" in ov
+    assert graph_overrides({"structure": "ring", "n": 24})[0] == "setting=graph"
+
+
 def test_set_seed_makes_all_rngs_deterministic():
     set_seed(123)
     a = (random.random(), np.random.rand(), torch.rand(1).item())

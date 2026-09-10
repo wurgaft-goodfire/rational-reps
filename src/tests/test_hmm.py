@@ -13,7 +13,7 @@ from src.code.analysis_utils import cka
 
 
 def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0, structure="ring",
-         structure_kwargs=None, latent=False):
+         structure_kwargs=None, latent=False, T=40, **extra):
     kwargs = {"n": n} if structure_kwargs is None else structure_kwargs
     return Config(OmegaConf.create({
         "setting": "hmm", "structure": structure,
@@ -21,7 +21,7 @@ def _cfg(emission="bump", sigma=1.0, n=16, M=16, seed=0, structure="ring",
         "emission": emission, "emission_sigma": sigma, "n_symbols": M,
         "sample_mode": "sequence", "infer_latent": latent, "random_seed": seed,
         "model_kwargs": {"model_type": "transformer"},
-        "training_kwargs": {"batch_size": 64, "context_length": 40},
+        "training_kwargs": {"batch_size": 64, "context_length": T}, **extra,
     }))
 
 
@@ -156,3 +156,56 @@ def test_bayes_infers_the_state_instead_of_reading_it_off_the_batch():
     assert torch.allclose(pred[:, 0], prior_predictive.expand(len(pred), -1), atol=1e-5)
     entropy = -(pred * (pred + 1e-12).log()).sum(-1).mean(0)
     assert entropy[-1] < entropy[0]                               # the prefix is informative
+
+
+def test_directed_ring_is_the_cyclic_shift():
+    """``directed=True`` turns the ring into the cycle i -> i+1: the adjacency is the shift
+    matrix, and hop distance (used by the bump emission) is still the undirected ring's."""
+    from src.code.data import ring, structure_distance
+    A = ring(6, directed=True)
+    np.testing.assert_array_equal(A, np.roll(np.eye(6), 1, axis=1))
+    hops = structure_distance({"structure": "ring", "n": 6, "directed": True})
+    np.testing.assert_array_equal(hops, structure_distance({"structure": "ring", "n": 6}))
+
+
+def _clock_cfg(n=24, transition_floor=0.05, sigma=3.0, emission_floor=0.6, T=24, seed=0):
+    """A clock: the latent advances one state per step (up to a uniform leak), weak bump emissions."""
+    return _cfg(sigma=sigma, n=n, M=n, seed=seed, T=T, transition_floor=transition_floor, emission_floor=emission_floor,
+                structure_kwargs={"n": n, "directed": True, "gamma": 0.8, "cooccurrence": "adjacency"})
+
+
+def test_floors_mix_transition_and_emission_with_uniform():
+    """``transition_floor`` / ``emission_floor`` mix each row with the uniform distribution, so no
+    latent or symbol is ever ruled out: on the clock the transition is exactly (1 - e) shift + e / n."""
+    n, eT, eE = 12, 0.05, 0.6
+    ds = HMMDataset(_clock_cfg(n=n, transition_floor=eT, emission_floor=eE))
+    shift = np.roll(np.eye(n), 1, axis=1)
+    np.testing.assert_allclose(ds.transition.cpu().numpy(), (1 - eT) * shift + eT / n, atol=1e-9)
+    Em = ds.P.cpu().numpy()
+    np.testing.assert_allclose(Em.sum(1), np.ones(n), atol=1e-9)
+    assert Em.min() >= eE / n - 1e-12
+    np.testing.assert_allclose(ds.prior.cpu().numpy(), np.full(n, 1 / n), atol=1e-6)    # stationary: uniform
+
+
+def test_clock_belief_spirals_out():
+    """On the clock the filtered belief sharpens through the whole context while its phase advances
+    one state per step: mean entropy falls at every step, and the circular mean of the belief turns
+    2 pi / n per step (the spiral the moving-latent figure shows)."""
+    n, T = 24, 24
+    ds = HMMDataset(_clock_cfg(n=n, T=T))
+    x = ds.batch(4000)["input_ids"][:, 1:]
+    b = ds.forward_algorithm(x).cpu().numpy()                       # (B, T, n)
+    ent = -(b * np.log(b)).sum(-1).mean(0)
+    assert np.all(np.diff(ent) < 0) and ent[0] - ent[-1] > 0.4     # sharpening never stalls, ~3.1 -> ~2.6 nats
+    phase = np.angle(b @ np.exp(2j * np.pi * np.arange(n) / n))     # circular mean of the belief
+    turn = np.angle(np.exp(1j * np.diff(phase, axis=1))).mean()
+    assert abs(turn - 2 * np.pi / n) < 0.1 * 2 * np.pi / n
+
+
+def test_uniform_emissions_leave_the_belief_at_the_prior():
+    """Null control: with ``emission_floor=1`` the symbols carry no information, so the filter's
+    belief is the stationary prior at every position."""
+    ds = HMMDataset(_clock_cfg(n=12, emission_floor=1.0))
+    x = ds.batch(64)["input_ids"][:, 1:]
+    b = ds.forward_algorithm(x)
+    torch.testing.assert_close(b, ds.prior.expand_as(b), atol=1e-9, rtol=0)

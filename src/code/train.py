@@ -244,17 +244,17 @@ def train_inline(overrides, name=None, cache_dir=None):
     return result["model"], result["dataset"], result["evaluator"], result["history"], config
 
 
-def graph_overrides(spec):
-    """Hydra overrides selecting a graph structure from a spec dict, e.g.
-    ``{"structure": "grid", "n": 6, "m": 6}``. Everything past the structure name goes into
-    ``structure_kwargs``, replacing the setting's default (deletes it, then re-adds)."""
+def graph_overrides(spec, setting="graph"):
+    """Hydra overrides selecting a structure from a spec dict, e.g.
+    ``{"structure": "grid", "n": 6, "m": 6}``, for ``setting`` (graph or hmm). Everything past the
+    structure name goes into ``structure_kwargs``, replacing the setting's default (deletes it, then re-adds)."""
     def literal(v):                                           # nested list/dict -> Hydra override literal
         if isinstance(v, dict):
             return "{" + ",".join(f"{k}:{literal(x)}" for k, x in v.items()) + "}"
         if isinstance(v, (list, tuple)):
             return "[" + ",".join(literal(x) for x in v) + "]"
         return str(v)
-    ov = ["setting=graph", f"structure={spec['structure']}", "~structure_kwargs"]
+    ov = [f"setting={setting}", f"structure={spec['structure']}", "~structure_kwargs"]
     return ov + [f"+structure_kwargs.{k}={literal(v)}" for k, v in spec.items() if k != "structure"]
 
 
