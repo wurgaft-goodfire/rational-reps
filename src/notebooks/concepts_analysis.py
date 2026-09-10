@@ -321,7 +321,7 @@ def _(mpatches, np, plot_utils, plt):
         ax.scatter(*E.T, s=70, color=WORD_COLORS, zorder=3)                             # the four words
         for _j, _w in enumerate(WORDS):
             ax.annotate(_w, E[_j] + 0.1 * R * E[_j] / np.linalg.norm(E[_j]), fontsize=19,
-                        ha="center", va="center", color="0.45")
+                        ha="center", va="center", color="0.15")
         _decoders(ax, e, D[[1, 3]], ["Female +", "Female −"], 0.1 * _g,
                   values=False, color="0.6", lw=1.2)
         _decoders(ax, e, D[[0, 2]], ["Royal +", "Royal −"], (0.15 if logits else 0.05) * _g, numbers=logits)
