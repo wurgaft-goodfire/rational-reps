@@ -127,3 +127,6 @@ def test_attribute_tree_figure_renders():
     L, info, E, D, S = _code(**MINIMAL)
     fig = plot_utils.plot_attribute_tree(E, D, {"model": (E, D.T)}, info, scores={"model": 1.0})
     assert len(fig.axes) == 2 * (1 + 3 + 1)                                   # per row: 3-D view, 3 planes, Gram
+    L, info, E, D, S = _code(**HEMISPHERES)
+    fig = plot_utils.plot_attribute_tree(E, D, {}, info, colors=info["positions"][:, 0] / 12)
+    assert len(fig.axes) == 1 + 1 + 1                                         # one-token attributes have no plane panel

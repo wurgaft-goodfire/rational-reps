@@ -645,7 +645,8 @@ def plot_attribute_tree(E_pred, D_pred, models, info, scores=None, colors=None, 
     ``cmap``) when given. ``models``: {name: (representation, readout (C, d))}."""
     from matplotlib.colors import ListedColormap
     rows = _model_rows(E_pred, D_pred, models)
-    A = len(info["blocks"])
+    planes = [k for k, b in enumerate(info["blocks"]) if b.stop - b.start > 1]   # a one-token attribute has no plane
+    A = len(planes)
     if colors is None:
         colors = np.unique(info["leaf"], return_inverse=True)[1]
         cmap = ListedColormap(FIG.categorical[:max(2, colors.max() + 1)])
@@ -654,8 +655,8 @@ def plot_attribute_tree(E_pred, D_pred, models, info, scores=None, colors=None, 
     for i, (name, E, D) in enumerate(rows):
         ax3 = fig.add_subplot(gs[i, 0], projection="3d")
         scatter_geometry(ax3, _pca(E, 3), "top 3 modes" if i == 0 else "", cmap or FIG.cyclic_cmap, colors=colors)
-        for k in range(A):
-            ax = fig.add_subplot(gs[i, k + 1])
+        for j, k in enumerate(planes):
+            ax = fig.add_subplot(gs[i, j + 1])
             _draw_factor_plane(ax, E, D, info, k)
             if i == 0:
                 ax.set_title(f"attribute {k + 1}")
