@@ -206,17 +206,19 @@ def _(FIGURES, N, factor_logcond, graph_conditional, np, plot_utils, plt):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 2. Three worlds: the one law as geometry
+    ## 2. Three worlds: the one law as geometry, and uncertainty as movement
 
     Binary features, temperature line, time-of-week circle, each from a trained 2-D linear net in
-    canonical gauge: one embedding, the decoders, and their dot products, with the kernel above and
-    each token's argmax region, a cone from the origin, behind.
+    canonical gauge. Top: one embedding, the decoders, and their dot products, with the kernel above
+    and each token's argmax region, a cone from the origin, behind. Below: two movements of the
+    representation in each world — along the manifold (which output, dashed) and toward the origin
+    (uncertainty, dotted) — with the outcome probabilities they produce underneath.
     """)
     return
 
 
 @app.cell
-def _(FIGURES, mpatches, np, plot_utils, plt):
+def _(mpatches, np, plot_utils, plt):
     from matplotlib.colors import to_rgb
 
     def vec(ax, v, color="0.15", lw=1.6):
@@ -393,19 +395,28 @@ def _(FIGURES, mpatches, np, plot_utils, plt):
     ]
     DRAW = {"binary": draw_binary, "line": draw_line, "week": draw_circle}
 
-    def draw_worlds(vectors, path, regions=True):
-        """The three worlds side by side from ``vectors[name] = (E, D)``, kernel equations above and each
-        token's argmax cone behind."""
-        fig, ax = plt.subplots(1, 3, figsize=(28, 9.6))
-        for _a, _name in zip(ax, DRAW):
+    def worlds_row(fig, cells, vectors, regions=True):
+        """The three worlds side by side in the gridspec row ``cells`` of ``fig``, from ``vectors[name] =
+        (E, D)``: kernel equations above, each token's argmax cone behind."""
+        for _k, (_name, _eq) in enumerate(zip(DRAW, EQS)):
+            _a = fig.add_subplot(cells[_k])
             DRAW[_name](_a, *vectors[_name], HIGHLIGHT[_name], regions=regions)
-        fig.tight_layout(rect=(0, 0, 1, 0.84), pad=0.6)
-        for _a, _eq in zip(ax, EQS):
             _p = _a.get_position()                     # one shared height for the three equations
-            fig.text((_p.x0 + _p.x1) / 2, 0.99, _eq, ha="center", va="top", fontsize=27, linespacing=1.5)
-        return plot_utils.save_figure(fig, FIGURES / path)
+            fig.text((_p.x0 + _p.x1) / 2, _p.y1 + 0.01, _eq, ha="center", va="bottom", fontsize=27, linespacing=1.5)
 
-    return DRAW, HIGHLIGHT, adjs, cols5, days, draw_worlds, gauge, hue7, yes_no
+
+    return (
+        DRAW,
+        HIGHLIGHT,
+        WORDS,
+        adjs,
+        cols5,
+        days,
+        gauge,
+        hue7,
+        worlds_row,
+        yes_no,
+    )
 
 
 @app.cell
@@ -444,24 +455,6 @@ def _(WORLDS, cka, gauge, graph_overrides, load_run, np, oracle):
 
 
 @app.cell
-def _(draw_worlds, learned):
-    draw_worlds(learned, path="concepts_worlds_learned.png")
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 3. Uncertainty is movement in the plane
-
-    Two movements of the representation in each trained world — along the manifold (which output,
-    dashed) and toward the origin (uncertainty, dotted) — with the outcome
-    probabilities they produce below.
-    """)
-    return
-
-
-@app.cell
 def _(
     DRAW,
     FIGURES,
@@ -474,8 +467,10 @@ def _(
     np,
     plot_utils,
     plt,
+    worlds_row,
     yes_no,
 ):
+    from matplotlib.lines import Line2D
     C_HYP = C_CONF = "0.25"                                          # movements differ by dash, not colour
 
     def _movements(ax, P, ray):
@@ -510,13 +505,12 @@ def _(
         if column:
             ax.set_yticklabels([])                              # the pair shares the left panel's axis
         if ylabel:
-            ax.set_ylabel(r"$p(x)$", fontsize=18)
+            ax.set_ylabel(r"$p(x \mid z)$", fontsize=18)
         ax.set_title(title, fontsize=21, pad=8)
         ax.tick_params(labelsize=15)
         plot_utils.FIG.style_axes(ax)
 
     _cols5_grey = list(cols5); _cols5_grey[2] = "0.5"                # moderate readable on white
-    _E, _D = learned["binary"]
     _Eb, _Db = learned["binary"]; _El, _Dl = learned["line"]; _Ew, _Dw = learned["week"]
     ORDER = {"binary": [0, 1], "line": [4, 3, 2, 1, 0], "week": list(range(7))}   # label columns, top to bottom
     MOVES = {  # world: (path between hypotheses, its end labels, ray item, readout decoders, colours, labels)
@@ -526,29 +520,122 @@ def _(
         "week": (_Ew[0:18], ["Mon", "Fri"], HIGHLIGHT["week"], _Dw, hue7, days),                    # around the ring
     }
 
-    fig_unc = plt.figure(figsize=(28, 13))
-    _gs = fig_unc.add_gridspec(2, 3, height_ratios=[3, 1.45], hspace=0.12, wspace=0.45, top=0.9, bottom=0.06)
-    _top = [fig_unc.add_subplot(_gs[0, _k]) for _k in range(3)]
-    _bot = []
-    for _k in range(3):                                   # each world's pair sits close together
-        _inner = _gs[1, _k].subgridspec(1, 2, wspace=0.18)
-        _bot.append([fig_unc.add_subplot(_inner[0]), fig_unc.add_subplot(_inner[1])])
-    for _a, (_pa, _pb), _name in zip(_top, _bot, DRAW):
-        _E, _D = learned[_name]
-        DRAW[_name](_a, _E, _D, HIGHLIGHT[_name], regions=False, arrow=False, logits=False)
-        _P, _ends, _k, _Dr, _colors, _labels = MOVES[_name]
-        _Pr = _ray(_E[_k])
-        _gsc = max(np.abs(_E).max(), np.abs(_D).max())
-        _movements(_a, _P, _Pr)
-        _probs(_pa, _P, _Dr, _colors, _labels, _ends, "which output", ylabel=True, order=ORDER[_name], column=False)
-        _pa.title.set_color(C_HYP)
-        _probs(_pb, _Pr, _Dr, _colors, _labels, ["low", "high"], "uncertainty", ylabel=False, order=ORDER[_name])
-        _pb.title.set_color(C_CONF)
-    from matplotlib.lines import Line2D
-    fig_unc.legend([Line2D([], [], ls=(0, (5, 3)), lw=2.4, color=C_HYP), Line2D([], [], ls=":", lw=2.6, color=C_CONF)],
-                   ["which output", "uncertainty"], loc="upper center", ncol=2,
-                   fontsize=26, frameon=False, handlelength=3.0, columnspacing=3.0, bbox_to_anchor=(0.5, 0.99))
-    plot_utils.save_figure(fig_unc, FIGURES / "concepts_uncertainty.png")
+    def uncertainty_rows(fig, moves, probs):
+        """Each trained world with its two movements drawn in (gridspec row ``moves``) and the readout
+        along each movement below it (row ``probs``, a pair per world with a label column)."""
+        for _k, _name in enumerate(DRAW):
+            _a = fig.add_subplot(moves[_k])
+            _inner = probs[_k].subgridspec(1, 3, width_ratios=[1, 1, 0.4], wspace=0.2)   # third cell: label column
+            _pa, _pb = fig.add_subplot(_inner[0]), fig.add_subplot(_inner[1])
+            _E, _D = learned[_name]
+            DRAW[_name](_a, _E, _D, HIGHLIGHT[_name], regions=False, arrow=False, logits=False)
+            _P, _ends, _i, _Dr, _colors, _labels = MOVES[_name]
+            _Pr = _ray(_E[_i])
+            _movements(_a, _P, _Pr)
+            _probs(_pa, _P, _Dr, _colors, _labels, _ends, "which output", ylabel=True, order=ORDER[_name], column=False)
+            _pa.title.set_color(C_HYP)
+            _probs(_pb, _Pr, _Dr, _colors, _labels, ["low", "high"], "uncertainty", ylabel=False, order=ORDER[_name])
+            _pb.title.set_color(C_CONF)
+
+    # rows in panel units: worlds, a spacer for the movement legend, movements, readouts
+    fig_all = plt.figure(figsize=(28, 25))
+    _gs = fig_all.add_gridspec(4, 3, height_ratios=[1, 0.1, 1, 0.48], hspace=0.03, wspace=0.1,
+                               left=0.01, right=0.99, top=0.92, bottom=0.02)
+    worlds_row(fig_all, _gs[0, :].subgridspec(1, 3, wspace=0.1), learned)
+    uncertainty_rows(fig_all, _gs[2, :].subgridspec(1, 3, wspace=0.1), _gs[3, :].subgridspec(1, 3, wspace=0.1))
+    fig_all.legend([Line2D([], [], ls=(0, (5, 3)), lw=2.4, color=C_HYP), Line2D([], [], ls=":", lw=2.6, color=C_CONF)],
+                   ["which output", "uncertainty"], loc="center", bbox_to_anchor=_gs[1, :].get_position(fig_all),
+                   ncol=2, fontsize=26, frameon=False, handlelength=3.0, columnspacing=3.0)
+    plot_utils.save_figure(fig_all, FIGURES / "concepts_worlds_uncertainty.png")
+
+    return MOVES, ORDER
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### Drag the representation
+
+    The same trained worlds, live: drag $e_z$ anywhere in the plane and the bars show
+    $p(x \mid z) = \mathrm{softmax}(e_z D^\top)$ for the readout tokens. Along the manifold the winner
+    changes; toward the origin every logit shrinks and the bars flatten.
+    """)
+    return
+
+
+@app.cell
+def _(DRAW, MOVES, ORDER, WORDS, adjs, days, learned, mo, np, plt):
+    import json, html
+    from matplotlib.colors import to_hex
+
+    DRAG_WORLD = """<!doctype html><html><body style="margin:0;font-family:Avenir Next,Avenir,Helvetica Neue,sans-serif;color:#555;user-select:none">
+    <div style="display:flex;align-items:center;gap:10px">
+    <svg id="plane" width="__S__" height="__S__" style="touch-action:none;cursor:crosshair;overflow:visible">
+    <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#262626"/></marker>
+    <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#aaa"/></marker></defs></svg>
+    <svg id="bars" width="__B__" height="__S__"></svg></div>
+    <script>
+    const d = __DATA__, S = __S__, B = __B__, c = S / 2, k = (S / 2 - 40) / d.R;
+    const X = v => c + k * v[0], Y = v => c - k * v[1];
+    const ns = "http://www.w3.org/2000/svg", plane = document.getElementById("plane"), bars = document.getElementById("bars");
+    function el(tag, attrs, parent, text) { const e = document.createElementNS(ns, tag); for (const a in attrs) e.setAttribute(a, attrs[a]);
+      if (text !== undefined) e.textContent = text; (parent || plane).appendChild(e); return e; }
+    el("line", {x1: 6, y1: c, x2: S - 6, y2: c, stroke: "#ddd"}); el("line", {x1: c, y1: 6, x2: c, y2: S - 6, stroke: "#ddd"});
+    if (d.guide) el(d.guide === "closed" ? "polygon" : "polyline",
+      {points: d.points.map(p => X(p) + "," + Y(p)).join(" "), fill: "none", stroke: "#bbb", "stroke-dasharray": "2 4"});
+    d.decoders.forEach((v, i) => { const ro = d.readout.some(r => r[0] === v[0] && r[1] === v[1]), col = ro ? "#262626" : "#aaa";
+      el("line", {x1: c, y1: c, x2: X(v), y2: Y(v), stroke: col, "stroke-width": 1.6, "marker-end": ro ? "url(#ah)" : "url(#ahg)"});
+      const n = Math.hypot(v[0], v[1]), u = [v[0] / n, v[1] / n];
+      const t = el("text", {x: X(v) + d.pad * u[0], y: Y(v) - d.pad * u[1], fill: col, "font-size": 13,
+          "text-anchor": u[0] > 0.3 ? "start" : u[0] < -0.3 ? "end" : "middle",
+          "dominant-baseline": u[1] > 0.3 ? "auto" : u[1] < -0.3 ? "hanging" : "middle"}, plane, d.decoder_labels[i]);
+      const bb = t.getBBox(), over = Math.min(0, bb.x - 2) + Math.max(0, bb.x + bb.width - S + 2);   // keep the label inside the plane
+      if (over) t.setAttribute("x", +t.getAttribute("x") - over); });
+    d.points.forEach((p, i) => { el("circle", {cx: X(p), cy: Y(p), r: 4, fill: d.point_colors[i]});
+      if (d.point_labels) el("text", {x: X(p), y: Y(p) - 10, "text-anchor": "middle", fill: "#888", "font-size": 13}, plane, d.point_labels[i]); });
+    const ray = el("line", {x1: c, y1: c, stroke: "#262626", "stroke-width": 2.2, "stroke-dasharray": "6 5"});
+    const knob = el("circle", {r: 7, fill: "#262626", stroke: "#fff", "stroke-width": 2, cursor: "grab"});
+    const ez = el("text", {"font-size": 15, fill: "#262626", "font-style": "italic"}, plane, "e");
+    el("text", {"font-size": 12, fill: "#262626", "font-style": "italic", x: 0, y: 0}, plane, "");
+    el("text", {x: 8, y: 16, "font-size": 14, fill: "#555"}, bars, "p(x | z)");
+    const rowH = Math.min(30, (S - 30) / d.order.length), x0 = 70, w = B - x0 - 40;
+    const rows = d.order.map((kk, r) => { const y = 32 + r * rowH;
+      el("text", {x: x0 - 8, y: y + 12, "text-anchor": "end", "font-size": 13, fill: d.colors[kk]}, bars, d.labels[kk]);
+      const bar = el("rect", {x: x0, y: y, height: rowH - 8, width: 0, fill: d.colors[kk]}, bars);
+      const val = el("text", {x: x0, y: y + 12, "font-size": 11, fill: "#777"}, bars, "");
+      return {kk, bar, val}; });
+    function update(e) { ray.setAttribute("x2", X(e)); ray.setAttribute("y2", Y(e));
+      knob.setAttribute("cx", X(e)); knob.setAttribute("cy", Y(e)); ez.setAttribute("x", X(e) + 12); ez.setAttribute("y", Y(e) + 21);
+      const lg = d.readout.map(r => r[0] * e[0] + r[1] * e[1]), m = Math.max(...lg), q = lg.map(l => Math.exp(l - m)), z = q.reduce((a, b) => a + b);
+      rows.forEach(({kk, bar, val}) => { const p = q[kk] / z; bar.setAttribute("width", w * p);
+        val.setAttribute("x", x0 + w * p + 5); val.textContent = p.toFixed(2); }); }
+    let drag = false;
+    const at = ev => { const r = plane.getBoundingClientRect(); return [(ev.clientX - r.left - c) / k, (c - (ev.clientY - r.top)) / k]; };
+    plane.addEventListener("pointerdown", ev => { drag = true; update(at(ev)); });
+    plane.addEventListener("pointermove", ev => { if (drag) update(at(ev)); });
+    window.addEventListener("pointerup", () => { drag = false; });
+    update(d.e);
+    </script></body></html>"""
+
+    def world_widget(name, size=300, bars=180):
+        """Drag e_z around trained world ``name``; the bars are softmax(e_z D^T) over the readout tokens,
+        recomputed in the browser."""
+        _E, _D = learned[name]
+        _P, _ends, _i, _Dr, _colors, _labels = MOVES[name]
+        _R = {"binary": 1.5, "line": 1.2, "week": 1.3}[name] * max(np.abs(_E).max(), np.abs(_D).max())
+        _pcol = {"binary": ["#999999"] * len(_E), "line": plt.cm.coolwarm(np.linspace(0, 1, len(_E))),
+                 "week": plt.cm.twilight(np.arange(len(_E)) / len(_E))}[name]
+        _data = dict(R=float(_R), e=_E[_i].tolist(), points=_E.tolist(), point_colors=[to_hex(_c) for _c in _pcol],
+                     point_labels=WORDS if name == "binary" else None, decoders=_D.tolist(),
+                     decoder_labels={"binary": ["Royal +", "Female +", "Royal −", "Female −"], "line": adjs, "week": days}[name],
+                     readout=_Dr.tolist(), colors=[to_hex(_c) for _c in _colors], labels=list(_labels), order=ORDER[name],
+                     guide={"binary": None, "line": "open", "week": "closed"}[name],
+                     pad={"binary": 9, "line": 24, "week": 9}[name])          # label step past the tip, px
+        _doc = DRAG_WORLD.replace("__DATA__", json.dumps(_data)).replace("__S__", str(size)).replace("__B__", str(bars))
+        return mo.Html(f'<iframe srcdoc="{html.escape(_doc)}" width="{size + bars + 24}" height="{size + 12}" frameborder="0"></iframe>')
+
+    mo.hstack([world_widget(_name) for _name in DRAW], justify="start", gap=1)
+
     return
 
 
