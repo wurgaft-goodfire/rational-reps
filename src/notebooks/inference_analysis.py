@@ -35,6 +35,7 @@ def _(mo):
     from src.code.geometry import factor_logcond, predicted_inference_geometry
     from src.code import plot_utils
     import matplotlib.pyplot as plt
+    import matplotlib.patheffects as pe
     from matplotlib.colors import to_rgb
 
     from pathlib import Path
@@ -48,6 +49,7 @@ def _(mo):
         load_run,
         logsumexp,
         np,
+        pe,
         plot_utils,
         plt,
         predicted_inference_geometry,
@@ -63,11 +65,11 @@ def _(graph_overrides, load_run, logsumexp, np, plot_utils, plt, to_rgb):
     # the concepts one divided by a temperature (gamma and scale are exact temperatures: same centred
     # log-conditional up to a factor, so the same geometry), cooled so that a whole context of T
     # observations keeps every latent's logit in the range the loss scores (line: median end-of-context
-    # span 4 nats, 90th percentile 8; at gamma 0.03 the far latents fell to -13 and the trained states
+    # span 2 nats, 90th percentile 5; at gamma 0.03 the far latents fell to -13 and the trained states
     # bent away from the affine image of the Bayes code there)
     WORLDS = {"binary": {"structure": "feature_cube", "m": 2, "decay": 1.0, "scale": 1.25,
                          "paired": True, "all_bundles": True},
-              "line": {"structure": "chain", "cooccurrence": "gaussian", "n": 13, "m": 5, "gamma": 0.02},
+              "line": {"structure": "chain", "cooccurrence": "gaussian", "n": 13, "m": 5, "gamma": 0.015},
               "week": {"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 0.8}}
     T, B_TRAIN = 12, 256                                               # context length, training batch
 
@@ -192,6 +194,7 @@ def _(
     hist,
     io,
     np,
+    pe,
     plot_utils,
     plt,
     rigid_map,
@@ -200,15 +203,16 @@ def _(
         """Mean state per true latent at every position: pts (B, T, d), z (B,) -> (n, T, d)."""
         return np.stack([pts[z == _k].mean(0) for _k in range(n)])
 
-    def canonical_gauge(name, Dc):
+    def canonical_gauge(name, Dc, tokens=False):
         """The 2x2 rotation/reflection that puts a world's plane in the concepts notebook's position, from
-        its per-latent readout directions Dc (2, n): binary, royal on +x and female up; line, the middle
-        latent up and cold to hot left to right; week, latent 0 up and latents clockwise; any other world
-        keeps its SVD frame. The loss is blind to these isometries."""
+        its readout directions Dc (2, n), one per latent (or per token, ``tokens``): binary, royal on +x
+        and female up; line, the middle one up and cold to hot left to right; week, the first up and the
+        rest clockwise; any other world keeps its SVD frame. The loss is blind to these isometries."""
         if name not in ("binary", "line", "week"):
             return np.eye(2)
-        if name == "binary":
-            v, up = Dc[:, [1, 3]].sum(1) - Dc[:, [0, 2]].sum(1), False        # cube order [man, king, woman, queen]
+        if name == "binary":                                                    # tokens [1+, 2+, 1-, 2-]; latents [man, king, woman, queen]
+            _royal, _female = (([0], [2]), ([1], [3])) if tokens else (([1, 3], [0, 2]), ([2, 3], [0, 1]))   # (yes, no) index sets
+            v, up = Dc[:, _royal[0]].sum(1) - Dc[:, _royal[1]].sum(1), False
         elif name == "line":
             v, up = Dc[:, Dc.shape[1] // 2], True
         else:
@@ -218,17 +222,17 @@ def _(
         Dr = R @ Dc
         flip_x = (name == "line" and Dr[0, -1] < Dr[0, 0]) or \
                  (name == "week" and Dr[0, 0] * Dr[1, 1] - Dr[1, 0] * Dr[0, 1] > 0)
-        flip_y = name == "binary" and (Dr[:, [2, 3]].sum(1) - Dr[:, [0, 1]].sum(1))[1] < 0
+        flip_y = name == "binary" and (Dr[:, _female[0]].sum(1) - Dr[:, _female[1]].sum(1))[1] < 0
         return np.diag([-1.0 if flip_x else 1.0, -1.0 if flip_y else 1.0]) @ R
 
-    def planes_for(name, E, D, H, W, z):
+    def planes_for(name, E, D, H, W, z, tokens=False):
         """The two planes of one world, in the canonical gauge. Predicted: the code's top-2 modes. Trained:
         the hidden states rotated (not stretched) onto the predicted code in the full space, then the same two modes.
         Each side carries its states (B, T, 2),
         the readout columns in the plane (2, C), the mean state per true latent (n, T, 2) and the
         representative rows for its Gram: the mean path per latent, ordered (latent, t)."""
         _n = int(z.max()) + 1
-        _G = canonical_gauge(name, D[:2])                                          # the same isometry on both sides
+        _G = canonical_gauge(name, D[:2], tokens)                                  # the same isometry on both sides
         _E2 = E[..., :2] @ _G.T
         _Hf = H.reshape(-1, H.shape[-1])
         _R = rigid_map(_Hf, E.reshape(-1, E.shape[-1]))                            # (k, r): hidden -> code coordinates, an isometry
@@ -289,9 +293,10 @@ def _(
                          ((_yr[1] if _dy > 0 else _yr[0]) / _dy) if _dy else np.inf)
                 ax.plot([0, _s * _dx], [0, _s * _dy], color=np.asarray(colors[_z][:3]) * 0.8,
                         lw=1.1 if len(colors) <= 12 else 0.7, alpha=0.6, zorder=3)
-        ax.plot(*pl["pts"][b].T, color="0.2", lw=1.2, zorder=4)
-        ax.scatter(*pl["pts"][b].T, c=np.linspace(0.2, 1.0, pl["pts"].shape[1]), cmap="Greys", vmin=0, vmax=1,
-                   s=55, zorder=5, edgecolor="white", lw=0.7)
+        ax.plot(*pl["pts"][b].T, color="0.1", lw=1.8, zorder=4,
+                path_effects=[pe.Stroke(linewidth=4.0, foreground="white"), pe.Normal()])   # a halo lifts the path off the cloud
+        ax.scatter(*pl["pts"][b].T, c=np.linspace(0.25, 1.0, pl["pts"].shape[1]), cmap="Greys", vmin=0, vmax=1,
+                   s=70, zorder=5, edgecolor="0.1", lw=0.9)
         frame(ax, title, _xr, _yr, fontsize=FONT); ax.set_box_aspect(None)          # fill the cell
         if "axes" in pl:
             ax.set_xlabel(pl["axes"][0], fontsize=FONT - 4); ax.set_ylabel(pl["axes"][1], fontsize=FONT - 4)
@@ -412,10 +417,56 @@ def _(
         _lg = _run["logits"][:, :T].astype(float)
         _lq = _lg - logsumexp(_lg, -1, keepdims=True)
         _kl = (np.exp(_LX[:, :T]) * (_LX[:, :T] - _lq)).sum(-1).mean()
-        fits_next[_name] = dict(scores=_scores, S=_S / _S[0], S_static=_S_static / _S_static[0], kl=_kl)
+        fits_next[_name] = dict(scores=_scores, S=_S / _S[0], S_static=_S_static / _S_static[0], kl=_kl,
+                                E=_E.reshape(*_LX.shape[:2], -1)[:, :T], D=_D, H=_run["hidden_states"][-1][:, :T], W=_run["readout"],
+                                belief=dict(pred=np.exp(_LX[:, :T]), trained=np.exp(_lq)), latent=_run["latent"])
         print(f"{_name}: KL(Bayes||model) {_kl:.4f} | history sv {np.round(_S / _S[0], 3)} | static sv {np.round(_S_static / _S_static[0], 3)}")
         for _k, (_r2, _c) in _scores.items():
             print(f"   {_k:22s} affine R2 {_r2:.3f}  CKA {_c:.3f}")
+    return (fits_next,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Figure 1 again for the next-token model: the predictive code's top two modes against the hidden
+    states, each state coloured by its belief over the next token (Bayes predictive on the predicted
+    side, the model's softmax on the trained side); the binary world's tokens are royal (blue yes,
+    orange no) and female (purple yes, green no).
+    """)
+    return
+
+
+@app.cell
+def _(
+    FIGURES,
+    fits_next,
+    np,
+    pick_stream,
+    plane_block,
+    planes_for,
+    plot_utils,
+    plt,
+    to_rgb,
+):
+    def token_colors(name, m):
+        """One colour per token: the binary pairs royal (blue/orange) and female (purple/green) in token
+        order [1+, 2+, 1-, 2-]; the adjectives on the diverging map; the days on the cyclic map."""
+        if name == "line":
+            return plt.get_cmap(plot_utils.FIG.diverging_cmap)(np.linspace(0.05, 0.95, m))
+        if name == "week":
+            return plt.cm.twilight(np.arange(m) / m)
+        return np.array([to_rgb(plot_utils.FIG.colors[_k]) for _k in ("blue", "purple", "orange", "green")])
+
+    planes_next = {_name: planes_for(_name, _f["E"], _f["D"], _f["H"], _f["W"], _f["latent"], tokens=True)
+                   for _name, _f in fits_next.items()}
+    _blocks = []
+    for _name, _pl in planes_next.items():
+        _b = pick_stream(_pl["pred"]["pts"], toward=3 * np.pi / 4) if _name == "week" else 0
+        _blocks.append(plane_block(_pl, token_colors(_name, fits_next[_name]["D"].shape[1]), _b, fits_next[_name]["scores"]["log-predictive code"][1],
+                                   rays=False, background=False, belief=fits_next[_name]["belief"]))
+    fig_next = plot_utils.merge_panels(_blocks, ncols=3, label_size=30)
+    plot_utils.save_figure(fig_next, FIGURES / "inference_next.png", dpi=200)
     return
 
 
