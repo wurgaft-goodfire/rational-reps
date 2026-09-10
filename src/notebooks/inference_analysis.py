@@ -200,20 +200,42 @@ def _(
         """Mean state per true latent at every position: pts (B, T, d), z (B,) -> (n, T, d)."""
         return np.stack([pts[z == _k].mean(0) for _k in range(n)])
 
-    def planes_for(E, D, H, W, z):
-        """The two planes of one world. Predicted: the code's top-2 modes. Trained: the hidden states
-        rotated (not stretched) onto the predicted code in the full space, then the same two modes.
+    def canonical_gauge(name, Dc):
+        """The 2x2 rotation/reflection that puts a world's plane in the concepts notebook's position, from
+        its per-latent readout directions Dc (2, n): binary, royal on +x and female up; line, the middle
+        latent up and cold to hot left to right; week, latent 0 up and latents clockwise; any other world
+        keeps its SVD frame. The loss is blind to these isometries."""
+        if name not in ("binary", "line", "week"):
+            return np.eye(2)
+        if name == "binary":
+            v, up = Dc[:, [1, 3]].sum(1) - Dc[:, [0, 2]].sum(1), False        # cube order [man, king, woman, queen]
+        elif name == "line":
+            v, up = Dc[:, Dc.shape[1] // 2], True
+        else:
+            v, up = Dc[:, 0], True
+        _a = -np.arctan2(v[1], v[0]) + (np.pi / 2 if up else 0.0)
+        R = np.array([[np.cos(_a), -np.sin(_a)], [np.sin(_a), np.cos(_a)]])
+        Dr = R @ Dc
+        flip_x = (name == "line" and Dr[0, -1] < Dr[0, 0]) or \
+                 (name == "week" and Dr[0, 0] * Dr[1, 1] - Dr[1, 0] * Dr[0, 1] > 0)
+        flip_y = name == "binary" and (Dr[:, [2, 3]].sum(1) - Dr[:, [0, 1]].sum(1))[1] < 0
+        return np.diag([-1.0 if flip_x else 1.0, -1.0 if flip_y else 1.0]) @ R
+
+    def planes_for(name, E, D, H, W, z):
+        """The two planes of one world, in the canonical gauge. Predicted: the code's top-2 modes. Trained:
+        the hidden states rotated (not stretched) onto the predicted code in the full space, then the same two modes.
         Each side carries its states (B, T, 2),
         the readout columns in the plane (2, C), the mean state per true latent (n, T, 2) and the
         representative rows for its Gram: the mean path per latent, ordered (latent, t)."""
         _n = int(z.max()) + 1
-        _E2 = E[..., :2]
+        _G = canonical_gauge(name, D[:2])                                          # the same isometry on both sides
+        _E2 = E[..., :2] @ _G.T
         _Hf = H.reshape(-1, H.shape[-1])
         _R = rigid_map(_Hf, E.reshape(-1, E.shape[-1]))                            # (k, r): hidden -> code coordinates, an isometry
-        _Q = _R[:, :2].T                                                           # the predicted top-2 modes, read from the hidden state
+        _Q = _G @ _R[:, :2].T                                                      # the predicted top-2 modes, read from the hidden state
         _X = (_Hf @ _Q.T).reshape(*H.shape[:2], 2)
         _rep = lambda pts: latent_means(pts, z, _n).reshape(_n * pts.shape[1], -1)
-        return dict(pred=dict(pts=_E2, cones=D[:2], mean=latent_means(_E2, z, _n), rep=_rep(E)),
+        return dict(pred=dict(pts=_E2, cones=_G @ D[:2], mean=latent_means(_E2, z, _n), rep=_rep(E)),
                     trained=dict(pts=_X, cones=_Q @ W.T, mean=latent_means(_X, z, _n), rep=_rep(H)))
 
     def belief_bg(ax, Dcols, r_x, r_y, colors, fade=0.3, res=500):
@@ -246,7 +268,8 @@ def _(
         """One plane: the readout's belief as background (optional), sampled states (grey; coloured by
         ``cloud`` (B, T) on plasma, dark at its min, yellow at its max; or by ``belief`` (B, T, n), each
         state the belief-weighted mix of the latent colours), optionally a ray per true latent through
-        its mean end state, and one highlighted stream (light to dark with t)."""
+        its mean end state, optionally ``latents`` (n, 2): the kernel's own point per latent, an outlined marker; and one highlighted stream
+        (light to dark with t)."""
         _flat = pl["pts"].reshape(-1, 2)
         _lo, _hi = _flat.min(0), _flat.max(0); _pad = 0.06 * (_hi - _lo).max()
         _xr, _yr = (_lo[0] - _pad, _hi[0] + _pad), (_lo[1] - _pad, _hi[1] + _pad)
@@ -308,7 +331,7 @@ def _(
         _buf = io.BytesIO(); _fig.savefig(_buf, format="png", dpi=600, bbox_inches="tight"); plt.close(_fig)
         _buf.seek(0); return _buf
 
-    planes = {_name: planes_for(factor_logcond(_h["LP"].reshape(-1, _h["D"].shape[1]))[1].reshape(*_h["LP"].shape[:2], -1)[:, :T],
+    planes = {_name: planes_for(_name, factor_logcond(_h["LP"].reshape(-1, _h["D"].shape[1]))[1].reshape(*_h["LP"].shape[:2], -1)[:, :T],
                                 _h["D"], fits[_name]["H"], fits[_name]["W"], _h["run"]["latent"])
               for _name, _h in hist.items()}
     for _name, _h in hist.items():
@@ -492,7 +515,7 @@ def _(
     # the same figure for the hypothesis spaces: no belief background (the predictive over 10-27 items is
     # broad wherever states sit) and no rays (55-225 hypotheses); the cloud is coloured by the posterior's
     # expected breadth, yellow = broad, dark = specific; Grams of the mean path per true hypothesis
-    planes_hyp = {_name: planes_for(_h["E"][:, :T], _h["D"], _h["run"]["hidden_states"][-1][:, :T], _h["run"]["readout"],
+    planes_hyp = {_name: planes_for(_name, _h["E"][:, :T], _h["D"], _h["run"]["hidden_states"][-1][:, :T], _h["run"]["readout"],
                                     _h["run"]["latent"]) for _name, _h in hyp.items()}
     _blocks = []
     for _name, _pl in planes_hyp.items():
