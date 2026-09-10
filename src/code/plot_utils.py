@@ -595,27 +595,71 @@ def plot_factor_planes(E_pred, D_pred, models, info, cmap=None, scores=None):
     ({name: (representation, readout (C, d))}); columns: the factors. Active words are coloured by
     their position on the factor, inactive words sit grey at the plane's origin. ``scores``: {name:
     CKA} for the row labels."""
-    from .geometry import factor_planes
-    cmap = cmap or FIG.cyclic_cmap
-    blocks, Z, pos = info["blocks"], info["Z"], info["positions"]
-    rows = [("predicted", E_pred, D_pred)] + [(name, E, D.T) for name, (E, D) in models.items()]
-    K = len(blocks)
+    rows = _model_rows(E_pred, D_pred, models)
+    K = len(info["blocks"])
     fig, axes = plt.subplots(len(rows), K, figsize=(2.7 * K, 2.7 * len(rows)), squeeze=False)
     for i, (name, E, D) in enumerate(rows):
-        for k, ((m, U), b) in enumerate(zip(factor_planes(D, blocks), blocks)):
-            ax = axes[i, k]
-            XY = np.asarray(E) @ U[:, :2]
-            on = Z[:, k] == 1
-            n_k = b.stop - b.start
-            ax.scatter(XY[~on, 0], XY[~on, 1], c="0.75", s=10, clip_on=False)
-            ax.scatter(XY[on, 0], XY[on, 1], c=pos[on, k] / n_k, cmap=cmap, vmin=0, vmax=1, s=22, clip_on=False)
-            _frame_2d(ax, XY, margin=0.15)
+        for k in range(K):
+            _draw_factor_plane(axes[i, k], E, D, info, k, cmap)
             if i == 0:
-                ax.set_title(f"factor {k + 1}")
-            if k == 0:
-                label = name if scores is None or name not in scores else f"{name}\nCKA {scores[name]:.2f}"
-                ax.set_ylabel(label, fontsize=FIG.font_sizes["axis_label"])
+                axes[i, k].set_title(f"factor {k + 1}")
+        _row_label(axes[i, 0], name, scores)
     fig.tight_layout()
+    return fig
+
+
+def _model_rows(E_pred, D_pred, models):
+    """(name, representation, decoder (d, C)) per figure row: the predicted code, then each model's
+    representation with its readout (C, d) transposed."""
+    return [("predicted", E_pred, D_pred)] + [(name, E, np.asarray(D).T) for name, (E, D) in models.items()]
+
+
+def _row_label(ax, name, scores):
+    """Model name (and CKA) down the left of a row's first panel, 2-D or 3-D."""
+    label = name if scores is None or name not in scores else f"{name}\nCKA {scores[name]:.2f}"
+    if hasattr(ax, "zaxis"):
+        ax.text2D(-0.1, 0.5, label, transform=ax.transAxes, rotation=90, va="center", ha="center",
+                  fontsize=FIG.font_sizes["axis_label"])
+    else:
+        ax.set_ylabel(label, fontsize=FIG.font_sizes["axis_label"])
+
+
+def _draw_factor_plane(ax, E, D, info, k, cmap=None):
+    """Items projected onto factor ``k``'s plane, read off decoder block ``k`` (`factor_planes`):
+    active items coloured by position, inactive items grey at the origin."""
+    from .geometry import factor_planes
+    b = info["blocks"][k]
+    _, U = factor_planes(D, [b])[0]
+    XY = np.asarray(E) @ U[:, :2]
+    on = info["Z"][:, k] == 1
+    ax.scatter(XY[~on, 0], XY[~on, 1], c="0.75", s=10, clip_on=False)
+    ax.scatter(XY[on, 0], XY[on, 1], c=info["positions"][on, k] / (b.stop - b.start),
+               cmap=cmap or FIG.cyclic_cmap, vmin=0, vmax=1, s=22, clip_on=False)
+    _frame_2d(ax, XY, margin=0.15)
+
+
+def plot_attribute_tree(E_pred, D_pred, models, info, scores=None):
+    """Category tree with attributes: per row (predicted, then each model) the top-3 PCA view coloured
+    by category, every attribute's plane (`_draw_factor_plane`), and the item Gram in enumeration
+    order (category, then positions). ``models``: {name: (representation, readout (C, d))}."""
+    from matplotlib.colors import ListedColormap
+    rows = _model_rows(E_pred, D_pred, models)
+    A = len(info["blocks"])
+    leaf = info["leaf"]
+    cat = np.unique(leaf, return_inverse=True)[1]
+    cat_cmap = ListedColormap(FIG.categorical[:max(2, cat.max() + 1)])
+    fig = plt.figure(figsize=(2.7 * (A + 2), 2.7 * len(rows)))
+    gs = fig.add_gridspec(len(rows), A + 2, wspace=0.3, hspace=0.3)
+    for i, (name, E, D) in enumerate(rows):
+        ax3 = fig.add_subplot(gs[i, 0], projection="3d")
+        scatter_geometry(ax3, _pca(E, 3), "top 3 modes" if i == 0 else "", cat_cmap, colors=cat)
+        for k in range(A):
+            ax = fig.add_subplot(gs[i, k + 1])
+            _draw_factor_plane(ax, E, D, info, k)
+            if i == 0:
+                ax.set_title(f"attribute {k + 1}")
+        gram_heatmap(fig.add_subplot(gs[i, A + 1]), E, title=r"$E^{*}E^{*\top}$" if i == 0 else r"$EE^{\top}$")
+        _row_label(ax3, name, scores)
     return fig
 
 

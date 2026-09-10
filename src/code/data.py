@@ -640,6 +640,36 @@ def factors(factors, N=256, p=0.3, decay=0.9, scale=8.0, seed=0):
                                                        "blocks": blocks, "bipartite": True}
 
 
+def attribute_tree(attributes, n=1, k=2, parents=None):
+    """Category tree whose nodes own attribute factors; items are every (leaf, positions) combination.
+    ``attributes``: structure specs with ``node`` (owner) and ``alpha``; a leaf's active attributes are
+    those on its root path. Lc(x,(a,j)) = alpha_a [owner on path] (1 + kappa_a(z_a, j)), kappa_a the
+    attribute's row-centered log-conditional. Returns (L (n_items, sum n_a), {"leaf" (n_items,),
+    "Z" (n_items, A) activity, "positions" (n_items, A), "alpha", "blocks", "parents", "bipartite"})."""
+    from scipy.special import logsumexp
+    parents = tree_parents(n, k, parents)
+    owners = [a["node"] for a in attributes]
+    alpha = np.array([a["alpha"] for a in attributes], float)
+    kappas = [graph_conditional({key: v for key, v in a.items() if key not in ("node", "alpha")}) for a in attributes]
+    kappas = [kap - kap.mean(1, keepdims=True) for kap in kappas]
+    leaves = [v for v in range(len(parents)) if v not in set(parents)]
+    path = lambda v: [] if v < 0 else path(parents[v]) + [v]
+    leaf_col, Z, pos = [], [], []
+    for leaf in leaves:
+        active = [i for i, v in enumerate(owners) if v in path(leaf)]
+        for combo in itertools.product(*[range(len(kappas[i])) for i in active]):
+            z = np.zeros(len(attributes)); p = np.zeros(len(attributes), int)
+            z[active] = 1.0; p[active] = combo
+            leaf_col.append(leaf); Z.append(z); pos.append(p)
+    Z, pos = np.array(Z), np.array(pos)
+    Lc = np.concatenate([Z[:, [i]] * alpha[i] * (1 + kap[pos[:, i]]) for i, kap in enumerate(kappas)], 1)
+    ends = np.cumsum([len(kap) for kap in kappas])
+    blocks = [slice(int(e - len(kap)), int(e)) for e, kap in zip(ends, kappas)]
+    return Lc - logsumexp(Lc, axis=1, keepdims=True), {"leaf": np.array(leaf_col), "Z": Z, "positions": pos,
+                                                       "alpha": alpha, "blocks": blocks, "parents": parents,
+                                                       "bipartite": True}
+
+
 # ── Hypothesis spaces (bipartite): hypotheses -> observations, strong sampling p(x|h) = 1/|h| ──
 # Zero cells are exact zeros (log -inf) so the dataset's lapse applies; each structure supplies
 # its own prior over hypotheses.
@@ -735,6 +765,7 @@ _STRUCTURES = {
     # bipartite (no adjacency): words -> features; hypothesis spaces -> observations
     "feature_cube": _Structure(None, feature_cube),
     "factors": _Structure(None, factors),
+    "attribute_tree": _Structure(None, attribute_tree),
     "intervals": _Structure(None, interval_hypotheses),
     "rectangles": _Structure(None, rectangle_hypotheses),
     "subtrees": _Structure(None, subtree_hypotheses),
