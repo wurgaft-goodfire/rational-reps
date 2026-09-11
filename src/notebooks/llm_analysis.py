@@ -25,10 +25,10 @@ def _(mo):
     under the hypercube setting's heat kernel $\exp(\gamma A)$, the tree's leaves under the
     tree's own diffusion kernel (both $\gamma = 0.8$), and ring and grid again under the Gaussian
     kernel $\log p \propto -\tfrac{\gamma}{2}\lVert p_i - p_x \rVert^2$ in their canonical
-    coordinates (von Mises on the ring, rank 2; a quadratic on the lattice, rank 3). The prediction
-    is the kernel's family with $\gamma$ fitted (the diffusion family
-    $p_\gamma \propto (I - \gamma P)^{-1}$ for the adjacency walks), against the kernel the data
-    was sampled from.
+    coordinates (von Mises on the ring, rank 2; a quadratic on the lattice, rank 3). Every world is
+    scored against two predictions: the **diffusion** kernel on its graph,
+    $p_\gamma \propto (I - \gamma P)^{-1}$ with $\gamma$ fitted (the tree's own kernel is one), and
+    the kernel the data was sampled from.
 
     **Relations.** Triples `a b : c ,` read at the colon: `entailment` (15 tree nodes, $c$ uniform
     over the common ancestors of $a, b$) and `set_difference` (8 feature sets; six outcome words
@@ -164,7 +164,7 @@ def _(mo):
     mo.md(r"""
     ## Walks: fit
 
-    CKA between the LLM node means and the predicted code per layer, for the kernel family at
+    CKA between the LLM node means and the predicted code per layer, for the diffusion kernel at
     each $\gamma$ and for the kernel the walk was sampled from.
     """)
     return
@@ -176,12 +176,9 @@ def _(WORLDS, cka, graph_conditional, np, predicted_geometry, runs):
 
     def logcond(world, gamma=None):
         """The world's log-conditional: ``None`` is the kernel the data was sampled from; at
-        ``gamma``, that kernel's family with its decay swept (diffusion for an adjacency walk)."""
+        ``gamma``, the diffusion kernel on the same graph (the tree's own kernel is one)."""
         spec = WORLDS[world]["spec"]
-        if gamma is None:
-            return graph_conditional(spec)
-        family = spec.get("cooccurrence", "diffusion")
-        return graph_conditional({**spec, "gamma": gamma, "cooccurrence": "diffusion" if family == "adjacency" else family})
+        return graph_conditional(spec if gamma is None else {**spec, "gamma": gamma, "cooccurrence": "diffusion"})
 
     def predicted(world, gamma=None):
         """Predicted code: the balanced factor of ``logcond(world, gamma)``."""
@@ -207,7 +204,7 @@ def _(WORLDS, cka, graph_conditional, np, predicted_geometry, runs):
         layer, kernel, g = best_layer(world)
         if kernel == "data":
             return "the data's kernel", predicted(world), scores[world]["data"][layer]
-        return rf"$\gamma$={GAMMAS[g]}", predicted(world, GAMMAS[g]), scores[world]["family"][layer, g]
+        return rf"diffusion, $\gamma$={GAMMAS[g]}", predicted(world, GAMMAS[g]), scores[world]["family"][layer, g]
     return GAMMAS, best_layer, best_prediction, logcond, predicted, scores
 
 
@@ -217,7 +214,7 @@ def _(mo):
     ## Walks: figures
 
     Curves: next-word NLL by step against the walk's Bayes floor (shaded: the averaged window);
-    CKA by layer for the kernel family at its best $\gamma$ and for the data's kernel; CKA
+    CKA by layer for the diffusion kernel at its best $\gamma$ and for the data's kernel; CKA
     against $\gamma$ at the best layer. Panels: the predicted code beside Llama at that layer, top two PCs
     with the LLM's rotated (Procrustes) onto the prediction's PC frame, Grams below.
     """)
@@ -236,13 +233,13 @@ def _(GAMMAS, L, WINDOW, best_layer, config, logcond, np, plot_utils, plt, row_e
         a.axvspan(L - 1 - WINDOW, L - 1, color="gray", alpha=0.15)
         a.set_xlabel("step"); a.set_ylabel("next-word NLL (nats)"); a.set_ylim(0, None); a.legend()
         a.set_title(f"{world}: learning the walk in context")
-        b.plot(best, label=r"kernel family, best $\gamma$ per layer"); b.plot(sc["data"], "--", label="the data's kernel")
+        b.plot(best, label=r"diffusion, best $\gamma$ per layer"); b.plot(sc["data"], "--", label="the data's kernel")
         b.set_xlabel("layer"); b.set_ylabel("CKA to prediction"); b.set_ylim(0, 1); b.legend()
-        c.semilogx(GAMMAS, sc["family"][layer], marker="o", label=f"kernel family, layer {layer}")
+        c.semilogx(GAMMAS, sc["family"][layer], marker="o", label=f"diffusion, layer {layer}")
         c.axhline(sc["data"][layer], ls="--", color="C1", label="the data's kernel")
         c.set_xlabel(r"$\gamma$"); c.set_ylabel("CKA to prediction"); c.set_ylim(0, 1); c.legend()
         fig.tight_layout()
-        print(f"{world}: best {kernel} at layer {layer}, CKA family {best[layer]:.3f} (γ={GAMMAS[sc['family'][layer].argmax()]}) "
+        print(f"{world}: best {kernel} at layer {layer}, CKA diffusion {best[layer]:.3f} (γ={GAMMAS[sc['family'][layer].argmax()]}) "
               f"vs data kernel {sc['data'][layer]:.3f}; final NLL {run['nll'][-WINDOW:].mean():.3f} vs floor {floor[-WINDOW:].mean():.3f}")
         return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext_curves"))
     return (curves,)
