@@ -1,39 +1,30 @@
-"""Corpus statistics: windowed co-occurrence counts from text, and the infini-gram client for exact
-n-gram counts."""
+"""Corpus statistics: windowed co-occurrence counts from lowercased text, and the infini-gram client
+for exact n-gram counts."""
 import numpy as np
 import pytest
 
-from src.code.corpus import NearCue, cooccurrence_table, date_anchor, parquet_texts, query, window_counts
+from src.code.corpus import at_least, cooccurrence_table, parquet_texts, query, window_counts
 
 
-def test_window_counts_add_the_words_around_each_concept_occurrence():
-    """Every word within ``window`` tokens of a concept occurrence is counted for that concept (the
-    occurrence itself excluded); word frequencies are counted over the whole text. A capitalised
-    concept ("May") matches only its own case, a lowercase one matches either case."""
-    texts = ["In May the garden may bloom.", "Red roses and red wine.", "Nothing here."]
-    counts, freq = window_counts(texts, ["May", "red"], window=2)
-    assert counts["May"] == {"in": 1, "the": 1, "garden": 1}          # "may" (modal) is not an occurrence
-    assert counts["red"] == {"roses": 2, "and": 2, "wine": 1}         # "Red" and "red" both occur, three apart
-    assert freq["may"] == 2 and freq["nothing"] == 1
+def test_window_counts_lowercase_the_text_and_count_every_token_in_the_window():
+    """Both "May" and "may" are occurrences of the concept "may"; numbers are tokens like words;
+    punctuation only separates. Frequencies are counted over the whole text."""
+    texts = ["In May the garden may bloom.", "On March 5, 2010 it snowed."]
+    counts, freq = window_counts(texts, ["may", "march"], window=2)
+    assert counts["may"] == {"in": 1, "the": 2, "garden": 2, "bloom": 1}
+    assert counts["march"] == {"on": 1, "5": 1, "2010": 1}
+    assert freq["may"] == 2 and freq["2010"] == 1
 
 
-def test_window_counts_skip_sentence_initial_capitalised_concepts_and_stop_at_no_punctuation():
-    """A capitalised concept at a sentence start is mostly its other sense ("May" the modal), so it
-    is not an occurrence; punctuation is not a context word but the window runs across it."""
-    counts, _ = window_counts(["Rain. May showers came in May. Cold!"], ["May"], window=2)
-    assert counts["May"] == {"came": 1, "in": 1, "cold": 1}
+def test_cooccurrence_table_uses_the_most_frequent_tokens_concepts_included():
+    counts = {"a": {"x": 3, "y": 1, "b": 2}, "b": {"y": 2, "a": 2}}
+    freq = {"x": 10, "y": 20, "z": 30, "a": 100, "b": 5}
+    C, vocab = cooccurrence_table(counts, freq, ["a", "b"], k=3)
+    assert vocab == ["a", "z", "y"] and np.array_equal(C, [[0, 0, 1], [2, 0, 2]])
 
 
-def test_anchors_keep_only_occurrences_in_the_intended_sense():
-    """A date anchor keeps a month next to a number or after a month preposition ("Prices May Vary"
-    is dropped); a cue anchor keeps a colour only when a colour word sits within the window.
-    Numbers are anchors, not context words."""
-    texts = ["Prices May Vary. Since May 2019 the red paint sold well; later some red tape grew."]
-    counts, freq = window_counts(texts, ["May", "red"], window=3,
-                                 anchors={"May": date_anchor, "red": NearCue({"paint", "color"}, 3)})
-    assert counts["May"] == {"vary": 1, "since": 1, "the": 1, "red": 1}   # "Since May 2019" only; 2019 is not a context word
-    assert counts["red"] == {"may": 1, "the": 1, "paint": 1, "sold": 1, "well": 1}   # "red tape" has no cue in reach
-    assert "2019" not in freq
+def test_at_least_filters_short_texts_by_word_count():
+    assert list(at_least(["one two three", "four five", "six seven eight nine"], 3)) == ["one two three", "six seven eight nine"]
 
 
 def test_parquet_texts_streams_the_text_column_across_files(tmp_path):
@@ -41,13 +32,6 @@ def test_parquet_texts_streams_the_text_column_across_files(tmp_path):
     for i, rows in enumerate((["a", "b", "c"], ["d"])):
         pq.write_table(pa.table({"text": rows, "id": list(range(len(rows)))}), tmp_path / f"{i}.parquet")
     assert list(parquet_texts([tmp_path / "0.parquet", tmp_path / "1.parquet"], batch=2)) == ["a", "b", "c", "d"]
-
-
-def test_cooccurrence_table_orders_the_top_vocabulary_by_frequency_without_the_concepts():
-    counts = {"a": {"x": 3, "y": 1}, "b": {"y": 2}}
-    freq = {"x": 10, "y": 20, "z": 30, "a": 100, "b": 5}
-    C, vocab = cooccurrence_table(counts, freq, ["a", "b"], k=2)
-    assert vocab == ["z", "y"] and np.array_equal(C, [[0, 1], [0, 2]])
 
 
 def test_query_backs_off_on_rate_limiting_then_succeeds(monkeypatch):

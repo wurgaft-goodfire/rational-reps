@@ -1,5 +1,6 @@
-"""Corpus statistics: windowed co-occurrence counts between concept words and a context vocabulary
-over a text sample (FineWeb-Edu parquet shards), plus the infini-gram client for exact n-gram counts."""
+"""Corpus statistics: windowed co-occurrence counts between concept words and the corpus vocabulary
+over a lowercased text sample (Hugging Face parquet shards), plus the infini-gram client for exact
+n-gram counts."""
 import itertools
 import json
 import re
@@ -11,58 +12,32 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-_TOKEN = re.compile(r"[A-Za-z]+|[0-9]+|[.!?]")               # words, numbers, and the marks that end a sentence
-_STOPS = {".", "!", "?"}
-MONTH_PREPS = {"in", "of", "since", "until", "till", "from", "by", "late", "early", "mid", "last", "next",
-               "this", "every", "each", "between", "during", "on", "through", "to", "for", "before", "after"}
-
-
-def date_anchor(tokens, i):
-    """The month sense of a month name: a number follows (a day or year) or a month preposition precedes."""
-    return (i + 1 < len(tokens) and tokens[i + 1].isdigit()) or (i > 0 and tokens[i - 1].lower() in MONTH_PREPS)
-
-
-class NearCue:
-    """An anchor that holds when one of ``cues`` (lowercase) sits within ``window`` tokens."""
-    def __init__(self, cues, window):
-        self.cues, self.window = set(cues), window
-
-    def __call__(self, tokens, i):
-        around = tokens[max(0, i - self.window):i] + tokens[i + 1:i + self.window + 1]
-        return any(t.lower() in self.cues for t in around)
+_TOKEN = re.compile(r"[a-z0-9]+")                            # a token is a run of letters or digits
 
 
 def _count_chunk(args):
     """Co-occurrence and frequency counters over one chunk of texts (a worker's share)."""
-    texts, lookup, window, anchors = args
-    counts, freq = {c: Counter() for c in set(lookup.values())}, Counter()
+    texts, concepts, window = args
+    counts, freq = {c: Counter() for c in concepts}, Counter()
     for text in texts:
-        tokens = _TOKEN.findall(text)
-        lower = [t.lower() for t in tokens]
-        freq.update(w for w in lower if w.isalpha())
+        tokens = _TOKEN.findall(text.lower())
+        freq.update(tokens)
         for i, t in enumerate(tokens):
-            c = lookup.get(t)
-            if c is None or (c[0].isupper() and (i == 0 or tokens[i - 1] in _STOPS)):
-                continue                                      # sentence-initial "May" is mostly the modal
-            if c in anchors and not anchors[c](tokens, i):
-                continue                                      # not the intended sense
-            around = lower[max(0, i - window):i] + lower[i + 1:i + window + 1]
-            counts[c].update(w for w in around if w.isalpha())
+            if t in concepts:
+                counts[t].update(tokens[max(0, i - window):i]); counts[t].update(tokens[i + 1:i + window + 1])
     return counts, freq
 
 
-def window_counts(texts, concepts, window=16, workers=1, chunk=2000, anchors=None):
-    """``{concept: Counter}`` of the lowercase words within ``window`` tokens of each occurrence of the
-    concept, and the lowercase word frequencies over all ``texts``. A capitalised concept ("May")
-    matches its own case only and not at a sentence start; a lowercase one matches either case.
-    ``anchors`` {concept: fn(tokens, i) -> bool} keeps only occurrences in the intended sense."""
-    lookup = {c: c for c in concepts}
-    lookup.update({c.capitalize(): c for c in concepts if c.islower()})
+def window_counts(texts, concepts, window=16, workers=1, chunk=2000):
+    """``{concept: Counter}`` of the tokens within ``window`` positions of each occurrence of the
+    concept, and the token frequencies over all ``texts``. Text is lowercased; a token is a run of
+    letters or digits; concepts are lowercase strings matched exactly."""
+    concepts = frozenset(concepts)
     texts = iter(texts)
     chunks = iter(lambda: list(itertools.islice(texts, chunk)), [])
     counts, freq = {c: Counter() for c in concepts}, Counter()
     with ProcessPoolExecutor(workers) as pool:
-        for part, f in pool.map(_count_chunk, ((ch, lookup, window, anchors or {}) for ch in chunks)):
+        for part, f in pool.map(_count_chunk, ((ch, concepts, window) for ch in chunks)):
             freq.update(f)
             for c in concepts:
                 counts[c].update(part[c])
@@ -70,10 +45,9 @@ def window_counts(texts, concepts, window=16, workers=1, chunk=2000, anchors=Non
 
 
 def cooccurrence_table(counts, freq, concepts, k):
-    """``(C, vocab)``: counts over the ``k`` most frequent words that are not concepts, in frequency
-    order. ``C[i, j]`` is how often concept ``i`` co-occurred with ``vocab[j]``. (n_concepts, k)."""
-    skip = {c.lower() for c in concepts}
-    vocab = [w for w in sorted(freq, key=freq.get, reverse=True) if w not in skip][:k]
+    """``(C, vocab)``: counts over the ``k`` most frequent tokens, in frequency order. ``C[i, j]`` is
+    how often concept ``i`` occurred within the window of ``vocab[j]``. (n_concepts, k)."""
+    vocab = sorted(freq, key=freq.get, reverse=True)[:k]
     return np.array([[counts[c].get(w, 0) for w in vocab] for c in concepts], dtype=np.float64), vocab
 
 
@@ -85,9 +59,14 @@ def parquet_texts(paths, column="text", batch=4096):
             yield from b.column(0).to_pylist()
 
 
+def at_least(texts, min_words):
+    """Only the texts with at least ``min_words`` whitespace-separated words."""
+    return (t for t in texts if len(t.split()) >= min_words)
+
+
 def hub_texts(repo, prefix, n_docs=None):
     """The texts of every parquet shard under ``prefix`` in a Hugging Face dataset repo (e.g.
-    ``"HuggingFaceFW/fineweb"``, ``"sample/10BT/"``), each downloaded into the HF cache when reached."""
+    ``"wikimedia/wikipedia"``, ``"20231101.en/"``), each downloaded into the HF cache when reached."""
     from huggingface_hub import HfApi, hf_hub_download
     shards = sorted(f for f in HfApi().list_repo_files(repo, repo_type="dataset")
                     if f.startswith(prefix) and f.endswith(".parquet"))
