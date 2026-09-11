@@ -1,48 +1,34 @@
-"""Corpus statistics through the infini-gram API: windowed co-occurrence tables and the context
-vocabulary they are counted over."""
-import json
-
+"""Corpus statistics: windowed co-occurrence counts from text, and the infini-gram client for exact
+n-gram counts."""
 import numpy as np
 import pytest
 
-from src.code.corpus import context_vocabulary, cooccurrence, query
+from src.code.corpus import cooccurrence_table, parquet_texts, query, window_counts
 
 
-class _Tok:
-    """A tokenizer stub: ids decode to the listed strings."""
-    def __init__(self, pieces):
-        self.pieces = pieces
-
-    def __len__(self):
-        return len(self.pieces)
-
-    def decode(self, ids):
-        return "".join(self.pieces[i] for i in ids)
-
-
-def test_context_vocabulary_keeps_early_lowercase_words_with_a_leading_space():
-    """The first ``k`` vocabulary entries that decode to a lowercase alphabetic word with a leading
-    space, in id order (BPE merge order stands in for frequency); the concept words are excluded."""
-    tok = _Tok(["<s>", " the", "ing", " Paris", " red", " and", " 42", " snow", "er", " cold", " hot"])
-    assert context_vocabulary(tok, 3, exclude=["red"]) == ["the", "and", "snow"]
+def test_window_counts_add_the_words_around_each_concept_occurrence():
+    """Every word within ``window`` tokens of a concept occurrence is counted for that concept (the
+    occurrence itself excluded); word frequencies are counted over the whole text. A capitalised
+    concept ("May") matches only its own case, a lowercase one matches either case."""
+    texts = ["In May the garden may bloom.", "Red roses and red wine.", "Nothing here."]
+    counts, freq = window_counts(texts, ["May", "red"], window=2)
+    assert counts["May"] == {"in": 1, "the": 1, "garden": 1}          # "may" (modal) is not an occurrence
+    assert counts["red"] == {"roses": 2, "and": 2, "wine": 1}         # "Red" and "red" both occur, three apart
+    assert freq["may"] == 2 and freq["nothing"] == 1
 
 
-def test_cooccurrence_fills_the_table_from_one_query_per_pair_and_caches_it(tmp_path):
-    """``C[i, j]`` is the windowed count of concept ``i`` with context word ``j``; every response is
-    written to the cache, and a second call reads it back without querying."""
-    calls = []
+def test_parquet_texts_streams_the_text_column_across_files(tmp_path):
+    import pyarrow as pa, pyarrow.parquet as pq
+    for i, rows in enumerate((["a", "b", "c"], ["d"])):
+        pq.write_table(pa.table({"text": rows, "id": list(range(len(rows)))}), tmp_path / f"{i}.parquet")
+    assert list(parquet_texts([tmp_path / "0.parquet", tmp_path / "1.parquet"], batch=2)) == ["a", "b", "c", "d"]
 
-    def fake_query(payload):
-        calls.append(payload["query"])
-        a, b = payload["query"].split(" AND ")                      # " red", "car"
-        return {"count": len(a.strip()) * len(b), "approx": False}
 
-    C = cooccurrence(["red", "blue"], ["car", "sky"], index="idx", window=16, cache_dir=tmp_path, query_fn=fake_query)
-    assert np.array_equal(C, [[3 * 3, 3 * 3], [4 * 3, 4 * 3]]) and len(calls) == 4
-    assert " red AND car" in calls
-    assert len(list((tmp_path / "idx").glob("*.json"))) == 4
-    again = cooccurrence(["red", "blue"], ["car", "sky"], index="idx", window=16, cache_dir=tmp_path, query_fn=fake_query)
-    assert np.array_equal(again, C) and len(calls) == 4
+def test_cooccurrence_table_orders_the_top_vocabulary_by_frequency_without_the_concepts():
+    counts = {"a": {"x": 3, "y": 1}, "b": {"y": 2}}
+    freq = {"x": 10, "y": 20, "z": 30, "a": 100, "b": 5}
+    C, vocab = cooccurrence_table(counts, freq, ["a", "b"], k=2)
+    assert vocab == ["z", "y"] and np.array_equal(C, [[0, 1], [0, 2]])
 
 
 def test_query_backs_off_on_rate_limiting_then_succeeds(monkeypatch):
