@@ -232,7 +232,7 @@ def _structure_graph(spec):
     from .data import structure_adjacency, tree_parents
     name = spec["structure"]; p = {k: v for k, v in spec.items() if k != "structure"}
     if name == "tree":
-        return _tree_graph(tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents")))
+        return _tree_graph(tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents"), p.get("levels")))
     if name in ("product", "stack"):
         factors = p["factors"]
         if name == "product" and len(factors) == 2 and all(f["structure"] == "ring" for f in factors):
@@ -591,6 +591,55 @@ def plot_stacking(n=12, q=10):
     return fig
 
 
+def plot_factor_planes(E_pred, D_pred, models, info, cmap=None, scores=None):
+    """Sparse factors: every word projected onto each factor's plane, read off that code's own
+    decoder block (`factor_planes`). Rows: the predicted code, then each model in ``models``
+    ({name: (representation, readout (C, d))}); columns: the factors. Active words are coloured by
+    their position on the factor, inactive words sit grey at the plane's origin. ``scores``: {name:
+    CKA} for the row labels."""
+    rows = _model_rows(E_pred, D_pred, models)
+    K = len(info["blocks"])
+    fig, axes = plt.subplots(len(rows), K, figsize=(2.7 * K, 2.7 * len(rows)), squeeze=False)
+    for i, (name, E, D) in enumerate(rows):
+        for k in range(K):
+            _draw_factor_plane(axes[i, k], E, D, info, k, cmap)
+            if i == 0:
+                axes[i, k].set_title(f"factor {k + 1}")
+        _row_label(axes[i, 0], name, scores)
+    fig.tight_layout()
+    return fig
+
+
+def _model_rows(E_pred, D_pred, models):
+    """(name, representation, decoder (d, C)) per figure row: the predicted code, then each model's
+    representation with its readout (C, d) transposed."""
+    return [("predicted", E_pred, D_pred)] + [(name, E, np.asarray(D).T) for name, (E, D) in models.items()]
+
+
+def _row_label(ax, name, scores):
+    """Model name (and CKA) down the left of a row's first panel, 2-D or 3-D."""
+    label = name if scores is None or name not in scores else f"{name}\nCKA {scores[name]:.2f}"
+    if hasattr(ax, "zaxis"):
+        ax.text2D(-0.1, 0.5, label, transform=ax.transAxes, rotation=90, va="center", ha="center",
+                  fontsize=FIG.font_sizes["axis_label"])
+    else:
+        ax.set_ylabel(label, fontsize=FIG.font_sizes["axis_label"])
+
+
+def _draw_factor_plane(ax, E, D, info, k, cmap=None):
+    """Items projected onto factor ``k``'s plane, read off decoder block ``k`` (`factor_planes`):
+    active items coloured by position, inactive items grey at the origin."""
+    from .geometry import factor_planes
+    b = info["blocks"][k]
+    _, U = factor_planes(D, [b])[0]
+    XY = np.asarray(E) @ U[:, :2]
+    on = info["Z"][:, k] == 1
+    ax.scatter(XY[~on, 0], XY[~on, 1], c="0.75", s=10, clip_on=False)
+    ax.scatter(XY[on, 0], XY[on, 1], c=info["positions"][on, k] / (b.stop - b.start),
+               cmap=cmap or FIG.cyclic_cmap, vmin=0, vmax=1, s=22, clip_on=False)
+    _frame_2d(ax, XY, margin=0.15)
+
+
 def rdm_heatmap(ax, reps, title="RDM", cmap=None):
     """Representational dissimilarity matrix (pairwise Euclidean distances between item reps),
     normalized by its max so panels share one [0, 1] scale regardless of representation norm.
@@ -731,7 +780,7 @@ def _tree_items(spec, n_items):
     holds rather than assuming ``tree_conditional``'s default."""
     from .data import tree_parents
     p = {k: v for k, v in spec.items() if k != "structure"}
-    parents = tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents"))
+    parents = tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents"), p.get("levels"))
     ch = _tree_children(parents)
     leaves = [u for u in range(len(parents)) if u not in ch]
     return parents, (leaves if n_items == len(leaves) else list(range(len(parents))))

@@ -263,5 +263,135 @@ def _(FIGURES, geometry_panel, header_add, plot_utils):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 5. Sparse structured attributes
+
+    $N$ words carry $K$ ring-valued attributes, each present independently with probability $p$ at a
+    uniform position $z_k$; the outcomes are the rings' node tokens,
+    $\log p((k,j)\mid x) = \operatorname{log\,softmax}\big(a_k\,\alpha_k\,(1 + \kappa_k(z_k, j))\big)$,
+    with $\kappa_k$ the ring's row-centred log-kernel and $\alpha_k = \text{scale}\cdot\text{decay}^k$.
+    The predicted code is one circle plane per factor, mutually orthogonal, plus $K-1$ presence
+    directions (rank $3K-1$): a word sits on factor $k$'s circle when the attribute is present and at
+    the plane's origin when absent. Union and product stacking are the $p\to0$ and $p\to1$ limits;
+    the feature cube is the one-node case.
+
+    Each panel projects every word onto the plane read off that code's own decoder block for the factor.
+    """)
+    return
+
+
+@app.cell
+def _(FIGURES, cka, factor_logcond, graph_overrides, load_run, plot_utils):
+    from src.code.data import graph_build
+
+    # SGD from small init lands on the balanced split the oracle predicts; AdamW keeps the init's
+    # imbalance, which CKA against the balanced code then charges. Gradient descent learns the
+    # modes in order of singular value, so the weak factors need the long schedule.
+    SGD = {"linear": 0.5, "mlp": 0.5, "rnn": 0.5, "transformer": 0.1}      # learning rate per runner
+    STEPS = 60000
+
+    def factor_planes_figure(decay, name):
+        """Predicted planes beside each SGD-trained architecture's, for one importance ladder."""
+        # full support, so no lapse floor: scale 2, gamma 1 keeps every token above p = 0.004 and scored
+        ring = {"structure": "ring", "n": 8, "cooccurrence": "gaussian", "gamma": 1.0}
+        spec = {"structure": "factors", "factors": [ring] * 3, "N": 1024, "p": 0.3, "decay": decay, "scale": 2.0, "seed": 0}
+        L, info = graph_build(spec)
+        _, E, D, _ = factor_logcond(L)
+        r = 3 * len(info["blocks"]) - 1                                    # exact rank of the code
+        E, D = E[:, :r], D[:r]
+        runs = {arch: load_run(graph_overrides(spec) + [f"runner={arch}", "training_kwargs.optimizer=sgd",
+                                                        f"training_kwargs.learning_rate={lr}",
+                                                        f"training_kwargs.train_steps={STEPS}"])
+                for arch, lr in SGD.items()}
+        models = {arch: (run["representation"], run["readout"]) for arch, run in runs.items()}
+        scores = {arch: cka(X, E) for arch, (X, _) in models.items()}
+        print(f"{name:26s} " + "  ".join(f"{arch} {s:.2f}" for arch, s in scores.items()), flush=True)
+        fig = plot_utils.plot_factor_planes(E, D, models, info, scores=scores)
+        return plot_utils.save_figure(fig, FIGURES / f"{name}_planes.png")
+
+    return factor_planes_figure, graph_build
+
+
+@app.cell
+def _(FIGURES, graph_build, np, plot_utils):
+    # the log-conditional of the sparse world itself: words sorted by which attributes they carry (the
+    # activity pattern as a binary code), then by position on each; an active factor is a bump in its
+    # token block, an absent one a flat block
+    _ring = {"structure": "ring", "n": 8, "cooccurrence": "gaussian", "gamma": 1.0}
+    _spec = {"structure": "factors", "factors": [_ring] * 3, "N": 1024, "p": 0.3, "decay": 0.8, "scale": 2.0, "seed": 0}
+    _L, _info = graph_build(_spec)
+    _order = np.lexsort([*_info["positions"].T[::-1], *(-_info["Z"]).T[::-1]])   # pattern first (all-on first), then positions
+    fig_factors_logcond, _ = plot_utils.plot_factorization(
+        _L[_order], k=8, item_label="words", outcome_label="attribute tokens",
+        figsize=(13, 6), embedding_width=0.06, decoder_height=0.1, conditional_aspect="auto")
+    plot_utils.save_figure(fig_factors_logcond, FIGURES / "factors_factorization.png")
+    return
+
+
+@app.cell
+def _(factor_planes_figure):
+    factor_planes_figure(0.8, "factors")                                   # alpha = 2, 1.6, 1.28
+    return
+
+
+@app.cell
+def _(factor_planes_figure):
+    factor_planes_figure(1.0, "factors_equal")                             # alpha = 2, 2, 2
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 6. Combining subspaces: product vs nested
+
+    The same two intrinsic coordinates, month on a ring and latitude band on a 3-node chain, combined two ways.
+    **Product** (`ring x chain`, heat kernel): every item has both coordinates and the two kernels add, so the code
+    is the direct sum of a circle and a line: the band axis is shared by every month, three stacked season circles.
+    **Nested** (`tree` with `levels`): the 12 months are the root's children on a ring, and each month's 3 bands are
+    its own children on a chain; two leaves are similar at a level only if they share the parent above it,
+    $\log p(y\mid x) = \sum_\ell \alpha_\ell\,[\text{same parent at }\ell]\,\kappa_\ell(z_\ell(x), z_\ell(y))$.
+    The root ring is shared, but each month gets a private band line in its own subspace: "temperate" under
+    January and under July are orthogonal directions. Rank 3 against 23; the top three modes show the shared
+    circle in both, and only the product stacks it.
+    """)
+    return
+
+
+@app.cell
+def _(geometry_panel, graph_overrides):
+    # product: the band axis is one shared direction (heat kernel keeps the two factors additive)
+    # a factor's weight is its own heat temperature: the ring soft enough for every leaf to be scored, the
+    # 3-chain cool enough that the band axis stays the third mode
+    spec_product = {"structure": "product", "cooccurrence": "heat", "gamma": 3.5, "view": "3d",
+                    "factors": [{"structure": "ring", "n": 12, "weight": 1.0}, {"structure": "chain", "n": 3, "weight": 0.3}]}
+    ADAMW = {"linear": 0.01, "mlp": 0.00333, "rnn": 0.005, "transformer": 0.001}      # runner learning rates, 12k steps
+    adamw_runs = lambda spec: {arch: graph_overrides({_k: _v for _k, _v in spec.items() if _k != "view"})
+                               + [f"runner={arch}", "training_kwargs.optimizer=adamw_torch",
+                                  f"training_kwargs.learning_rate={lr}", "training_kwargs.train_steps=12000"]
+                               for arch, lr in ADAMW.items()}
+    block_product = geometry_panel("product_months_bands", adamw_runs(spec_product), spec=spec_product)
+    return adamw_runs, block_product
+
+
+@app.cell
+def _(FIGURES, block_nested, block_product, plot_utils):
+    fig_combine_main = plot_utils.merge_panels([block_product, block_nested], labels=["product", "nested"])
+    plot_utils.save_figure(fig_combine_main, FIGURES / "combine_main.png", dpi=200)
+    return
+
+
+@app.cell
+def _(adamw_runs, geometry_panel):
+    # nested: months on a ring at the root, each month's bands on a private chain below it
+    _ring = {"structure": "ring", "n": 12, "cooccurrence": "gaussian", "gamma": 1.0, "alpha": 1.5}
+    _chain = {"structure": "chain", "n": 3, "cooccurrence": "gaussian", "gamma": 1.0, "alpha": 1.0}
+    spec_nested = {"structure": "tree", "levels": [_ring, _chain], "view": "3d"}
+    block_nested = geometry_panel("nested_months_bands", adamw_runs(spec_nested), spec=spec_nested)
+    return (block_nested,)
+
+
 if __name__ == "__main__":
     app.run()

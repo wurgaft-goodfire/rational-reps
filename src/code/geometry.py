@@ -44,6 +44,19 @@ def predicted_geometry(log_cond):
     return factor_logcond(log_cond)[1]
 
 
+def factor_planes(D, blocks):
+    """Per outcome block of a decoder ``D`` (d, C): the block's mean column (its presence
+    direction, (d,)) and an orthonormal basis of its token-centred columns (the plane the factor's
+    positions live in, (d, rank)). Returns a list of ``(mean, basis)``."""
+    D = np.asarray(D, dtype=np.float64)
+    out = []
+    for b in blocks:
+        m = D[:, b].mean(1)
+        U, S, _ = np.linalg.svd(D[:, b] - m[:, None], full_matrices=False)
+        out.append((m, U[:, S > 1e-6 * S[0]]))
+    return out
+
+
 def predicted_inference_geometry(log_cond, D):
     """Representation of each state in the frame of a fitted decoder: rows of ``L[state, outcome]``
     centered over outcomes, times ``pinv(D)``. ``D`` (d, C) from ``factor_logcond`` on sampled

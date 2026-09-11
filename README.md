@@ -33,7 +33,7 @@ with `runner=...`; override any config key on the CLI.
 
 ```bash
 # Train
-uv run python -m src.code.train runner=linear setting=word_attribute
+uv run python -m src.code.train runner=linear setting=feature_cube
 uv run python -m src.code.train runner=hmm_transformer structure=grid
 uv run python -m src.code.train runner=hmm_transformer
 
@@ -66,7 +66,9 @@ and the predicted geometry.
 | `graph` | graph → diffusion co-occurrence → next token | structure harmonics (ring → circle) |
 | `hypercube` | binary attribute vectors, heat-kernel co-occurrence | additive per-bit code → linear analogies |
 | `relational` | order-2 operation `c = a*b` | bilinear tensor factors |
-| `word_attribute` | N words with Bernoulli(p) attribute bundles → m attribute tokens | packed (superposed) attribute directions |
+| `feature_cube` | N words with Bernoulli(p) attribute bundles → m attribute tokens | packed (superposed) attribute directions |
+| `factors` | N words, K structured attributes (e.g. rings) each sparsely present → the attributes' node tokens | one plane per factor, orthogonal, plus K−1 presence dims |
+| `nested_tree` | a tree whose levels have shapes (`tree` with `levels`): the children of each node form a ring, chain, ... | a direct sum ordered by level: the root's shape on every leaf, then a private copy of the next shape per node |
 | `hmm` | latent walk on a graph, emitted tokens | belief state of the forward algorithm |
 
 Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `linear`, `sae`, `llm` (pretrained).

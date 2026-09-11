@@ -1,0 +1,20 @@
+# @package _global_
+# Sparse structured attributes: N words, K factors (each a structure spec) independently active
+# w.p. p at a uniform position; outcomes are the factors' node tokens,
+# log p((k,j)|x) = log_softmax(z_k alpha_k (1 + kappa_k(pos_k, j))), alpha_k = scale * decay^k.
+# Predicted geometry: one circle plane per ring factor, mutually orthogonal, plus K-1 presence
+# dimensions (rank 3K-1); feature_cube is the one-node case, union/product stacking the p -> 0/1 limits.
+# The table has full support, so no lapse floor applies: scale * (1 + gamma) is the logit range, and
+# scale 2, gamma 1 keeps every token's probability above 0.004 so the whole table is scored by the loss.
+setting: graph-cooccurrence
+structure: factors
+structure_kwargs:
+  factors:
+    - {structure: ring, n: 8, cooccurrence: gaussian, gamma: 1.0}
+    - {structure: ring, n: 8, cooccurrence: gaussian, gamma: 1.0}
+    - {structure: ring, n: 8, cooccurrence: gaussian, gamma: 1.0}
+  N: 1024
+  p: 0.3
+  decay: 0.8
+  scale: 2.0
+  seed: 0
