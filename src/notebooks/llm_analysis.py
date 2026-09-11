@@ -21,11 +21,11 @@ def _(mo):
     its appearances in the last 50 steps and over sequences, and is compared to the balanced
     factor $E = U\sqrt{S}$ of a row-centred log-conditional.
 
-    **Walks.** `word, word, ...`: ring, grid and 3-cube under the one-step adjacency kernel, and
-    the tree's leaves under the tree's own diffusion kernel (the graph setting's, $\gamma = 0.8$).
-    The prediction is the **diffusion** family $\log p_\gamma(x' \mid x)$,
-    $p_\gamma \propto (I - \gamma P)^{-1}$ (for the tree, its own kernel at $\gamma$), with $\gamma$
-    fitted, against the kernel the data was sampled from.
+    **Walks.** `word, word, ...`: ring and grid under the one-step adjacency kernel, the 3-cube
+    under the hypercube setting's heat kernel $\exp(\gamma A)$, and the tree's leaves under the
+    tree's own diffusion kernel (both $\gamma = 0.8$). The prediction is the kernel's family with
+    $\gamma$ fitted (the diffusion family $p_\gamma \propto (I - \gamma P)^{-1}$ for the adjacency
+    walks), against the kernel the data was sampled from.
 
     **Relations.** Triples `a b : c ,` read at the colon: `entailment` (15 tree nodes, $c$ uniform
     over the common ancestors of $a, b$) and `set_difference` (8 feature sets; six outcome words
@@ -83,7 +83,8 @@ def _(Path, graph_overrides, resolve_config):
     WINDOW, L, B = 50, 1024, 256               # steps averaged, walk length, sequences
     WORLDS = {"ring": {"spec": {"structure": "ring", "n": 24, "cooccurrence": "adjacency"}, "backtrack": True},
               "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": True},
-              "hypercube": {"spec": {"structure": "hypercube", "n": 3, "cooccurrence": "adjacency"}, "backtrack": True},
+              "hypercube": {"spec": {"structure": "hypercube", "n": 3, "gamma": 0.8, "cooccurrence": "heat"}, "backtrack": True},
+              "hypercube, sharper": {"spec": {"structure": "hypercube", "n": 3, "gamma": 0.3, "cooccurrence": "heat"}, "backtrack": True},
               "tree": {"spec": {"structure": "tree", "n": 3, "k": 2}, "backtrack": True}}   # leaves under the tree's own kernel
 
     def config(world):
@@ -158,7 +159,7 @@ def _(mo):
     mo.md(r"""
     ## Walks: fit
 
-    CKA between the LLM node means and the predicted code per layer, for the diffusion family at
+    CKA between the LLM node means and the predicted code per layer, for the kernel family at
     each $\gamma$ and for the kernel the walk was sampled from.
     """)
     return
@@ -169,10 +170,13 @@ def _(WORLDS, cka, graph_conditional, np, predicted_geometry, runs):
     GAMMAS = np.array([0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99])
 
     def logcond(world, gamma=None):
-        """The world's log-conditional: at ``gamma``, the diffusion family (on the graph, or the
-        structure's own kernel such as the tree's); ``None`` is the kernel the data was sampled from."""
+        """The world's log-conditional: ``None`` is the kernel the data was sampled from; at
+        ``gamma``, that kernel's family with its decay swept (diffusion for an adjacency walk)."""
         spec = WORLDS[world]["spec"]
-        return graph_conditional(spec if gamma is None else {**spec, "gamma": gamma, "cooccurrence": "diffusion"})
+        if gamma is None:
+            return graph_conditional(spec)
+        family = spec.get("cooccurrence", "diffusion")
+        return graph_conditional({**spec, "gamma": gamma, "cooccurrence": "diffusion" if family == "adjacency" else family})
 
     def predicted(world, gamma=None):
         """Predicted code: the balanced factor of ``logcond(world, gamma)``."""
@@ -208,7 +212,7 @@ def _(mo):
     ## Walks: figures
 
     Curves: next-word NLL by step against the walk's Bayes floor (shaded: the averaged window);
-    CKA by layer for the diffusion family at its best $\gamma$ and for the data's kernel; CKA
+    CKA by layer for the kernel family at its best $\gamma$ and for the data's kernel; CKA
     against $\gamma$ at the best layer. Panels: the predicted code beside Llama at that layer, top two PCs
     with the LLM's rotated (Procrustes) onto the prediction's PC frame, Grams below.
     """)
@@ -227,9 +231,9 @@ def _(GAMMAS, L, WINDOW, best_layer, config, logcond, np, plot_utils, plt, row_e
         a.axvspan(L - 1 - WINDOW, L - 1, color="gray", alpha=0.15)
         a.set_xlabel("step"); a.set_ylabel("next-word NLL (nats)"); a.set_ylim(0, None); a.legend()
         a.set_title(f"{world}: learning the walk in context")
-        b.plot(best, label=r"diffusion family, best $\gamma$ per layer"); b.plot(sc["data"], "--", label="the data's kernel")
+        b.plot(best, label=r"kernel family, best $\gamma$ per layer"); b.plot(sc["data"], "--", label="the data's kernel")
         b.set_xlabel("layer"); b.set_ylabel("CKA to prediction"); b.set_ylim(0, 1); b.legend()
-        c.semilogx(GAMMAS, sc["family"][layer], marker="o", label=f"diffusion family, layer {layer}")
+        c.semilogx(GAMMAS, sc["family"][layer], marker="o", label=f"kernel family, layer {layer}")
         c.axhline(sc["data"][layer], ls="--", color="C1", label="the data's kernel")
         c.set_xlabel(r"$\gamma$"); c.set_ylabel("CKA to prediction"); c.set_ylim(0, 1); c.legend()
         fig.tight_layout()
@@ -299,6 +303,18 @@ def _(curves):
 @app.cell
 def _(panels):
     panels("hypercube")
+    return
+
+
+@app.cell
+def _(curves):
+    curves("hypercube, sharper")
+    return
+
+
+@app.cell
+def _(panels):
+    panels("hypercube, sharper")
     return
 
 
