@@ -74,6 +74,17 @@ def test_hypercube_supports_analogies():
     assert int(np.argmin(((E - pred) ** 2).sum(1))) == queen       # == queen
 
 
+def test_product_factor_weights_scale_the_heat_temperature_per_factor():
+    # heat on a Cartesian product factorizes, exp(g(w1 A1 (+) w2 A2)) = exp(g w1 A1) (x) exp(g w2 A2), so a
+    # factor's weight is its own temperature: the ring stays soft while the 3-chain keeps its bands apart
+    from src.code.data import chain, heat_cooccur, ring
+    spec = {"structure": "product", "factors": [{"structure": "ring", "n": 12, "weight": 1.0},
+                                                {"structure": "chain", "n": 3, "weight": 0.25}]}
+    L = build_conditional(spec, gamma=3.0, cooccurrence="heat")
+    K = np.kron(heat_cooccur(ring(12), 3.0), heat_cooccur(chain(3), 0.75))
+    assert np.allclose(L, np.log(K / K.sum(1, keepdims=True)))
+
+
 def test_ring_product_ring_is_rank_four_torus():
     _, S = _ES({"structure": "product",
                 "factors": [{"structure": "ring", "n": 12}, {"structure": "ring", "n": 8}]})

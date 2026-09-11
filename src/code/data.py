@@ -495,12 +495,13 @@ def complete(n):
 
 
 def cartesian_product(A, B):
-    """Product graph on nodes (i, j): move along one factor at a time (shared support)."""
+    """Product graph on nodes (i, j): move along one factor at a time (shared support). Edge weights
+    carry over from the factors."""
     nA, nB = len(A), len(B); N = nA * nB; G = np.zeros((N, N)); ix = lambda i, j: i * nB + j
     for i in range(nA):
         for j in range(nB):
-            for k in np.where(A[i] > 0)[0]: G[ix(i, j), ix(k, j)] = 1.0
-            for l in np.where(B[j] > 0)[0]: G[ix(i, j), ix(i, l)] = 1.0
+            for k in np.where(A[i] > 0)[0]: G[ix(i, j), ix(k, j)] = A[i, k]
+            for l in np.where(B[j] > 0)[0]: G[ix(i, j), ix(i, l)] = B[j, l]
     return G
 
 
@@ -761,7 +762,9 @@ _STRUCTURES = {
 def _build_adjacency(name, params):
     params = {k: v for k, v in params.items() if k != "view"}   # 'view' is presentation-only (plotting)
     if name in ("product", "stack"):
-        As = [_build_adjacency(f["structure"], {k: v for k, v in f.items() if k != "structure"})
+        # a factor's ``weight`` scales its adjacency: under the heat kernel that is the factor's own
+        # temperature, exp(g (w1 A1 (+) w2 A2)) = exp(g w1 A1) (x) exp(g w2 A2)
+        As = [f.get("weight", 1.0) * _build_adjacency(f["structure"], {k: v for k, v in f.items() if k not in ("structure", "weight")})
               for f in params["factors"]]
         return reduce(cartesian_product, As) if name == "product" else block_diagonal(*As)
     if name not in _STRUCTURES:
