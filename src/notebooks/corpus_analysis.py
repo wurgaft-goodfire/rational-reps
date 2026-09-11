@@ -40,7 +40,7 @@ def _(mo):
     from src.code.corpus import window_counts, cooccurrence_table, hub_texts
     from src.code.data import graph_conditional
     from src.code.geometry import predicted_geometry, log_conditional
-    from src.code.analysis_utils import cka, align_representations
+    from src.code.analysis_utils import cka, rsa, align_representations
     from src.code.llm import word_means
     from src.code import plot_utils
 
@@ -61,6 +61,7 @@ def _(mo):
         plot_utils,
         plt,
         predicted_geometry,
+        rsa,
         torch,
         window_counts,
         word_means,
@@ -70,7 +71,7 @@ def _(mo):
 @app.cell
 def _():
     CORPUS = ("HuggingFaceFW/fineweb", "sample/10BT/")                # the plain FineWeb 10B-token sample, all shards
-    WINDOW, K = 16, 2000                                               # co-occurrence window, context words
+    WINDOW, K = 16, 25000                                              # co-occurrence window, context words
     MODEL = "meta-llama/Llama-3.1-8B"
     DOMAINS = {"months": {"words": ["January", "February", "March", "April", "May", "June", "July", "August",
                                     "September", "October", "November", "December"],
@@ -85,18 +86,18 @@ def _():
 @app.cell
 def _(CACHE, CORPUS, Counter, DOMAINS, K, WINDOW, cooccurrence_table, hub_texts, json, window_counts):
     # the corpus pass, cached raw: per-concept context counters and the word frequencies of the sample
-    _path = CACHE / "corpus" / f"{'_'.join(CORPUS).replace('/', '_')}w{WINDOW}.json"
+    _path = CACHE / "corpus" / f"{'_'.join(CORPUS).replace('/', '_')}w{WINDOW}_v2.json"
     _concepts = [w for d in DOMAINS.values() for w in d["words"]]
     if not _path.exists():
         _counts, _freq = window_counts(hub_texts(*CORPUS), _concepts, window=WINDOW, workers=40, chunk=20000)
         _path.parent.mkdir(parents=True, exist_ok=True)
         _path.write_text(json.dumps({"counts": {c: dict(v.most_common(50000)) for c, v in _counts.items()},
-                                     "freq": dict(_freq.most_common(100000))}))
+                                     "freq": dict(_freq.most_common(100000)), "total": sum(_freq.values())}))
     _raw = json.loads(_path.read_text())
-    counts, freq = {c: Counter(v) for c, v in _raw["counts"].items()}, Counter(_raw["freq"])
+    counts, freq, total = {c: Counter(v) for c, v in _raw["counts"].items()}, Counter(_raw["freq"]), _raw["total"]
     tables = {name: cooccurrence_table(counts, freq, d["words"], K) for name, d in DOMAINS.items()}   # (C, vocab)
     print({c: sum(v.values()) // (2 * WINDOW) for c, v in counts.items()})                          # occurrences per concept
-    return counts, freq, tables
+    return counts, freq, tables, total
 
 
 @app.cell(hide_code=True)
@@ -104,17 +105,29 @@ def _(mo):
     mo.md(r"""
     ## Predicted codes
 
-    Rows normalised to $p(w \mid \text{concept})$, floored log, row-centred, balanced factor. Below:
-    the three context words each concept is most over-represented with (centred log-odds), a check
-    that the counts carry meaning and not just frequency.
+    Two normalisations of the same counts, each row-centred and factored: the floored
+    $\log p(w \mid \text{concept})$ (the repo's oracle) and Karkada et al.'s bounded PMI
+    $M^\star_{ij} = (P_{ij} - P_i P_j) / \tfrac12 (P_{ij} + P_i P_j)$, which caps the influence of
+    rare cells. Below: the three context words each concept is most over-represented with
+    (centred log-odds), a check that the counts carry meaning and not just frequency.
     """)
     return
 
 
 @app.cell
-def _(DOMAINS, log_conditional, np, predicted_geometry, tables):
+def _(DOMAINS, WINDOW, freq, log_conditional, np, predicted_geometry, tables, total):
+    def bounded_pmi(C, vocab, concept_counts):
+        """Karkada et al.'s normalised co-occurrence: ``(P_ij - P_i P_j) / (½ (P_ij + P_i P_j))`` with
+        ``P_ij`` the pair rate per window position, ``P_i`` the concept rate, ``P_j`` the word rate."""
+        N = total
+        P_ij = C / (2 * WINDOW * N)
+        P_i, P_j = concept_counts[:, None] / N, np.array([freq[w] for w in vocab])[None] / N
+        return (P_ij - P_i * P_j) / (0.5 * (P_ij + P_i * P_j))
+
     logcond = {name: log_conditional(C / C.sum(1, keepdims=True)) for name, (C, _) in tables.items()}
-    predicted = {name: predicted_geometry(L) for name, L in logcond.items()}
+    predicted = {name: {"log-conditional": predicted_geometry(L),
+                        "bounded PMI": predicted_geometry(bounded_pmi(*tables[name], tables[name][0].sum(1) / (2 * WINDOW)))}
+                 for name, L in logcond.items()}
     for _name, _L in logcond.items():
         _Lc = _L - _L.mean(0)                                                  # over-representation vs the other concepts
         for _w, _row in zip(DOMAINS[_name]["words"], _Lc):
@@ -147,21 +160,29 @@ def _(mo):
     mo.md(r"""
     ## Fit
 
-    CKA per layer between the LLM word representations and the corpus prediction. For months, both
-    are also scored against an ideal circle (the diffusion ring code on 12 nodes).
+    CKA and RSA per layer between the LLM word representations and each corpus prediction. The Grams
+    here are close to diagonal (each word has contexts of its own), which inflates CKA; RSA
+    (Spearman over the off-diagonal distances) scores the structure between words. For months, both
+    sides are also scored against an ideal circle (the diffusion ring code on 12 nodes).
     """)
     return
 
 
 @app.cell
-def _(cka, graph_conditional, means, np, predicted, predicted_geometry):
+def _(cka, graph_conditional, means, np, predicted, predicted_geometry, rsa):
     ideal = predicted_geometry(graph_conditional({"structure": "ring", "n": 12, "cooccurrence": "diffusion", "gamma": 0.8}))
-    scores = {name: np.array([cka(m, predicted[name]) for m in M]) for name, M in means.items()}
-    ring_scores = {"corpus": cka(predicted["months"], ideal), "llm": np.array([cka(m, ideal) for m in means["months"]])}
+    METRICS = {"CKA": cka, "RSA": rsa}
+    scores = {name: {metric: {norm: np.array([f(m, E) for m in M]) for norm, E in predicted[name].items()}
+                     for metric, f in METRICS.items()} for name, M in means.items()}
+    ring_scores = {metric: {"llm": np.array([f(m, ideal) for m in means["months"]]),
+                            **{norm: f(E, ideal) for norm, E in predicted["months"].items()}}
+                   for metric, f in METRICS.items()}
 
-    def best_layer(name):
-        return 1 + int(scores[name][1:].argmax())
-    return best_layer, ideal, ring_scores, scores
+    def best(name):
+        """The (normalisation, layer) with the highest RSA to the LLM, the embedding layer excluded."""
+        norm = max(predicted[name], key=lambda n: scores[name]["RSA"][n][1:].max())
+        return norm, 1 + int(scores[name]["RSA"][norm][1:].argmax())
+    return METRICS, best, ideal, ring_scores, scores
 
 
 @app.cell(hide_code=True)
@@ -169,38 +190,44 @@ def _(mo):
     mo.md(r"""
     ## Figures
 
-    Curves: CKA by layer to the corpus prediction (and, for months, to the ideal circle). Panels:
-    the corpus prediction beside Llama at its best layer, top two PCs with the LLM's rotated
-    (Procrustes) onto the prediction's frame, Grams below. Items are coloured in list order, so a
-    ring in calendar or hue order reads as a smooth colour cycle.
+    Curves: CKA and RSA by layer to each corpus prediction (and, for months, the LLM against the
+    ideal circle; dotted: each prediction against it). Panels: the better prediction (by RSA)
+    beside Llama at its best layer, top two PCs with the LLM's rotated (Procrustes) onto the
+    prediction's frame, Grams below. Items are coloured in list order, so a ring in calendar or hue
+    order reads as a smooth colour cycle.
     """)
     return
 
 
 @app.cell
-def _(DOMAINS, FIGURES, align_representations, best_layer, means, plot_utils, plt, predicted, ring_scores, scores):
+def _(DOMAINS, FIGURES, METRICS, align_representations, best, means, plot_utils, plt, predicted, ring_scores, scores):
     def curves(name):
-        layer = best_layer(name)
-        fig, ax = plt.subplots(figsize=(6, 4.2))
-        ax.plot(scores[name], label="corpus prediction")
-        if name == "months":
-            ax.plot(ring_scores["llm"], "--", label="ideal circle")
-            ax.axhline(ring_scores["corpus"], ls=":", color="k", label="corpus prediction vs ideal circle")
-        ax.set_xlabel("layer"); ax.set_ylabel("CKA"); ax.set_ylim(0, 1); ax.legend(); ax.set_title(name)
+        norm, layer = best(name)
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+        for ax, metric in zip(axes, METRICS):
+            for i, n in enumerate(predicted[name]):
+                ax.plot(scores[name][metric][n], color=f"C{i}", label=n)
+                if name == "months":
+                    ax.axhline(ring_scores[metric][n], ls=":", color=f"C{i}")
+            if name == "months":
+                ax.plot(ring_scores[metric]["llm"], "--", color="k", label="LLM vs ideal circle")
+            ax.set_xlabel("layer"); ax.set_ylabel(metric); ax.set_ylim(0, 1); ax.set_title(f"{name}: {metric}")
+        axes[0].legend()
         fig.tight_layout()
-        print(f"{name}: best layer {layer}, CKA to corpus prediction {scores[name][layer]:.3f}"
-              + (f"; corpus vs ideal circle {ring_scores['corpus']:.3f}, LLM vs ideal circle {ring_scores['llm'][layer]:.3f}"
-                 if name == "months" else ""))
+        print(f"{name}: best {norm} at layer {layer}: " + ", ".join(
+            f"{m} {scores[name][m][norm][layer]:.3f}" for m in METRICS)
+            + (" | vs ideal circle: " + ", ".join(f"{m} corpus {ring_scores[m][norm]:.2f} / LLM {ring_scores[m]['llm'][layer]:.2f}"
+                                                  for m in METRICS) if name == "months" else ""))
         return plot_utils.save_figure(fig, FIGURES / f"corpus_{name}_curves.png")
 
     def panels(name):
-        layer = best_layer(name)
-        label, E, M = f"Llama L{layer}", predicted[name], means[name][layer]
+        norm, layer = best(name)
+        label, E, M = f"Llama L{layer}", predicted[name][norm], means[name][layer]
         ref = plot_utils._pca(E, 2)                                            # the prediction's PC frame
         coords = {"predicted": ref, label: align_representations(M, ref, method="rotation", rank=2)[0]}
-        fig = plot_utils.plot_embedding_panels(E, {label: M}, DOMAINS[name]["spec"], scores={label: scores[name][layer]},
-                                               coords=coords)
-        fig.suptitle(f"{name}: corpus prediction", y=1.02)
+        fig = plot_utils.plot_embedding_panels(E, {label: M}, DOMAINS[name]["spec"],
+                                               scores={label: scores[name]["CKA"][norm][layer]}, coords=coords)
+        fig.suptitle(f"{name}: corpus prediction ({norm}), RSA {scores[name]['RSA'][norm][layer]:.2f}", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"corpus_{name}_panels.png")
     return curves, panels
 

@@ -11,7 +11,8 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-_WORD = re.compile(r"[A-Za-z]+")
+_TOKEN = re.compile(r"[A-Za-z]+|[.!?]")                      # words, and the marks that end a sentence
+_STOPS = {".", "!", "?"}
 
 
 def _count_chunk(args):
@@ -19,20 +20,22 @@ def _count_chunk(args):
     texts, lookup, window = args
     counts, freq = {c: Counter() for c in set(lookup.values())}, Counter()
     for text in texts:
-        tokens = _WORD.findall(text)
+        tokens = _TOKEN.findall(text)
         lower = [t.lower() for t in tokens]
-        freq.update(lower)
+        freq.update(w for w in lower if w not in _STOPS)
         for i, t in enumerate(tokens):
             c = lookup.get(t)
-            if c is not None:
-                counts[c].update(lower[max(0, i - window):i]); counts[c].update(lower[i + 1:i + window + 1])
+            if c is None or (c[0].isupper() and (i == 0 or tokens[i - 1] in _STOPS)):
+                continue                                      # sentence-initial "May" is mostly the modal
+            around = lower[max(0, i - window):i] + lower[i + 1:i + window + 1]
+            counts[c].update(w for w in around if w not in _STOPS)
     return counts, freq
 
 
 def window_counts(texts, concepts, window=16, workers=1, chunk=2000):
     """``{concept: Counter}`` of the lowercase words within ``window`` tokens of each occurrence of the
     concept, and the lowercase word frequencies over all ``texts``. A capitalised concept ("May")
-    matches its own case only; a lowercase one matches either case."""
+    matches its own case only and not at a sentence start; a lowercase one matches either case."""
     lookup = {c: c for c in concepts}
     lookup.update({c.capitalize(): c for c in concepts if c.islower()})
     texts = iter(texts)

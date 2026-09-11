@@ -17,6 +17,13 @@ def test_window_counts_add_the_words_around_each_concept_occurrence():
     assert freq["may"] == 2 and freq["nothing"] == 1
 
 
+def test_window_counts_skip_sentence_initial_capitalised_concepts_and_stop_at_no_punctuation():
+    """A capitalised concept at a sentence start is mostly its other sense ("May" the modal), so it
+    is not an occurrence; punctuation is not a context word but the window runs across it."""
+    counts, _ = window_counts(["Rain. May showers came in May. Cold!"], ["May"], window=2)
+    assert counts["May"] == {"came": 1, "in": 1, "cold": 1}
+
+
 def test_parquet_texts_streams_the_text_column_across_files(tmp_path):
     import pyarrow as pa, pyarrow.parquet as pq
     for i, rows in enumerate((["a", "b", "c"], ["d"])):
