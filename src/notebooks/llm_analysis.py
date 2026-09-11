@@ -87,7 +87,10 @@ def _(mo):
 def _(Path, graph_overrides, resolve_config):
     WINDOW, L, B = 50, 1024, 256               # steps averaged, walk length, sequences
     WORLDS = {"ring": {"spec": {"structure": "ring", "n": 24, "cooccurrence": "adjacency"}, "backtrack": True},
-              "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": True}}
+              "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": True},
+              "tree": {"spec": {"structure": "tree_graph", "n": 3, "k": 2, "cooccurrence": "adjacency"}, "backtrack": True,
+                       "draw": {"structure": "tree", "n": 3, "k": 2}},          # the tree's ultrametric view
+              "hypercube": {"spec": {"structure": "hypercube", "n": 3, "cooccurrence": "adjacency"}, "backtrack": True}}
 
     def config(world):
         w = WORLDS[world]
@@ -211,11 +214,21 @@ def _(WORLDS, adjacency_conditional, cka, np, predicted_geometry, runs, structur
                       "adjacency": np.array([cka(_m, predicted(_w)) for _m in _M])}
 
     def best_layer(world):
-        """The layer (embedding excluded) and gamma index where the diffusion prediction fits best."""
-        best = scores[world]["diffusion"].max(1)
-        layer = 1 + int(best[1:].argmax())
-        return layer, int(scores[world]["diffusion"][layer].argmax())
-    return GAMMAS, best_layer, predicted, scores
+        """The layer (embedding excluded), kernel and gamma index where a prediction fits best;
+        the gamma index is None when the adjacency prediction wins."""
+        d, a = scores[world]["diffusion"].max(1), scores[world]["adjacency"]
+        if a[1:].max() > d[1:].max():
+            return 1 + int(a[1:].argmax()), "adjacency", None
+        layer = 1 + int(d[1:].argmax())
+        return layer, "diffusion", int(scores[world]["diffusion"][layer].argmax())
+
+    def best_prediction(world):
+        """``(name, E, CKA)`` of the best-fitting prediction at its best layer."""
+        layer, kernel, g = best_layer(world)
+        if kernel == "adjacency":
+            return "adjacency", predicted(world), scores[world]["adjacency"][layer]
+        return rf"diffusion, $\gamma$={GAMMAS[g]}", predicted(world, GAMMAS[g]), scores[world]["diffusion"][layer, g]
+    return GAMMAS, best_layer, best_prediction, predicted, scores
 
 
 @app.cell(hide_code=True)
@@ -232,10 +245,10 @@ def _(mo):
 
 
 @app.cell
-def _(GAMMAS, L, WINDOW, WORLDS, bayes_floor, best_layer, config, plot_utils, plt, runs, scores, structure_adjacency):
+def _(GAMMAS, L, WINDOW, WORLDS, bayes_floor, best_layer, best_prediction, config, plot_utils, plt, runs, scores, structure_adjacency):
     def curves(world):
         run, sc = runs[world], scores[world]
-        layer, g = best_layer(world)
+        layer, kernel, g = best_layer(world)
         best = sc["diffusion"].max(1)
         floor = bayes_floor(structure_adjacency(WORLDS[world]["spec"]), run["walks"], WORLDS[world]["backtrack"])
         fig, (a, b, c) = plt.subplots(1, 3, figsize=(16, 4.2), width_ratios=[2, 1, 1])
@@ -249,23 +262,24 @@ def _(GAMMAS, L, WINDOW, WORLDS, bayes_floor, best_layer, config, plot_utils, pl
         c.axhline(sc["adjacency"][layer], ls="--", color="C1", label="adjacency")
         c.set_xlabel(r"$\gamma$"); c.set_ylabel("CKA to prediction"); c.set_ylim(0, 1); c.legend()
         fig.tight_layout()
-        print(f"{world}: layer {layer}, CKA diffusion {best[layer]:.3f} (γ={GAMMAS[g]}) vs adjacency "
-              f"{sc['adjacency'][layer]:.3f}; final NLL {run['nll'][-WINDOW:].mean():.3f} vs floor {floor[-WINDOW:].mean():.3f}")
+        print(f"{world}: best {kernel} at layer {layer}, CKA diffusion {best[layer]:.3f} (γ={GAMMAS[sc['diffusion'][layer].argmax()]}) "
+              f"vs adjacency {sc['adjacency'][layer]:.3f}; final NLL {run['nll'][-WINDOW:].mean():.3f} vs floor {floor[-WINDOW:].mean():.3f}")
         return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext_curves"))
     return (curves,)
 
 
 @app.cell
-def _(GAMMAS, WORLDS, align_representations, best_layer, config, plot_utils, predicted, runs, scores):
+def _(WORLDS, align_representations, best_layer, best_prediction, config, plot_utils, runs):
     def panels(world):
-        run, sc = runs[world], scores[world]
-        layer, g = best_layer(world)
-        name, E, M = f"Llama L{layer}", predicted(world, GAMMAS[g]), run["means"][layer]
-        ref = plot_utils._pca(E, 2)                                             # the prediction's PC frame
-        coords = {"predicted": ref, name: align_representations(M, ref, method="rotation", rank=2)[0]}
-        fig = plot_utils.plot_embedding_panels(E, {name: M}, WORLDS[world]["spec"],
-                                               scores={name: sc["diffusion"][layer, g]}, coords=coords)
-        fig.suptitle(rf"{world}: diffusion prediction, $\gamma$={GAMMAS[g]}", y=1.02)
+        layer, _, _ = best_layer(world)
+        label, E, score = best_prediction(world)
+        name, M = f"Llama L{layer}", runs[world]["means"][layer]
+        draw = WORLDS[world].get("draw", WORLDS[world]["spec"])
+        k = 3 if plot_utils._view(draw) == "3d" else 2                          # the structure's own view
+        ref = plot_utils._pca(E, k)                                             # the prediction's PC frame
+        coords = {"predicted": ref, name: align_representations(M, ref, method="rotation", rank=k)[0]}
+        fig = plot_utils.plot_embedding_panels(E, {name: M}, draw, scores={name: score}, coords=coords)
+        fig.suptitle(f"{world}: {label} prediction", y=1.02)
         return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext_panels"))
     return (panels,)
 
@@ -291,6 +305,30 @@ def _(curves):
 @app.cell
 def _(panels):
     panels("grid")
+    return
+
+
+@app.cell
+def _(curves):
+    curves("tree")
+    return
+
+
+@app.cell
+def _(panels):
+    panels("tree")
+    return
+
+
+@app.cell
+def _(curves):
+    curves("hypercube")
+    return
+
+
+@app.cell
+def _(panels):
+    panels("hypercube")
     return
 
 
