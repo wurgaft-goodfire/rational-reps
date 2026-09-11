@@ -3,7 +3,7 @@ for exact n-gram counts."""
 import numpy as np
 import pytest
 
-from src.code.corpus import at_least, cooccurrence_table, parquet_texts, query, window_counts
+from src.code.corpus import at_least, cooccurrence_table, joined, parquet_texts, query, window_counts
 
 
 def test_window_counts_lowercase_the_text_and_count_every_token_in_the_window():
@@ -25,6 +25,10 @@ def test_cooccurrence_table_uses_the_most_frequent_tokens_concepts_included():
 
 def test_at_least_filters_short_texts_by_word_count():
     assert list(at_least(["one two three", "four five", "six seven eight nine"], 3)) == ["one two three", "six seven eight nine"]
+
+
+def test_joined_concatenates_consecutive_lines_into_passages():
+    assert list(joined(["a", "b", "c", "d", "e"], 2)) == ["a b", "c d", "e"]
 
 
 def test_parquet_texts_streams_the_text_column_across_files(tmp_path):

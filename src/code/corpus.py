@@ -64,6 +64,13 @@ def at_least(texts, min_words):
     return (t for t in texts if len(t.split()) >= min_words)
 
 
+def joined(texts, n):
+    """Consecutive texts joined ``n`` at a time into one passage (for corpora stored one line per row,
+    so that windows run across lines)."""
+    texts = iter(texts)
+    return iter(lambda: " ".join(itertools.islice(texts, n)), "")
+
+
 def hub_texts(repo, prefix, n_docs=None):
     """The texts of every parquet shard under ``prefix`` in a Hugging Face dataset repo (e.g.
     ``"wikimedia/wikipedia"``, ``"20231101.en/"``), each downloaded into the HF cache when reached."""
