@@ -5,7 +5,8 @@ import torch
 from transformers import GPTNeoXConfig
 
 from src.code.data import ring
-from src.code.llm import bayes_floor, node_means, node_tokens, pair_means, relation_floor, triple_stream
+from src.code.llm import (bayes_floor, entailment_instruction, node_means, node_tokens, pair_means,
+                          relation_floor, set_difference_instruction, triple_stream)
 from src.code.models import TransformerModel
 
 
@@ -109,6 +110,22 @@ def test_relation_floor_is_the_entropy_of_each_pairs_row():
     T = np.array([[[1.0, 0.0], [0.5, 0.5]], [[0.5, 0.5], [0.0, 1.0]]])   # pairs (0,0),(1,1) certain
     pairs = torch.tensor([[0, 1], [3, 2]])                                  # keys a*2+b
     assert np.allclose(relation_floor(T, pairs), [[0.0, np.log(2)], [0.0, np.log(2)]])
+
+
+def test_entailment_instruction_states_every_parent_once():
+    """One sentence per parent naming its children, then the rule; the root is nobody's child."""
+    text = entailment_instruction(["animal", "bird", "fish", "eagle", "sparrow"], [-1, 0, 0, 1, 1])
+    assert text.startswith("animal includes bird and fish. bird includes eagle and sparrow. ")
+    assert "chosen at random" in text and "includes animal" not in text
+
+
+def test_set_difference_instruction_reads_features_off_the_bits():
+    """Item i has feature j when bit j of i is set; the empty set is said in words; each feature's
+    yes-word and no-word are paired with it."""
+    text = set_difference_instruction(["a0", "a1", "a2", "a3"], ["red", "big"], ["y0", "y1", "n0", "n1"], (1.0, 0.5))
+    assert "a0 has nothing." in text and "a1 has red." in text and "a3 has red and big." in text
+    assert "y0 if the first has red and the second lacks it, else n0" in text
+    assert "y1 if the first has big and the second lacks it, else n1" in text
 
 
 @pytest.mark.slow

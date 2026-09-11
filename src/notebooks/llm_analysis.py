@@ -16,10 +16,10 @@ def _(mo):
     mo.md(r"""
     # A pretrained LLM reads a task from examples in context
 
-    Items are named by unrelated single-token nouns and Llama-3.1-8B reads a long stream of
-    examples with no instruction. Each key's representation is the residual at the separator
-    after it, averaged over its appearances in the last 50 steps and over sequences, and is
-    compared to the balanced factor $E = U\sqrt{S}$ of a row-centred log-conditional.
+    Items are named by unrelated single-token nouns and a Llama-3.1 model reads a long stream of
+    examples. Each key's representation is the residual at the separator after it, averaged over
+    its appearances in the last 50 steps and over sequences, and is compared to the balanced
+    factor $E = U\sqrt{S}$ of a row-centred log-conditional.
 
     **Walks.** `word, word, ...` on a ring and a grid under the one-step adjacency kernel; the
     prediction is the **diffusion** log-conditional $\log p_\gamma(x' \mid x)$,
@@ -28,8 +28,9 @@ def _(mo):
     **Relations.** Triples `a b : c ,` read at the colon: `entailment` (15 tree nodes, $c$ uniform
     over the common ancestors of $a, b$) and `set_difference` (8 feature sets; six outcome words
     for "feature $f$ is in $a$ but not $b$: yes / no", asked with salience $1 : \tfrac12 : \tfrac14$).
-    The prediction is the graded kernel's $(a,b) \times c$ log-conditional; the alternative drops
-    the grading (lowest common ancestor only; equal salience).
+    Three variants: 8B from examples alone, 8B with the structure and the rule stated first, and
+    70B from examples alone. The prediction is the graded kernel's $(a,b) \times c$
+    log-conditional; the alternative drops the grading (lowest common ancestor only; equal salience).
     """)
     return
 
@@ -49,7 +50,8 @@ def _(mo):
                                answer_classes, apply_lapse)
     from src.code.geometry import predicted_geometry, log_conditional, class_means
     from src.code.analysis_utils import cka, align_representations
-    from src.code.llm import node_tokens, node_means, bayes_floor, pair_means, triple_stream, relation_floor
+    from src.code.llm import (node_tokens, node_means, bayes_floor, pair_means, triple_stream, relation_floor,
+                              entailment_instruction, set_difference_instruction)
     from src.code import plot_utils
     return (
         Path,
@@ -60,6 +62,7 @@ def _(mo):
         bayes_floor,
         cka,
         class_means,
+        entailment_instruction,
         graph_overrides,
         init_dataset,
         log_conditional,
@@ -73,6 +76,7 @@ def _(mo):
         relation_floor,
         relation_tensor,
         resolve_config,
+        set_difference_instruction,
         structure_adjacency,
         torch,
         triple_stream,
@@ -98,46 +102,83 @@ def _(Path, graph_overrides, resolve_config):
     K = 400                                    # triples per sequence (five tokens each)
     RELATIONS = {"entailment": {"alt": {"graded": False}},
                  "set_difference": {"alt": {"salience": [1.0, 1.0, 1.0]}}}
+    VARIANTS = {"8B, examples": {"model": "llm", "instruction": False},
+                "8B, instructed": {"model": "llm", "instruction": True},
+                "70B, examples": {"model": "llm_70b", "instruction": False}}
+    BATCH = {"llm": 16, "llm_70b": 4}          # sequences per forward pass
 
-    def rel_config(relation):
-        return resolve_config(["runner=rel_transformer", f"relation={relation}", "model=llm", "name=llm",
-                               "++lapse=0.0", f"training_kwargs.batch_size={B * K}"])
+    def rel_config(relation, variant):
+        v = VARIANTS[variant]
+        return resolve_config(["runner=rel_transformer", f"relation={relation}", f"model={v['model']}", "name=llm",
+                               "++lapse=0.0", f"training_kwargs.batch_size={B * K}"]
+                              + (["++instruction=true"] if v["instruction"] else []))
 
-    def rel_cache(relation):
-        return Path(rel_config(relation).run_dir) / "pair_means.npz"
-    return B, K, L, RELATIONS, WINDOW, WORLDS, cache_path, config, rel_cache, rel_config
+    def rel_cache(relation, variant):
+        return Path(rel_config(relation, variant).run_dir) / "pair_means.npz"
+    return B, BATCH, K, L, RELATIONS, VARIANTS, WINDOW, WORLDS, cache_path, config, rel_cache, rel_config
 
 
 @app.cell
-def _(B, K, RELATIONS, WINDOW, WORLDS, cache_path, config, init_dataset, node_means, node_tokens, np, pair_means, rel_cache, rel_config, torch, triple_stream):
-    # the expensive step, cached raw: the streams, the item words and the per-layer means per key
-    _walks_todo = [w for w in WORLDS if not cache_path(w).exists()]
-    _rel_todo = [r for r in RELATIONS if not rel_cache(r).exists()]
-    if _walks_todo or _rel_todo:
+def _(answer_classes, entailment_instruction, np, relation_tensor, set_difference_instruction):
+    def rel_words(relation, dataset):
+        """How many nouns a relation needs beyond its items: a separate outcome alphabet, and
+        feature names for the instruction."""
+        n_features = int(np.log2(dataset.n_items)) if relation == "set_difference" else 0
+        return dataset.n_items + dataset.n_outcomes * dataset.bipartite + n_features
+
+    def rel_instruction(relation, words, dataset):
+        """The instruction text for a relation, from its item / outcome / feature words."""
+        n, m = dataset.n_items, dataset.n_outcomes
+        if relation == "entailment":
+            return entailment_instruction(words, answer_classes("entailment")[1]["parents"])
+        T = relation_tensor({"relation": relation}); nbit = m // 2
+        salience = T[0, 0, :nbit] + T[0, 0, nbit:]                     # how often each feature is asked
+        return set_difference_instruction(words[:n], words[n + m:], words[n:n + m], salience)
+    return rel_instruction, rel_words
+
+
+@app.cell
+def _(B, BATCH, K, RELATIONS, VARIANTS, WINDOW, WORLDS, cache_path, config, init_dataset, node_means, node_tokens, np, pair_means, rel_cache, rel_config, rel_instruction, rel_words, torch, triple_stream):
+    # the expensive step, cached raw: the streams, the words and the per-layer means per key; one
+    # model load per model that still has work
+    _jobs = {}
+    for _w in WORLDS:
+        if not cache_path(_w).exists():
+            _jobs.setdefault("llm", []).append((config(_w), "walk", _w, None))
+    for _r in RELATIONS:
+        for _v in VARIANTS:
+            if not rel_cache(_r, _v).exists():
+                _jobs.setdefault(VARIANTS[_v]["model"], []).append((rel_config(_r, _v), "relation", _r, _v))
+    for _model, _todo in _jobs.items():
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        _path = config("ring").model_kwargs.model_path
+        _path = _todo[0][0].model_kwargs.model_path
         _tok = AutoTokenizer.from_pretrained(_path)
-        _llm = AutoModelForCausalLM.from_pretrained(_path, dtype=torch.bfloat16, device_map="cuda").eval()
+        _llm = AutoModelForCausalLM.from_pretrained(_path, dtype=torch.bfloat16, device_map="auto").eval()
         (_sep,) = _tok.encode(",", add_special_tokens=False); (_colon,) = _tok.encode(":", add_special_tokens=False)
-        for _w in _walks_todo:
-            _cfg = config(_w); _ds = init_dataset(_cfg)
-            _walks = _ds[0]["input_ids"][:, 1:]                                 # drop the start token
-            _ids, _words = node_tokens(_tok, _ds.n_items, seed=_cfg.random_seed)
-            _out = node_means(_llm, _walks, _ids, sep=_sep, window=WINDOW, prefix=(_tok.bos_token_id,))
-            cache_path(_w).parent.mkdir(parents=True, exist_ok=True)
-            np.savez(cache_path(_w), walks=_walks.cpu().numpy(), tokens=_ids, words=_words, **_out)
-        for _r in _rel_todo:
-            _cfg = rel_config(_r); _ds = init_dataset(_cfg)
+        for _cfg, _kind, _key, _variant in _todo:
+            _ds = init_dataset(_cfg)
+            if _kind == "walk":
+                _walks = _ds[0]["input_ids"][:, 1:]                             # drop the start token
+                _ids, _words = node_tokens(_tok, _ds.n_items, seed=_cfg.random_seed)
+                _out = node_means(_llm, _walks, _ids, sep=_sep, window=WINDOW, prefix=(_tok.bos_token_id,),
+                                  batch_size=BATCH[_model])
+                cache_path(_key).parent.mkdir(parents=True, exist_ok=True)
+                np.savez(cache_path(_key), walks=_walks.cpu().numpy(), tokens=_ids, words=_words, **_out)
+                continue
             _triples = triple_stream(_ds, B, K)
-            _ids, _words = node_tokens(_tok, _ds.n_items + _ds.n_outcomes * _ds.bipartite, seed=_cfg.random_seed)
-            _items, _outs = _ids[:_ds.n_items], (_ids[_ds.n_items:] if _ds.bipartite else _ids)
+            _ids, _words = node_tokens(_tok, rel_words(_key, _ds), seed=_cfg.random_seed)
+            _n, _m = _ds.n_items, _ds.n_outcomes
+            _items, _outs = _ids[:_n], (_ids[_n:_n + _m] if _ds.bipartite else _ids[:_n])
+            _text = rel_instruction(_key, _words, _ds) if VARIANTS[_variant]["instruction"] else ""
+            _prefix = (_tok.bos_token_id, *(_tok.encode(_text + "\n", add_special_tokens=False) if _text else ()))
             _out = pair_means(_llm, _triples, _items, _outs, colon=_colon, sep=_sep, window=WINDOW,
-                              prefix=(_tok.bos_token_id,))
-            rel_cache(_r).parent.mkdir(parents=True, exist_ok=True)
-            np.savez(rel_cache(_r), triples=_triples.numpy(), tokens=_ids, words=_words, **_out)
+                              prefix=_prefix, batch_size=BATCH[_model])
+            rel_cache(_key, _variant).parent.mkdir(parents=True, exist_ok=True)
+            np.savez(rel_cache(_key, _variant), triples=_triples.numpy(), tokens=_ids, words=_words,
+                     instruction=_text, **_out)
         del _llm; torch.cuda.empty_cache()
     runs = {w: dict(np.load(cache_path(w))) for w in WORLDS}
-    rel_runs = {r: dict(np.load(rel_cache(r))) for r in RELATIONS}
+    rel_runs = {(r, v): dict(np.load(rel_cache(r, v))) for r in RELATIONS for v in VARIANTS}
     return rel_runs, runs
 
 
@@ -266,21 +307,21 @@ def _(mo):
 
 
 @app.cell
-def _(RELATIONS, apply_lapse, cka, log_conditional, np, predicted_geometry, rel_runs, relation_tensor):
+def _(RELATIONS, VARIANTS, apply_lapse, cka, log_conditional, np, predicted_geometry, rel_runs, relation_tensor):
     def rel_predicted(relation, **kwargs):
         """Predicted pair code: the balanced factor of the lapsed (a,b) x c log-conditional."""
         T = relation_tensor({"relation": relation, **kwargs})
         return predicted_geometry(log_conditional(apply_lapse(T.reshape(-1, T.shape[-1]), 0.05)))
 
     rel_scores = {}
-    for _r, _spec in RELATIONS.items():
-        _M = rel_runs[_r]["means"]
-        assert np.isfinite(_M).all(), f"{_r}: a pair never appeared in the averaged window"
-        rel_scores[_r] = {"graded": np.array([cka(_m, rel_predicted(_r)) for _m in _M]),
-                          "alternative": np.array([cka(_m, rel_predicted(_r, **_spec["alt"])) for _m in _M])}
+    for (_r, _v), _run in rel_runs.items():
+        _M = _run["means"]
+        assert np.isfinite(_M).all(), f"{_r}, {_v}: a pair never appeared in the averaged window"
+        rel_scores[_r, _v] = {"graded": np.array([cka(_m, rel_predicted(_r)) for _m in _M]),
+                              "alternative": np.array([cka(_m, rel_predicted(_r, **RELATIONS[_r]["alt"])) for _m in _M])}
 
-    def rel_best_layer(relation):
-        return 1 + int(rel_scores[relation]["graded"][1:].argmax())
+    def rel_best_layer(relation, variant):
+        return 1 + int(rel_scores[relation, variant]["graded"][1:].argmax())
     return rel_best_layer, rel_predicted, rel_scores
 
 
@@ -289,61 +330,56 @@ def _(mo):
     mo.md(r"""
     ## Relations: figures
 
-    Curves: NLL of $c$ at the colon by triple, split by whether the pair already appeared in the
-    sequence, against the Bayes floor (the entropy of each pair's outcome row; shaded: the averaged
-    window); CKA by layer for both kernels. Panels: the graded prediction beside Llama at its best
-    layer, one point per answer class (class means), in the relation's own view.
+    Curves: NLL of $c$ at the colon by triple for each variant, against the Bayes floor (the entropy
+    of each pair's outcome row) and the pair-blind marginal of $c$ (shaded: the averaged window);
+    CKA by relative depth for both kernels (solid graded, dashed alternative). Panels: the graded
+    prediction beside each variant at its best layer, one point per answer class (class means), in
+    the relation's own view.
     """)
     return
 
 
 @app.cell
-def _(K, WINDOW, np, plot_utils, plt, rel_best_layer, rel_config, rel_runs, rel_scores, relation_floor, relation_tensor):
-    def rel_curves(relation, min_count=8):
-        run, sc = rel_runs[relation], rel_scores[relation]
-        T = relation_tensor({"relation": relation})
-        floor = relation_floor(T, run["triples"][..., 0] * T.shape[0] + run["triples"][..., 1])   # (B, K)
-        flat = T.reshape(-1, T.shape[-1])                                                       # pairs are uniform
-        blind = -(flat * np.log(flat.mean(0))).sum(-1).mean()                                   # predict the marginal of c
-        nll, seen = run["nll"], run["seen"]
-        layer = rel_best_layer(relation)
-
-        def by_step(values, mask):                     # mean over the sequences where mask holds, NaN when too few
-            count = mask.sum(0)
-            return np.where(count >= min_count, (values * mask).sum(0) / np.maximum(count, 1), np.nan)
-
+def _(K, RELATIONS, VARIANTS, WINDOW, np, plot_utils, plt, rel_best_layer, rel_config, rel_runs, rel_scores, relation_floor, relation_tensor):
+    def rel_curves(relation):
+        T = relation_tensor({"relation": relation}); flat = T.reshape(-1, T.shape[-1])
+        blind = -(flat * np.log(flat.mean(0))).sum(-1).mean()                   # predict the marginal of c
         fig, (a, b) = plt.subplots(1, 2, figsize=(12, 4.2), width_ratios=[2, 1])
-        a.plot(by_step(nll, ~seen), color="C0", label="first appearance of the pair")
-        a.plot(by_step(nll, seen), color="C2", label="repeated pair")
+        for _i, _v in enumerate(VARIANTS):
+            run, sc = rel_runs[relation, _v], rel_scores[relation, _v]
+            floor = relation_floor(T, run["triples"][..., 0] * T.shape[0] + run["triples"][..., 1])
+            layer, tail = rel_best_layer(relation, _v), slice(K - WINDOW, K)
+            a.plot(run["nll"].mean(0), color=f"C{_i}", label=_v)
+            depth = np.arange(len(sc["graded"])) / (len(sc["graded"]) - 1)
+            b.plot(depth, sc["graded"], color=f"C{_i}", label=_v); b.plot(depth, sc["alternative"], "--", color=f"C{_i}")
+            seen = run["seen"][:, tail]
+            print(f"{relation}, {_v}: layer {layer}, CKA graded {sc['graded'][layer]:.3f} vs alternative "
+                  f"{sc['alternative'][layer]:.3f}; final NLL {run['nll'][:, tail].mean():.3f} "
+                  f"(first {run['nll'][:, tail][~seen].mean():.3f}, repeated {run['nll'][:, tail][seen].mean():.3f}) "
+                  f"vs floor {floor[:, tail].mean():.3f}, pair-blind {blind:.3f}")
         a.plot(floor.mean(0), "--", color="k", label="Bayes floor")
         a.axhline(blind, ls=":", color="k", label="pair-blind: the marginal of c")
         a.axvspan(K - WINDOW, K - 1, color="gray", alpha=0.15)
         a.set_xlabel("triple"); a.set_ylabel("NLL of c (nats)"); a.set_ylim(0, None); a.legend()
-        a.set_title(f"{relation}: learning the relation from examples")
-        b.plot(sc["graded"], label="graded kernel"); b.plot(sc["alternative"], "--", label="ungraded alternative")
-        b.set_xlabel("layer"); b.set_ylabel("CKA to prediction"); b.set_ylim(0, 1); b.legend()
+        a.set_title(f"{relation}: learning the relation in context")
+        b.set_xlabel("layer / depth"); b.set_ylabel("CKA to prediction"); b.set_ylim(0, 1); b.legend()
         fig.tight_layout()
-        tail = slice(K - WINDOW, K)
-        print(f"{relation}: layer {layer}, CKA graded {sc['graded'][layer]:.3f} vs alternative "
-              f"{sc['alternative'][layer]:.3f}; final NLL {nll[:, tail].mean():.3f} "
-              f"(first {np.nanmean(by_step(nll, ~seen)[tail]):.3f}, repeated {np.nanmean(by_step(nll, seen)[tail]):.3f}) "
-              f"vs floor {floor[:, tail].mean():.3f}, pair-blind {blind:.3f}")
-        return plot_utils.save_figure(fig, plot_utils.figure_path(rel_config(relation), "llm_incontext_curves"))
+        return plot_utils.save_figure(fig, plot_utils.figure_path(rel_config(relation, "8B, examples"), "llm_incontext_curves"))
     return (rel_curves,)
 
 
 @app.cell
-def _(answer_classes, class_means, plot_utils, rel_best_layer, rel_config, rel_predicted, rel_runs, rel_scores):
+def _(VARIANTS, answer_classes, class_means, plot_utils, rel_best_layer, rel_config, rel_predicted, rel_runs, rel_scores):
     def rel_panels(relation):
-        layer = rel_best_layer(relation)
         classes, draw_spec = answer_classes(relation)
-        name = f"Llama L{layer}"
         show = lambda X: class_means(X, classes)[0]                         # one point per answer
-        fig = plot_utils.plot_embedding_panels(show(rel_predicted(relation)), {name: show(rel_runs[relation]["means"][layer])},
-                                               spec=draw_spec, cmap=plot_utils.FIG.item_cmap,
-                                               scores={name: rel_scores[relation]["graded"][layer]})
+        layers = {v: rel_best_layer(relation, v) for v in VARIANTS}
+        fig = plot_utils.plot_embedding_panels(
+            show(rel_predicted(relation)), {f"{v}, L{l}": show(rel_runs[relation, v]["means"][l]) for v, l in layers.items()},
+            spec=draw_spec, cmap=plot_utils.FIG.item_cmap,
+            scores={f"{v}, L{l}": rel_scores[relation, v]["graded"][l] for v, l in layers.items()})
         fig.suptitle(f"{relation}: graded prediction", y=1.02)
-        return plot_utils.save_figure(fig, plot_utils.figure_path(rel_config(relation), "llm_incontext_panels"))
+        return plot_utils.save_figure(fig, plot_utils.figure_path(rel_config(relation, "8B, examples"), "llm_incontext_panels"))
     return (rel_panels,)
 
 
