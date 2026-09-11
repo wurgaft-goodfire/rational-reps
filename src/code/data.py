@@ -798,6 +798,10 @@ def structure_positions(name, params, count=None):
         if count is not None:
             raise ValueError("complete has no coarser outcome grid")
         return np.eye(n)
+    if name == "grid":
+        if count is not None or "m" in params:
+            raise ValueError("grid coordinates are the square n x n lattice (m is the Gaussian's outcome count)")
+        return np.array([(i, j) for i in range(n) for j in range(n)], dtype=float)   # row-major, as `grid`
     raise ValueError(f"No canonical coordinates for structure {name!r}")
 
 

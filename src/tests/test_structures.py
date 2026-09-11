@@ -156,3 +156,15 @@ def test_structure_distance_is_hop_distance_on_the_adjacency():
     assert np.array_equal(D, np.minimum(hops, 12 - hops))
     D = structure_distance({"structure": "tree", "n": 2, "k": 2})   # all 7 nodes, hops through the tree
     assert D.shape == (7, 7) and D[2, 1] == 1 and D[2, 3] == 2 and D[2, 5] == 4
+
+
+def test_grid_gaussian_kernel_reads_the_integer_lattice():
+    """A grid's canonical coordinates are its lattice points, so graph neighbours sit at distance 1
+    and the Gaussian kernel's log-odds of a neighbour against the node itself are exactly -gamma/2."""
+    from src.code.data import structure_positions, structure_adjacency
+    pos = structure_positions("grid", {"n": 3})
+    A = structure_adjacency({"structure": "grid", "n": 3})
+    D = ((pos[:, None] - pos[None]) ** 2).sum(-1)
+    assert pos.shape == (9, 2) and np.array_equal(D == 1, A > 0)
+    L = build_conditional({"structure": "grid", "n": 3, "cooccurrence": "gaussian", "gamma": 2.0})
+    assert np.isclose(L[0, 0] - L[0, 1], 1.0)

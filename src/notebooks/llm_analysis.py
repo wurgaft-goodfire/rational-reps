@@ -22,10 +22,13 @@ def _(mo):
     factor $E = U\sqrt{S}$ of a row-centred log-conditional.
 
     **Walks.** `word, word, ...`: ring and grid under the one-step adjacency kernel, the 3-cube
-    under the hypercube setting's heat kernel $\exp(\gamma A)$, and the tree's leaves under the
-    tree's own diffusion kernel (both $\gamma = 0.8$). The prediction is the kernel's family with
-    $\gamma$ fitted (the diffusion family $p_\gamma \propto (I - \gamma P)^{-1}$ for the adjacency
-    walks), against the kernel the data was sampled from.
+    under the hypercube setting's heat kernel $\exp(\gamma A)$, the tree's leaves under the
+    tree's own diffusion kernel (both $\gamma = 0.8$), and ring and grid again under the Gaussian
+    kernel $\log p \propto -\tfrac{\gamma}{2}\lVert p_i - p_x \rVert^2$ in their canonical
+    coordinates (von Mises on the ring, rank 2; a quadratic on the lattice, rank 3). The prediction
+    is the kernel's family with $\gamma$ fitted (the diffusion family
+    $p_\gamma \propto (I - \gamma P)^{-1}$ for the adjacency walks), against the kernel the data
+    was sampled from.
 
     **Relations.** Triples `a b : c ,` read at the colon: `entailment` (15 tree nodes, $c$ uniform
     over the common ancestors of $a, b$) and `set_difference` (8 feature sets; six outcome words
@@ -85,7 +88,9 @@ def _(Path, graph_overrides, resolve_config):
               "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": True},
               "hypercube": {"spec": {"structure": "hypercube", "n": 3, "gamma": 0.8, "cooccurrence": "heat"}, "backtrack": True},
               "hypercube, sharper": {"spec": {"structure": "hypercube", "n": 3, "gamma": 0.3, "cooccurrence": "heat"}, "backtrack": True},
-              "tree": {"spec": {"structure": "tree", "n": 3, "k": 2}, "backtrack": True}}   # leaves under the tree's own kernel
+              "tree": {"spec": {"structure": "tree", "n": 3, "k": 2}, "backtrack": True},    # leaves under the tree's own kernel
+              "ring, gaussian": {"spec": {"structure": "ring", "n": 24, "gamma": 8, "cooccurrence": "gaussian"}, "backtrack": True},
+              "grid, gaussian": {"spec": {"structure": "grid", "n": 5, "gamma": 2, "cooccurrence": "gaussian"}, "backtrack": True}}
 
     def config(world):
         w = WORLDS[world]
@@ -291,6 +296,30 @@ def _(curves):
 @app.cell
 def _(panels):
     panels("tree")
+    return
+
+
+@app.cell
+def _(curves):
+    curves("ring, gaussian")
+    return
+
+
+@app.cell
+def _(panels):
+    panels("ring, gaussian")
+    return
+
+
+@app.cell
+def _(curves):
+    curves("grid, gaussian")
+    return
+
+
+@app.cell
+def _(panels):
+    panels("grid, gaussian")
     return
 
 
