@@ -67,7 +67,6 @@ def _(Path, graph_overrides, resolve_config):
     WINDOW, L, B = 50, 1024, 256               # steps averaged, walk length, walks
     WORLDS = {"ring": {"spec": {"structure": "ring", "n": 24, "cooccurrence": "adjacency"}, "backtrack": True},
               "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": False}}
-    VIEW = {"ring": "2d", "grid": "3d"}        # the predicted grid is a curved sheet
 
     def config(world):
         w = WORLDS[world]
@@ -78,7 +77,7 @@ def _(Path, graph_overrides, resolve_config):
 
     def cache_path(world):
         return Path(config(world).run_dir) / "node_means.npz"
-    return B, L, VIEW, WINDOW, WORLDS, cache_path, config
+    return B, L, WINDOW, WORLDS, cache_path, config
 
 
 @app.cell
@@ -180,27 +179,23 @@ def _(mo):
     mo.md(r"""
     ## Comparison
 
-    The predicted code beside Llama at the layer where the adjacency prediction peaks and at the
-    layer where the diffusion prediction peaks. Top: top PCs, the LLM's rotated (Procrustes) onto
-    the prediction's PC frame so the panels share one frame (2-D ring, 3-D grid). Bottom: Grams,
-    annotated with the CKA to the shown prediction.
+    The predicted code beside Llama at the layer where the diffusion prediction fits best. Top: top
+    two PCs, the LLM's rotated (Procrustes) onto the prediction's PC frame so the panels share one
+    frame. Bottom: Grams, annotated with the CKA to the shown prediction.
     """)
     return
 
 
 @app.cell
-def _(GAMMAS, VIEW, WORLDS, align_representations, best_layer, config, plot_utils, predicted, runs, scores):
+def _(GAMMAS, WORLDS, align_representations, best_layer, config, plot_utils, predicted, runs, scores):
     def panels(world):
         run, sc = runs[world], scores[world]
         layer, g = best_layer(world)
-        layers = {f"Llama L{int(sc['adjacency'].argmax())}": int(sc["adjacency"].argmax()), f"Llama L{layer}": layer}
-        E = predicted(world, GAMMAS[g])
-        k = 3 if VIEW[world] == "3d" else 2
-        ref = plot_utils._pca(E, k)                                             # the prediction's PC frame
-        coords = {"predicted": ref, **{nm: align_representations(run["means"][l], ref, method="rotation", rank=k)[0]
-                                       for nm, l in layers.items()}}
-        fig = plot_utils.plot_embedding_panels(E, {nm: run["means"][l] for nm, l in layers.items()}, WORLDS[world]["spec"],
-                                               scores={nm: sc["diffusion"][l, g] for nm, l in layers.items()}, coords=coords)
+        name, E, M = f"Llama L{layer}", predicted(world, GAMMAS[g]), run["means"][layer]
+        ref = plot_utils._pca(E, 2)                                             # the prediction's PC frame
+        coords = {"predicted": ref, name: align_representations(M, ref, method="rotation", rank=2)[0]}
+        fig = plot_utils.plot_embedding_panels(E, {name: M}, WORLDS[world]["spec"],
+                                               scores={name: sc["diffusion"][layer, g]}, coords=coords)
         fig.suptitle(rf"{world}: diffusion prediction, $\gamma$={GAMMAS[g]}", y=1.02)
         return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext_panels"))
     return (panels,)

@@ -167,21 +167,26 @@ def test_embedding_panels_accept_precomputed_scatter_coordinates():
     plt.close(fig)
 
 
-def test_embedding_panels_accept_three_dimensional_coordinates_for_a_lattice():
-    """A chosen 3-D frame (e.g. the prediction's PCs, shared across columns) draws 3-D panels, and
-    a grid keeps its edges so the sheet reads as a lattice."""
+def test_embedding_panels_keep_lattice_edges_in_a_chosen_frame():
+    """A chosen frame (e.g. the prediction's PCs, shared across columns) still draws a grid's edges
+    so it reads as a lattice, in 2-D (an edge collection) and in 3-D (3-D axes, one line per edge)."""
     import numpy as np
     from src.code.plot_utils import plot_embedding_panels
 
     rng = np.random.default_rng(0)
-    E, X, pos = rng.normal(size=(9, 5)), rng.normal(size=(9, 5)), rng.normal(size=(9, 3))
+    E, X = rng.normal(size=(9, 5)), rng.normal(size=(9, 5))
+    spec = {"structure": "grid", "n": 3}
 
-    fig = plot_embedding_panels(E, {"llm": X}, spec={"structure": "grid", "n": 3},
-                                coords={"predicted": pos, "llm": pos})
+    pos2 = rng.normal(size=(9, 2))
+    fig2 = plot_embedding_panels(E, {"llm": X}, spec=spec, coords={"predicted": pos2, "llm": pos2})
+    assert len(fig2.axes[2].collections[0].get_segments()) == 12            # a 3x3 grid has 12 edges
+    plt.close(fig2)
 
-    assert fig.axes[0].name == "3d" and fig.axes[2].name == "3d"
-    assert len(fig.axes[2].lines) == 12                                    # a 3x3 grid has 12 edges
-    plt.close(fig)
+    pos3 = rng.normal(size=(9, 3))
+    fig3 = plot_embedding_panels(E, {"llm": X}, spec=spec, coords={"predicted": pos3, "llm": pos3})
+    assert fig3.axes[0].name == "3d" and fig3.axes[2].name == "3d"
+    assert len(fig3.axes[2].lines) == 12
+    plt.close(fig3)
 
 
 def test_ultrametric_survives_leaves_that_are_all_far_apart():
