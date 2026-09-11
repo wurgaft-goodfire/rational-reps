@@ -3,7 +3,8 @@ for exact n-gram counts."""
 import numpy as np
 import pytest
 
-from src.code.corpus import at_least, cooccurrence_table, joined, parquet_texts, query, window_counts
+from src.code.corpus import (at_least, cooccurrence_matrix, cooccurrence_table, encode_corpus, joined, parquet_texts,
+                             query, train_tokenizer, window_counts)
 
 
 def test_window_counts_lowercase_the_text_and_count_every_token_in_the_window():
@@ -36,6 +37,34 @@ def test_parquet_texts_streams_the_text_column_across_files(tmp_path):
     for i, rows in enumerate((["a", "b", "c"], ["d"])):
         pq.write_table(pa.table({"text": rows, "id": list(range(len(rows)))}), tmp_path / f"{i}.parquet")
     assert list(parquet_texts([tmp_path / "0.parquet", tmp_path / "1.parquet"], batch=2)) == ["a", "b", "c", "d"]
+
+
+TEXTS = ["The cat sat on the mat. The cat sat, 2 cats sat!", "A dog sat; the dog ran to the cat."]   # 11 distinct tokens
+
+
+def test_train_tokenizer_keeps_the_most_frequent_lowercased_tokens():
+    """The word-level tokenizer lowercases, splits on anything that is not a letter or digit, and
+    keeps the ``vocab_size`` most frequent tokens; ids are in frequency order and out-of-vocabulary
+    tokens are dropped from the stream."""
+    tok = train_tokenizer(TEXTS, vocab_size=3)
+    ids, docs, vocab, freq = encode_corpus(TEXTS, tok)
+    assert list(vocab) == ["the", "sat", "cat"] and freq.tolist() == [5, 4, 3]
+    assert ids.dtype == np.uint16 and ids.tolist() == [0, 2, 1, 0, 0, 2, 1, 1, 1, 0, 0, 2]
+    assert docs.tolist() == [0] * 8 + [1] * 4
+
+
+def test_cooccurrence_matrix_matches_the_window_counter_and_weights_by_distance():
+    """Flat weighting reproduces ``window_counts`` over the same tokens (both orders, same document
+    only); ``1/d`` divides each pair's count by its distance."""
+    tok = train_tokenizer(TEXTS, vocab_size=11)
+    ids, docs, vocab, _ = encode_corpus(TEXTS, tok)
+    counts, _ = window_counts(TEXTS, list(vocab), window=3)
+    expected = np.array([[counts[a].get(b, 0) for b in vocab] for a in vocab])
+    C = cooccurrence_matrix(ids, docs, len(vocab), window=3, weighting="flat", device="cpu")
+    assert np.array_equal(C, expected)
+    C1 = cooccurrence_matrix(ids, docs, len(vocab), window=3, weighting="1/d", device="cpu")
+    i, j = list(vocab).index("cat"), list(vocab).index("mat")             # "mat the cat" once, distance 2; nothing else within 3
+    assert np.isclose(C[i, j], 1) and np.isclose(C1[i, j], 0.5)
 
 
 def test_query_backs_off_on_rate_limiting_then_succeeds(monkeypatch):

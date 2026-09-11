@@ -51,6 +51,59 @@ def cooccurrence_table(counts, freq, concepts, k):
     return np.array([[counts[c].get(w, 0) for w in vocab] for c in concepts], dtype=np.float64), vocab
 
 
+def train_tokenizer(texts, vocab_size=25000):
+    """A word-level tokenizer (Rust, parallel): lowercase, split on anything that is not a letter or
+    digit, keep the ``vocab_size`` most frequent tokens; the rest map to ``[UNK]``."""
+    from tokenizers import Regex, Tokenizer, models, normalizers, pre_tokenizers, trainers
+    tok = Tokenizer(models.WordLevel(unk_token="[UNK]"))
+    tok.normalizer = normalizers.Lowercase()
+    tok.pre_tokenizer = pre_tokenizers.Split(Regex("[^a-z0-9]+"), behavior="removed")
+    tok.train_from_iterator(texts, trainers.WordLevelTrainer(vocab_size=vocab_size + 1, special_tokens=["[UNK]"]))
+    return tok
+
+
+def encode_corpus(texts, tokenizer, batch=1000):
+    """``(ids, docs, vocab, freq)``: the corpus as one uint16 stream of in-vocabulary token ids in
+    frequency order (most frequent = 0), the document index of each token (int32), the vocabulary
+    words in id order, and each id's count. Out-of-vocabulary tokens are dropped."""
+    unk = tokenizer.token_to_id("[UNK]")
+    parts, lengths = [], []
+    texts = iter(texts)
+    for chunk in iter(lambda: list(itertools.islice(texts, batch)), []):
+        for enc in tokenizer.encode_batch(chunk):
+            a = np.asarray(enc.ids, dtype=np.int64); a = a[a != unk]
+            parts.append(a.astype(np.uint16)); lengths.append(len(a))
+    raw = np.concatenate(parts) if parts else np.zeros(0, dtype=np.uint16)
+    counts = np.bincount(raw, minlength=tokenizer.get_vocab_size())
+    words = [tokenizer.id_to_token(i) for i in range(len(counts))]
+    order = np.array(sorted((i for i in range(len(counts)) if i != unk and counts[i] > 0),
+                            key=lambda i: (-counts[i], words[i])), dtype=np.int64)     # frequency order, ties alphabetical
+    remap = np.full(len(counts), -1, dtype=np.int64); remap[order] = np.arange(len(order))
+    ids = remap[raw].astype(np.uint16)
+    docs = np.repeat(np.arange(len(lengths), dtype=np.int32), lengths)
+    return ids, docs, np.array([words[i] for i in order]), counts[order]
+
+
+def cooccurrence_matrix(ids, docs, V, window=16, weighting="1/d", device="cuda", chunk=200_000_000):
+    """The full V x V co-occurrence matrix over an id stream: for every pair of tokens within
+    ``window`` positions in the same document, ``C[i, j]`` (and ``C[j, i]``) gains the weight of
+    their distance d: ``"flat"`` 1, ``"linear"`` window+1-d, ``"1/d"`` 1/d. Accumulated on ``device``."""
+    import torch
+    weight = {"flat": lambda d: 1.0, "linear": lambda d: float(window + 1 - d), "1/d": lambda d: 1.0 / d}[weighting]
+    C = torch.zeros(V * V, dtype=torch.float32, device=device)
+    for start in range(0, len(ids), chunk):
+        n = min(chunk, len(ids) - start)
+        x = torch.as_tensor(np.asarray(ids[start:start + n + window], dtype=np.int64), device=device)
+        doc = torch.as_tensor(np.asarray(docs[start:start + n + window], dtype=np.int64), device=device)
+        for d in range(1, window + 1):
+            m = min(n, len(x) - d)
+            same = doc[:m] == doc[d:d + m]
+            pair = (x[:m] * V + x[d:d + m])[same]
+            C.index_add_(0, pair, torch.full((len(pair),), weight(d), device=device))
+    C = C.view(V, V)
+    return (C + C.T).cpu().numpy()
+
+
 def parquet_texts(paths, column="text", batch=4096):
     """The ``column`` strings of parquet files, streamed file by file in row batches."""
     import pyarrow.parquet as pq
