@@ -5,7 +5,7 @@ import torch
 from transformers import GPTNeoXConfig
 
 from src.code.data import ring
-from src.code.llm import bayes_floor, node_means, node_tokens
+from src.code.llm import bayes_floor, node_means, node_tokens, pair_means, relation_floor, triple_stream
 from src.code.models import TransformerModel
 
 
@@ -47,6 +47,68 @@ def test_bayes_floor_of_a_ring_walk():
     walks = torch.tensor([[0, 1, 2, 3], [5, 4, 3, 2]])
     assert np.allclose(bayes_floor(ring(6), walks, backtrack=True), np.log(2))
     assert np.allclose(bayes_floor(ring(6), walks, backtrack=False), [np.log(2), 0.0, 0.0])
+
+
+def test_pair_means_nll_and_seen_match_a_brute_force_pass():
+    """Triples ``a b : c ,``: a pair's representation is the residual at its colon, averaged over
+    its appearances in the last ``window`` triples pooled over sequences; ``nll`` (B, K) scores c
+    at that colon over the outcome tokens; ``seen`` marks a pair that already appeared in its sequence."""
+    model = _tiny()
+    items, outs, colon, sep = torch.tensor([2, 4, 6, 8]), torch.tensor([3, 5, 7]), 1, 12
+    B, K, window = 4, 6, 3
+    g = torch.Generator().manual_seed(2)
+    triples = torch.stack([torch.randint(0, 4, (B, K), generator=g), torch.randint(0, 4, (B, K), generator=g),
+                           torch.randint(0, 3, (B, K), generator=g)], -1)
+    out = pair_means(model, triples, items, outs, colon=colon, sep=sep, window=window, prefix=(0,), batch_size=3)
+
+    ids = torch.full((B, 1 + 5 * K), sep, dtype=torch.long); ids[:, 0] = 0
+    ids[:, 1::5] = items[triples[..., 0]]; ids[:, 2::5] = items[triples[..., 1]]
+    ids[:, 3::5] = colon; ids[:, 4::5] = outs[triples[..., 2]]
+    with torch.no_grad():
+        res = model(ids, output_hidden_states=True)
+    H = torch.stack(res["hidden_states"])[:, :, 3::5]                      # (layers, B, K, d) at the colons
+    key = triples[..., 0] * 4 + triples[..., 1]
+    sums = torch.zeros(H.shape[0], 16, H.shape[-1]); counts = torch.zeros(16)
+    for b in range(B):
+        for t in range(K - window, K):
+            sums[:, key[b, t]] += H[:, b, t]; counts[key[b, t]] += 1
+    assert np.allclose(np.nan_to_num(out["means"]), np.nan_to_num((sums / counts[:, None]).numpy()), atol=1e-5)
+    lp = torch.log_softmax(res["logits"][:, 3::5][:, :, outs], -1)          # (B, K, 3)
+    assert np.allclose(out["nll"], -lp.gather(-1, triples[..., 2:]).squeeze(-1).numpy(), atol=1e-5)
+    seen = np.array([[bool((key[b, :t] == key[b, t]).any()) for t in range(K)] for b in range(B)])
+    assert (out["seen"] == seen).all()
+
+
+def _relational(relation, B, K, **kwargs):
+    from omegaconf import OmegaConf
+    from src.code.config import Config
+    from src.code.data import RelationalDataset
+    return RelationalDataset(Config(OmegaConf.create({
+        "setting": "relational", "relation": relation, "relation_kwargs": kwargs, "lapse": 0.0,
+        "random_seed": 0, "sample_mode": "pointwise", "training_kwargs": {"batch_size": B * K}})))
+
+
+def test_triple_stream_draws_each_outcome_from_its_pair_row():
+    """The stream is the dataset's pointwise rows (every pair enumerated, an outcome drawn per
+    row), permuted and reshaped to (B, K, 3). On exact XOR every c equals a ^ b, and two full
+    passes over the 64 pairs give each pair exactly twice."""
+    triples = triple_stream(_relational("symmetric_difference", 4, 32, graded=False), 4, 32)
+    a, b, c = triples.reshape(-1, 3).unbind(-1)
+    assert triples.shape == (4, 32, 3) and (c == (a ^ b)).all()
+    assert torch.bincount(a * 8 + b, minlength=64).eq(2).all()
+
+
+def test_triple_stream_indexes_a_separate_outcome_alphabet_from_zero():
+    """A bipartite relation's outcome tokens sit after the item tokens in the dataset; the stream
+    returns the outcome index itself (here one of six (feature, yes/no) answers)."""
+    triples = triple_stream(_relational("set_difference", 2, 32), 2, 32)
+    assert triples[..., 2].min() >= 0 and triples[..., 2].max() < 6
+
+
+def test_relation_floor_is_the_entropy_of_each_pairs_row():
+    T = np.array([[[1.0, 0.0], [0.5, 0.5]], [[0.5, 0.5], [0.0, 1.0]]])   # pairs (0,0),(1,1) certain
+    pairs = torch.tensor([[0, 1], [3, 2]])                                  # keys a*2+b
+    assert np.allclose(relation_floor(T, pairs), [[0.0, np.log(2)], [0.0, np.log(2)]])
 
 
 @pytest.mark.slow
