@@ -11,38 +11,58 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-_TOKEN = re.compile(r"[A-Za-z]+|[.!?]")                      # words, and the marks that end a sentence
+_TOKEN = re.compile(r"[A-Za-z]+|[0-9]+|[.!?]")               # words, numbers, and the marks that end a sentence
 _STOPS = {".", "!", "?"}
+MONTH_PREPS = {"in", "of", "since", "until", "till", "from", "by", "late", "early", "mid", "last", "next",
+               "this", "every", "each", "between", "during", "on", "through", "to", "for", "before", "after"}
+
+
+def date_anchor(tokens, i):
+    """The month sense of a month name: a number follows (a day or year) or a month preposition precedes."""
+    return (i + 1 < len(tokens) and tokens[i + 1].isdigit()) or (i > 0 and tokens[i - 1].lower() in MONTH_PREPS)
+
+
+class NearCue:
+    """An anchor that holds when one of ``cues`` (lowercase) sits within ``window`` tokens."""
+    def __init__(self, cues, window):
+        self.cues, self.window = set(cues), window
+
+    def __call__(self, tokens, i):
+        around = tokens[max(0, i - self.window):i] + tokens[i + 1:i + self.window + 1]
+        return any(t.lower() in self.cues for t in around)
 
 
 def _count_chunk(args):
     """Co-occurrence and frequency counters over one chunk of texts (a worker's share)."""
-    texts, lookup, window = args
+    texts, lookup, window, anchors = args
     counts, freq = {c: Counter() for c in set(lookup.values())}, Counter()
     for text in texts:
         tokens = _TOKEN.findall(text)
         lower = [t.lower() for t in tokens]
-        freq.update(w for w in lower if w not in _STOPS)
+        freq.update(w for w in lower if w.isalpha())
         for i, t in enumerate(tokens):
             c = lookup.get(t)
             if c is None or (c[0].isupper() and (i == 0 or tokens[i - 1] in _STOPS)):
                 continue                                      # sentence-initial "May" is mostly the modal
+            if c in anchors and not anchors[c](tokens, i):
+                continue                                      # not the intended sense
             around = lower[max(0, i - window):i] + lower[i + 1:i + window + 1]
-            counts[c].update(w for w in around if w not in _STOPS)
+            counts[c].update(w for w in around if w.isalpha())
     return counts, freq
 
 
-def window_counts(texts, concepts, window=16, workers=1, chunk=2000):
+def window_counts(texts, concepts, window=16, workers=1, chunk=2000, anchors=None):
     """``{concept: Counter}`` of the lowercase words within ``window`` tokens of each occurrence of the
     concept, and the lowercase word frequencies over all ``texts``. A capitalised concept ("May")
-    matches its own case only and not at a sentence start; a lowercase one matches either case."""
+    matches its own case only and not at a sentence start; a lowercase one matches either case.
+    ``anchors`` {concept: fn(tokens, i) -> bool} keeps only occurrences in the intended sense."""
     lookup = {c: c for c in concepts}
     lookup.update({c.capitalize(): c for c in concepts if c.islower()})
     texts = iter(texts)
     chunks = iter(lambda: list(itertools.islice(texts, chunk)), [])
     counts, freq = {c: Counter() for c in concepts}, Counter()
     with ProcessPoolExecutor(workers) as pool:
-        for part, f in pool.map(_count_chunk, ((ch, lookup, window) for ch in chunks)):
+        for part, f in pool.map(_count_chunk, ((ch, lookup, window, anchors or {}) for ch in chunks)):
             freq.update(f)
             for c in concepts:
                 counts[c].update(part[c])

@@ -3,7 +3,7 @@ n-gram counts."""
 import numpy as np
 import pytest
 
-from src.code.corpus import cooccurrence_table, parquet_texts, query, window_counts
+from src.code.corpus import NearCue, cooccurrence_table, date_anchor, parquet_texts, query, window_counts
 
 
 def test_window_counts_add_the_words_around_each_concept_occurrence():
@@ -22,6 +22,18 @@ def test_window_counts_skip_sentence_initial_capitalised_concepts_and_stop_at_no
     is not an occurrence; punctuation is not a context word but the window runs across it."""
     counts, _ = window_counts(["Rain. May showers came in May. Cold!"], ["May"], window=2)
     assert counts["May"] == {"came": 1, "in": 1, "cold": 1}
+
+
+def test_anchors_keep_only_occurrences_in_the_intended_sense():
+    """A date anchor keeps a month next to a number or after a month preposition ("Prices May Vary"
+    is dropped); a cue anchor keeps a colour only when a colour word sits within the window.
+    Numbers are anchors, not context words."""
+    texts = ["Prices May Vary. Since May 2019 the red paint sold well; later some red tape grew."]
+    counts, freq = window_counts(texts, ["May", "red"], window=3,
+                                 anchors={"May": date_anchor, "red": NearCue({"paint", "color"}, 3)})
+    assert counts["May"] == {"vary": 1, "since": 1, "the": 1, "red": 1}   # "Since May 2019" only; 2019 is not a context word
+    assert counts["red"] == {"may": 1, "the": 1, "paint": 1, "sold": 1, "well": 1}   # "red tape" has no cue in reach
+    assert "2019" not in freq
 
 
 def test_parquet_texts_streams_the_text_column_across_files(tmp_path):

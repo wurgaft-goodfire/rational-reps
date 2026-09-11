@@ -37,7 +37,7 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.corpus import window_counts, cooccurrence_table, hub_texts
+    from src.code.corpus import window_counts, cooccurrence_table, hub_texts, date_anchor, NearCue
     from src.code.data import graph_conditional
     from src.code.geometry import predicted_geometry, log_conditional
     from src.code.analysis_utils import cka, rsa, align_representations
@@ -50,9 +50,11 @@ def _(mo):
         CACHE,
         Counter,
         FIGURES,
+        NearCue,
         align_representations,
         cka,
         cooccurrence_table,
+        date_anchor,
         graph_conditional,
         hub_texts,
         json,
@@ -69,16 +71,20 @@ def _(mo):
 
 
 @app.cell
-def _():
+def _(NearCue, date_anchor):
     CORPUS = ("HuggingFaceFW/fineweb", "sample/10BT/")                # the plain FineWeb 10B-token sample, all shards
     WINDOW, K = 16, 25000                                              # co-occurrence window, context words
     MODEL = "meta-llama/Llama-3.1-8B"
+    COLOR_CUES = {"color", "colour", "colors", "colours", "colored", "coloured", "paint", "painted", "shade",
+                  "shades", "hue", "dye", "dyed", "pigment"}
+    # each domain's occurrences are anchored to the intended sense: months next to a day / year or after
+    # a month preposition ("Prices May Vary" is the modal); colors within reach of a colour cue
     DOMAINS = {"months": {"words": ["January", "February", "March", "April", "May", "June", "July", "August",
                                     "September", "October", "November", "December"],
-                          "spec": {"structure": "ring", "n": 12}},         # the known answer: a calendar circle
+                          "spec": {"structure": "ring", "n": 12}, "anchor": date_anchor},   # known answer: a circle
                "colors": {"words": ["red", "orange", "yellow", "green", "blue", "purple", "pink",   # hue order first
                                     "brown", "black", "white", "gray"],
-                          "spec": None}}
+                          "spec": None, "anchor": NearCue(COLOR_CUES, WINDOW)}}
     TEMPLATES = [("It was", "."), ("She thought about", " all day."), ("The topic was", ".")]
     return CORPUS, DOMAINS, K, MODEL, TEMPLATES, WINDOW
 
@@ -86,10 +92,12 @@ def _():
 @app.cell
 def _(CACHE, CORPUS, Counter, DOMAINS, K, WINDOW, cooccurrence_table, hub_texts, json, window_counts):
     # the corpus pass, cached raw: per-concept context counters and the word frequencies of the sample
-    _path = CACHE / "corpus" / f"{'_'.join(CORPUS).replace('/', '_')}w{WINDOW}_v2.json"
+    _path = CACHE / "corpus" / f"{'_'.join(CORPUS).replace('/', '_')}w{WINDOW}_anchored.json"
     _concepts = [w for d in DOMAINS.values() for w in d["words"]]
+    _anchors = {w: d["anchor"] for d in DOMAINS.values() for w in d["words"]}
     if not _path.exists():
-        _counts, _freq = window_counts(hub_texts(*CORPUS), _concepts, window=WINDOW, workers=40, chunk=20000)
+        _counts, _freq = window_counts(hub_texts(*CORPUS), _concepts, window=WINDOW, workers=40, chunk=20000,
+                                       anchors=_anchors)
         _path.parent.mkdir(parents=True, exist_ok=True)
         _path.write_text(json.dumps({"counts": {c: dict(v.most_common(50000)) for c, v in _counts.items()},
                                      "freq": dict(_freq.most_common(100000)), "total": sum(_freq.values())}))
@@ -129,9 +137,9 @@ def _(DOMAINS, WINDOW, freq, log_conditional, np, predicted_geometry, tables, to
                         "bounded PMI": predicted_geometry(bounded_pmi(*tables[name], tables[name][0].sum(1) / (2 * WINDOW)))}
                  for name, L in logcond.items()}
     for _name, _L in logcond.items():
-        _Lc = _L - _L.mean(0)                                                  # over-representation vs the other concepts
+        _Lc = (_L - _L.mean(0))[:, :2000]                                      # over-representation vs the other concepts, frequent words
         for _w, _row in zip(DOMAINS[_name]["words"], _Lc):
-            print(f"{_name:7s} {_w:10s}", ", ".join(tables[_name][1][j] for j in np.argsort(-_row)[:3]))
+            print(f"{_name:7s} {_w:10s}", ", ".join(tables[_name][1][j] for j in np.argsort(-_row)[:4]))
     return logcond, predicted
 
 
