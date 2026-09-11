@@ -71,13 +71,13 @@ def joined(texts, n):
     return iter(lambda: " ".join(itertools.islice(texts, n)), "")
 
 
-def hub_texts(repo, prefix, n_docs=None):
-    """The texts of every parquet shard under ``prefix`` in a Hugging Face dataset repo (e.g.
-    ``"wikimedia/wikipedia"``, ``"20231101.en/"``), each downloaded into the HF cache when reached."""
+def hub_texts(repo, prefix, column="text", n_docs=None):
+    """The ``column`` strings of every parquet shard under ``prefix`` in a Hugging Face dataset repo
+    (e.g. ``"wikimedia/wikipedia"``, ``"20231101.en/"``), each downloaded into the HF cache when reached."""
     from huggingface_hub import HfApi, hf_hub_download
     shards = sorted(f for f in HfApi().list_repo_files(repo, repo_type="dataset")
                     if f.startswith(prefix) and f.endswith(".parquet"))
-    texts = parquet_texts(hf_hub_download(repo, f, repo_type="dataset") for f in shards)
+    texts = parquet_texts((hf_hub_download(repo, f, repo_type="dataset") for f in shards), column=column)
     return itertools.islice(texts, n_docs) if n_docs else texts
 
 

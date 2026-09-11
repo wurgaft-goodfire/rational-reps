@@ -11,24 +11,26 @@ import numpy as np
 from src.code.corpus import at_least, cooccurrence_table, hub_texts, joined, window_counts
 
 WINDOW, K = 16, 25000
-CORPORA = {  # repo, shard prefix, article filter (min words), lines joined per passage
-    "wikipedia": {"repo": "wikimedia/wikipedia", "prefix": "20231101.en/", "min_words": 200, "join": 1,
-                  "tag": "wikipedia_20231101_en"},          # English Wikipedia 2023-11, articles of >= 200 words
-    "babylm": {"repo": "deven367/babylm-100M", "prefix": "data/train-", "min_words": 0, "join": 100,
-               "tag": "babylm_100M"},                       # BabyLM 100M: one utterance per row, joined into passages
+CORPORA = {  # repo, shard prefix, text column, article filter (min words), lines joined per passage
+    "wikipedia": {"repo": "wikimedia/wikipedia", "prefix": "20231101.en/", "column": "text", "min_words": 200,
+                  "join": 1, "tag": "wikipedia_20231101_en"},   # English Wikipedia 2023-11, articles of >= 200 words
+    "babylm": {"repo": "deven367/babylm-100M", "prefix": "data/train-", "column": "text", "min_words": 0,
+               "join": 100, "tag": "babylm_100M"},              # BabyLM 100M: one utterance per row, joined into passages
+    "gutenberg": {"repo": "sedthh/gutenberg_english", "prefix": "data/train-", "column": "TEXT", "min_words": 200,
+                  "join": 1, "tag": "gutenberg_en"},            # Project Gutenberg English books, one book per row
 }
 DOMAINS = {"months": ["january", "february", "march", "april", "may", "june", "july", "august",
                       "september", "october", "november", "december"],
-           "colors": ["red", "scarlet", "crimson", "maroon", "orange", "beige", "yellow", "lime", "olive", "green",   # hue order,
-                      "teal", "turquoise", "cyan", "blue", "indigo", "violet", "purple", "magenta", "pink",        # then the rest
-                      "brown", "black", "white", "gray"],
+           # hue order, then the achromatic ones; words with at least 20k occurrences in Wikipedia
+           "colors": ["red", "scarlet", "crimson", "orange", "yellow", "lime", "olive", "green", "blue", "violet",
+                      "purple", "pink", "brown", "black", "white", "gray"],
            "numbers": [str(n) for n in range(1, 501)]}
 
 if __name__ == "__main__":
     corpus = CORPORA[sys.argv[1]]
     out = Path(os.environ.get("CACHE_DIR", "outputs")) / "corpus"; out.mkdir(parents=True, exist_ok=True)
     t = time.time()
-    texts = hub_texts(corpus["repo"], corpus["prefix"])
+    texts = hub_texts(corpus["repo"], corpus["prefix"], column=corpus["column"])
     texts = joined(texts, corpus["join"]) if corpus["join"] > 1 else at_least(texts, corpus["min_words"])
     counts, freq = window_counts(texts, [w for ws in DOMAINS.values() for w in ws], window=WINDOW, workers=40, chunk=20000)
     for name, words in DOMAINS.items():
