@@ -4,8 +4,7 @@ import pytest
 import torch
 from transformers import GPTNeoXConfig
 
-from src.code.data import ring
-from src.code.llm import bayes_floor, node_means, node_tokens, pair_means, relation_floor, triple_stream
+from src.code.llm import node_means, node_tokens, pair_means, row_entropy, triple_stream
 from src.code.models import TransformerModel
 
 
@@ -39,14 +38,6 @@ def test_node_means_and_nll_match_a_brute_force_pass():
     lp = torch.log_softmax(res["logits"][:, 2::2][:, :-1][:, :, tokens], -1)  # (B, L-1, n)
     nll = -lp.gather(-1, walks[:, 1:, None]).squeeze(-1).mean(0)
     assert np.allclose(out["nll"], nll.numpy(), atol=1e-5)
-
-
-def test_bayes_floor_of_a_ring_walk():
-    """Every ring node has two neighbours: log 2 per step, and log 1 = 0 once the step back is
-    forbidden (the first step still has two options)."""
-    walks = torch.tensor([[0, 1, 2, 3], [5, 4, 3, 2]])
-    assert np.allclose(bayes_floor(ring(6), walks, backtrack=True), np.log(2))
-    assert np.allclose(bayes_floor(ring(6), walks, backtrack=False), [np.log(2), 0.0, 0.0])
 
 
 def test_pair_means_nll_and_seen_match_a_brute_force_pass():
@@ -105,10 +96,13 @@ def test_triple_stream_indexes_a_separate_outcome_alphabet_from_zero():
     assert triples[..., 2].min() >= 0 and triples[..., 2].max() < 6
 
 
-def test_relation_floor_is_the_entropy_of_each_pairs_row():
+def test_row_entropy_indexes_the_flattened_kernel_by_key():
+    """A walk's kernel (n, n) indexed by node, a relation's (n, n, C) by pair ``a*n + b``: the
+    entropy of the row each key predicts from."""
+    P = np.array([[0.5, 0.5], [1.0, 0.0]])
+    assert np.allclose(row_entropy(P, torch.tensor([[0, 1, 0]])), [[np.log(2), 0.0, np.log(2)]])
     T = np.array([[[1.0, 0.0], [0.5, 0.5]], [[0.5, 0.5], [0.0, 1.0]]])   # pairs (0,0),(1,1) certain
-    pairs = torch.tensor([[0, 1], [3, 2]])                                  # keys a*2+b
-    assert np.allclose(relation_floor(T, pairs), [[0.0, np.log(2)], [0.0, np.log(2)]])
+    assert np.allclose(row_entropy(T, torch.tensor([[0, 1], [3, 2]])), [[0.0, np.log(2)], [0.0, np.log(2)]])
 
 
 @pytest.mark.slow

@@ -21,9 +21,11 @@ def _(mo):
     its appearances in the last 50 steps and over sequences, and is compared to the balanced
     factor $E = U\sqrt{S}$ of a row-centred log-conditional.
 
-    **Walks.** `word, word, ...` on a ring and a grid under the one-step adjacency kernel; the
-    prediction is the **diffusion** log-conditional $\log p_\gamma(x' \mid x)$,
-    $p_\gamma \propto (I - \gamma P)^{-1}$, with $\gamma$ fitted.
+    **Walks.** `word, word, ...`: ring, grid and 3-cube under the one-step adjacency kernel, and
+    the tree's leaves under the tree's own diffusion kernel (the graph setting's, $\gamma = 0.8$).
+    The prediction is the **diffusion** family $\log p_\gamma(x' \mid x)$,
+    $p_\gamma \propto (I - \gamma P)^{-1}$ (for the tree, its own kernel at $\gamma$), with $\gamma$
+    fitted, against the kernel the data was sampled from.
 
     **Relations.** Triples `a b : c ,` read at the colon: `entailment` (15 tree nodes, $c$ uniform
     over the common ancestors of $a, b$) and `set_difference` (8 feature sets; six outcome words
@@ -45,21 +47,19 @@ def _(mo):
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
     from src.code.train import resolve_config, graph_overrides
-    from src.code.data import (init_dataset, structure_adjacency, adjacency_conditional, relation_tensor,
-                               answer_classes, apply_lapse)
+    from src.code.data import init_dataset, graph_conditional, relation_tensor, answer_classes, apply_lapse
     from src.code.geometry import predicted_geometry, log_conditional, class_means
     from src.code.analysis_utils import cka, align_representations
-    from src.code.llm import node_tokens, node_means, bayes_floor, pair_means, triple_stream, relation_floor
+    from src.code.llm import node_tokens, node_means, pair_means, triple_stream, row_entropy
     from src.code import plot_utils
     return (
         Path,
-        adjacency_conditional,
         align_representations,
         answer_classes,
         apply_lapse,
-        bayes_floor,
         cka,
         class_means,
+        graph_conditional,
         graph_overrides,
         init_dataset,
         log_conditional,
@@ -70,10 +70,9 @@ def _(mo):
         plot_utils,
         plt,
         predicted_geometry,
-        relation_floor,
         relation_tensor,
         resolve_config,
-        structure_adjacency,
+        row_entropy,
         torch,
         triple_stream,
     )
@@ -84,9 +83,8 @@ def _(Path, graph_overrides, resolve_config):
     WINDOW, L, B = 50, 1024, 256               # steps averaged, walk length, sequences
     WORLDS = {"ring": {"spec": {"structure": "ring", "n": 24, "cooccurrence": "adjacency"}, "backtrack": True},
               "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": True},
-              "tree": {"spec": {"structure": "tree_graph", "n": 3, "k": 2, "cooccurrence": "adjacency"}, "backtrack": True,
-                       "draw": {"structure": "tree", "n": 3, "k": 2}},          # the tree's ultrametric view
-              "hypercube": {"spec": {"structure": "hypercube", "n": 3, "cooccurrence": "adjacency"}, "backtrack": True}}
+              "hypercube": {"spec": {"structure": "hypercube", "n": 3, "cooccurrence": "adjacency"}, "backtrack": True},
+              "tree": {"spec": {"structure": "tree", "n": 3, "k": 2}, "backtrack": True}}   # leaves under the tree's own kernel
 
     def config(world):
         w = WORLDS[world]
@@ -160,45 +158,48 @@ def _(mo):
     mo.md(r"""
     ## Walks: fit
 
-    CKA between the LLM node means and the predicted code per layer, for the diffusion prediction
-    at each $\gamma$ and for the adjacency prediction (the kernel the walk actually uses).
+    CKA between the LLM node means and the predicted code per layer, for the diffusion family at
+    each $\gamma$ and for the kernel the walk was sampled from.
     """)
     return
 
 
 @app.cell
-def _(WORLDS, adjacency_conditional, cka, np, predicted_geometry, runs, structure_adjacency):
+def _(WORLDS, cka, graph_conditional, np, predicted_geometry, runs):
     GAMMAS = np.array([0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99])
 
+    def logcond(world, gamma=None):
+        """The world's log-conditional: at ``gamma``, the diffusion family (on the graph, or the
+        structure's own kernel such as the tree's); ``None`` is the kernel the data was sampled from."""
+        spec = WORLDS[world]["spec"]
+        return graph_conditional(spec if gamma is None else {**spec, "gamma": gamma, "cooccurrence": "diffusion"})
+
     def predicted(world, gamma=None):
-        """Predicted code: the diffusion log-conditional at ``gamma``, or adjacency when None."""
-        A = structure_adjacency(WORLDS[world]["spec"])
-        L = (adjacency_conditional(A, cooccurrence="adjacency") if gamma is None
-             else adjacency_conditional(A, gamma, "diffusion"))
-        return predicted_geometry(L)
+        """Predicted code: the balanced factor of ``logcond(world, gamma)``."""
+        return predicted_geometry(logcond(world, gamma))
 
     scores = {}
     for _w in WORLDS:
         _M = runs[_w]["means"]
-        scores[_w] = {"diffusion": np.array([[cka(_m, predicted(_w, g)) for g in GAMMAS] for _m in _M]),
-                      "adjacency": np.array([cka(_m, predicted(_w)) for _m in _M])}
+        scores[_w] = {"family": np.array([[cka(_m, predicted(_w, g)) for g in GAMMAS] for _m in _M]),
+                      "data": np.array([cka(_m, predicted(_w)) for _m in _M])}
 
     def best_layer(world):
         """The layer (embedding excluded), kernel and gamma index where a prediction fits best;
-        the gamma index is None when the adjacency prediction wins."""
-        d, a = scores[world]["diffusion"].max(1), scores[world]["adjacency"]
-        if a[1:].max() > d[1:].max():
-            return 1 + int(a[1:].argmax()), "adjacency", None
-        layer = 1 + int(d[1:].argmax())
-        return layer, "diffusion", int(scores[world]["diffusion"][layer].argmax())
+        the gamma index is None when the data's own kernel wins."""
+        f, d = scores[world]["family"].max(1), scores[world]["data"]
+        if d[1:].max() > f[1:].max():
+            return 1 + int(d[1:].argmax()), "data", None
+        layer = 1 + int(f[1:].argmax())
+        return layer, "family", int(scores[world]["family"][layer].argmax())
 
     def best_prediction(world):
-        """``(name, E, CKA)`` of the best-fitting prediction at its best layer."""
+        """``(label, E, CKA)`` of the best-fitting prediction at its best layer."""
         layer, kernel, g = best_layer(world)
-        if kernel == "adjacency":
-            return "adjacency", predicted(world), scores[world]["adjacency"][layer]
-        return rf"diffusion, $\gamma$={GAMMAS[g]}", predicted(world, GAMMAS[g]), scores[world]["diffusion"][layer, g]
-    return GAMMAS, best_layer, best_prediction, predicted, scores
+        if kernel == "data":
+            return "the data's kernel", predicted(world), scores[world]["data"][layer]
+        return rf"$\gamma$={GAMMAS[g]}", predicted(world, GAMMAS[g]), scores[world]["family"][layer, g]
+    return GAMMAS, best_layer, best_prediction, logcond, predicted, scores
 
 
 @app.cell(hide_code=True)
@@ -207,33 +208,33 @@ def _(mo):
     ## Walks: figures
 
     Curves: next-word NLL by step against the walk's Bayes floor (shaded: the averaged window);
-    CKA by layer for the diffusion prediction at its best $\gamma$ and for adjacency; CKA against
-    $\gamma$ at the best layer. Panels: the predicted code beside Llama at that layer, top two PCs
+    CKA by layer for the diffusion family at its best $\gamma$ and for the data's kernel; CKA
+    against $\gamma$ at the best layer. Panels: the predicted code beside Llama at that layer, top two PCs
     with the LLM's rotated (Procrustes) onto the prediction's PC frame, Grams below.
     """)
     return
 
 
 @app.cell
-def _(GAMMAS, L, WINDOW, WORLDS, bayes_floor, best_layer, best_prediction, config, plot_utils, plt, runs, scores, structure_adjacency):
+def _(GAMMAS, L, WINDOW, best_layer, config, logcond, np, plot_utils, plt, row_entropy, runs, scores):
     def curves(world):
         run, sc = runs[world], scores[world]
         layer, kernel, g = best_layer(world)
-        best = sc["diffusion"].max(1)
-        floor = bayes_floor(structure_adjacency(WORLDS[world]["spec"]), run["walks"], WORLDS[world]["backtrack"])
+        best = sc["family"].max(1)
+        floor = row_entropy(np.exp(logcond(world)), run["walks"][:, :-1]).mean(0)
         fig, (a, b, c) = plt.subplots(1, 3, figsize=(16, 4.2), width_ratios=[2, 1, 1])
         a.plot(run["nll"], label="Llama-3.1-8B"); a.plot(floor, "--", color="k", label="Bayes floor")
         a.axvspan(L - 1 - WINDOW, L - 1, color="gray", alpha=0.15)
         a.set_xlabel("step"); a.set_ylabel("next-word NLL (nats)"); a.set_ylim(0, None); a.legend()
         a.set_title(f"{world}: learning the walk in context")
-        b.plot(best, label=r"diffusion, best $\gamma$ per layer"); b.plot(sc["adjacency"], "--", label="adjacency")
+        b.plot(best, label=r"diffusion family, best $\gamma$ per layer"); b.plot(sc["data"], "--", label="the data's kernel")
         b.set_xlabel("layer"); b.set_ylabel("CKA to prediction"); b.set_ylim(0, 1); b.legend()
-        c.semilogx(GAMMAS, sc["diffusion"][layer], marker="o", label=f"diffusion, layer {layer}")
-        c.axhline(sc["adjacency"][layer], ls="--", color="C1", label="adjacency")
+        c.semilogx(GAMMAS, sc["family"][layer], marker="o", label=f"diffusion family, layer {layer}")
+        c.axhline(sc["data"][layer], ls="--", color="C1", label="the data's kernel")
         c.set_xlabel(r"$\gamma$"); c.set_ylabel("CKA to prediction"); c.set_ylim(0, 1); c.legend()
         fig.tight_layout()
-        print(f"{world}: best {kernel} at layer {layer}, CKA diffusion {best[layer]:.3f} (γ={GAMMAS[sc['diffusion'][layer].argmax()]}) "
-              f"vs adjacency {sc['adjacency'][layer]:.3f}; final NLL {run['nll'][-WINDOW:].mean():.3f} vs floor {floor[-WINDOW:].mean():.3f}")
+        print(f"{world}: best {kernel} at layer {layer}, CKA family {best[layer]:.3f} (γ={GAMMAS[sc['family'][layer].argmax()]}) "
+              f"vs data kernel {sc['data'][layer]:.3f}; final NLL {run['nll'][-WINDOW:].mean():.3f} vs floor {floor[-WINDOW:].mean():.3f}")
         return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext_curves"))
     return (curves,)
 
@@ -243,13 +244,12 @@ def _(WORLDS, align_representations, best_layer, best_prediction, config, plot_u
     def panels(world):
         layer, _, _ = best_layer(world)
         label, E, score = best_prediction(world)
-        name, M = f"Llama L{layer}", runs[world]["means"][layer]
-        draw = WORLDS[world].get("draw", WORLDS[world]["spec"])
-        k = 3 if plot_utils._view(draw) == "3d" else 2                          # the structure's own view
+        name, M, spec = f"Llama L{layer}", runs[world]["means"][layer], WORLDS[world]["spec"]
+        k = 3 if plot_utils._view(spec) == "3d" else 2                          # the structure's own view
         ref = plot_utils._pca(E, k)                                             # the prediction's PC frame
         coords = {"predicted": ref, name: align_representations(M, ref, method="rotation", rank=k)[0]}
-        fig = plot_utils.plot_embedding_panels(E, {name: M}, draw, scores={name: score}, coords=coords)
-        fig.suptitle(f"{world}: {label} prediction", y=1.02)
+        fig = plot_utils.plot_embedding_panels(E, {name: M}, spec, scores={name: score}, coords=coords)
+        fig.suptitle(f"{world}: prediction from {label}", y=1.02)
         return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext_panels"))
     return (panels,)
 
@@ -348,14 +348,14 @@ def _(mo):
 
 
 @app.cell
-def _(K, RELATIONS, VARIANTS, WINDOW, np, plot_utils, plt, rel_best_layer, rel_config, rel_runs, rel_scores, relation_floor, relation_tensor):
+def _(K, RELATIONS, VARIANTS, WINDOW, np, plot_utils, plt, rel_best_layer, rel_config, rel_runs, rel_scores, relation_tensor, row_entropy):
     def rel_curves(relation):
         T = relation_tensor({"relation": relation}); flat = T.reshape(-1, T.shape[-1])
         blind = -(flat * np.log(flat.mean(0))).sum(-1).mean()                   # predict the marginal of c
         fig, (a, b) = plt.subplots(1, 2, figsize=(12, 4.2), width_ratios=[2, 1])
         for _i, _v in enumerate(VARIANTS):
             run, sc = rel_runs[relation, _v], rel_scores[relation, _v]
-            floor = relation_floor(T, run["triples"][..., 0] * T.shape[0] + run["triples"][..., 1])
+            floor = row_entropy(T, run["triples"][..., 0] * T.shape[0] + run["triples"][..., 1])
             layer, tail = rel_best_layer(relation, _v), slice(K - WINDOW, K)
             a.plot(run["nll"].mean(0), color=f"C{_i}", label=_v)
             depth = np.arange(len(sc["graded"])) / (len(sc["graded"]) - 1)

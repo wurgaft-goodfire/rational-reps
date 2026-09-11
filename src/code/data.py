@@ -719,7 +719,6 @@ _STRUCTURES = {
     "sphere": _Structure(sphere), "communities": _Structure(communities),
     "hypercube": _Structure(hypercube), "complete": _Structure(complete),
     "tree": _Structure(_tree_graph, tree_conditional),
-    "tree_graph": _Structure(_tree_graph),                     # the same tree as a plain graph to walk
     # bipartite (no adjacency): words -> features; hypothesis spaces -> observations
     "feature_cube": _Structure(None, feature_cube),
     "intervals": _Structure(None, interval_hypotheses),

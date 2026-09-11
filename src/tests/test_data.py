@@ -270,14 +270,3 @@ def test_no_backtrack_walk_never_returns_to_its_predecessor():
     assert (walk[:, 2:] != walk[:, :-2]).all()
     step = (walk[:, 1:] - walk[:, :-1]) % 12
     assert torch.isin(step, torch.tensor([1, 11], device=step.device)).all()
-
-
-def test_tree_graph_is_the_tree_as_a_plain_graph():
-    """``tree_graph`` walks the tree's edges over all nodes (no ultrametric conditional): a depth-3
-    binary tree has 15 nodes and 14 edges, and the adjacency kernel is uniform over neighbours."""
-    from src.code.data import structure_adjacency, graph_conditional
-    spec = {"structure": "tree_graph", "n": 3, "k": 2}
-    A = structure_adjacency(spec)
-    assert A.shape == (15, 15) and A.sum() == 28
-    P = np.exp(graph_conditional({**spec, "cooccurrence": "adjacency"}))
-    assert np.allclose(P.sum(1), 1) and np.allclose(P > 1e-6, A > 0)

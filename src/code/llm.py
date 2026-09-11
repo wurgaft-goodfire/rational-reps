@@ -91,16 +91,9 @@ def triple_stream(dataset, B, K):
     return rows.reshape(B, K, 3).cpu()
 
 
-def bayes_floor(A, walks, backtrack=True):
-    """Entropy of the walk's exact next-node distribution by position, (L-1,): ``log deg`` of the
-    current node, minus one option once the step back is forbidden."""
-    deg = np.asarray(A).sum(1)[np.asarray(walks)[:, :-1]]                          # (B, L-1)
-    allowed = deg - (np.arange(deg.shape[1]) >= 1) * (not backtrack)
-    return np.log(allowed).mean(0)
-
-
-def relation_floor(T, pairs):
-    """Entropy of each pair's outcome row of the relation tensor ``T`` (n, n, C): the Bayes floor
-    of predicting ``c`` from ``(a, b)``, per triple. ``pairs`` (B, K) keys ``a*n + b`` -> (B, K)."""
-    rows = np.asarray(T, dtype=np.float64).reshape(-1, np.shape(T)[-1])[np.asarray(pairs)]
+def row_entropy(P, keys):
+    """Entropy of each key's outcome row of ``P`` (..., C), flattened over the key axes: the Bayes
+    floor for predicting the next token from that key. ``keys`` (B, S) -> (B, S). A walk's key is
+    the current node; a relation's is the pair ``a*n + b``."""
+    rows = np.asarray(P, dtype=np.float64).reshape(-1, np.shape(P)[-1])[np.asarray(keys)]
     return -(rows * np.log(np.where(rows > 0, rows, 1.0))).sum(-1)
