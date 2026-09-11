@@ -80,17 +80,18 @@ def pair_means(model, triples, tokens, out_tokens, colon, sep, window, prefix=()
 
 
 @torch.no_grad()
-def word_means(model, words, templates):
-    """A word's representation inside templates: the residual at its last token, averaged over the
-    templates. ``words`` {name: token ids}, ``templates`` [(prefix ids, suffix ids)] -> (layers, n, d)."""
+def word_means(model, words, templates, at_end=False):
+    """A word's representation inside templates, averaged over the templates: the residual at the
+    word's last token, or at the prompt's last token when ``at_end``. ``words`` {name: token ids},
+    ``templates`` [(prefix ids, suffix ids)] -> (layers, n, d)."""
     device = next(model.parameters()).device
     out = []
     for ids in words.values():
         reps = []
         for pre, post in templates:
             x = torch.tensor([[*pre, *ids, *post]], device=device)
-            h = torch.stack(model(x, output_hidden_states=True)["hidden_states"])[:, 0, len(pre) + len(ids) - 1]
-            reps.append(h.float())
+            at = x.shape[1] - 1 if at_end else len(pre) + len(ids) - 1
+            reps.append(torch.stack(model(x, output_hidden_states=True)["hidden_states"])[:, 0, at].float())
         out.append(torch.stack(reps).mean(0))
     return torch.stack(out, 1).cpu().numpy()
 

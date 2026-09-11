@@ -113,6 +113,20 @@ def test_word_means_read_the_last_token_of_each_word_in_each_template():
     assert out.shape[1] == 2
 
 
+def test_word_means_can_read_the_prompts_last_token_instead():
+    """``at_end=True`` reads the residual at the final token of each template (after the suffix),
+    the Bhalla et al. style probe, still averaged over templates."""
+    model = _tiny()
+    templates = [([0, 1], [5, 7]), ([2], [9])]
+    words = {"a": [3], "bc": [4, 6]}
+    out = word_means(model, words, templates, at_end=True)
+    with torch.no_grad():
+        for j, ids in enumerate(words.values()):
+            reps = [torch.stack(model(torch.tensor([pre + ids + post]), output_hidden_states=True)["hidden_states"])[:, 0, -1]
+                    for pre, post in templates]
+            assert np.allclose(out[:, j], torch.stack(reps).mean(0).numpy(), atol=1e-5)
+
+
 def test_row_entropy_indexes_the_flattened_kernel_by_key():
     """A walk's kernel (n, n) indexed by node, a relation's (n, n, C) by pair ``a*n + b``: the
     entropy of the row each key predicts from."""
