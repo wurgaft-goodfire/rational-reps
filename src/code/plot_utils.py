@@ -358,6 +358,15 @@ def draw_embedding(fig, cell, r, spec, title, cmap=None, colors=None, xy=None):
         scatter_geometry(ax, _torus_donut(r), title, cmap, colors)
         return
     if xy is not None:                                    # a chosen plane, e.g. one irrep's
+        xy = np.asarray(xy)
+        if xy.shape[1] == 3:                              # a chosen 3-D frame, e.g. one shared with the prediction
+            ax = fig.add_subplot(cell, projection="3d")
+            if spec is not None and spec.get("structure") in ("hypercube", "complete", "grid"):
+                from .data import structure_adjacency
+                draw_structure(ax, structure_adjacency(spec), xy, title, cmap=cmap)
+            else:
+                scatter_geometry(ax, xy, title, cmap, colors)
+            return
         scatter_geometry(fig.add_subplot(cell), xy, title, cmap, colors)
         return
     ndim = 3 if view == "3d" else 2

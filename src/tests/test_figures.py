@@ -167,6 +167,23 @@ def test_embedding_panels_accept_precomputed_scatter_coordinates():
     plt.close(fig)
 
 
+def test_embedding_panels_accept_three_dimensional_coordinates_for_a_lattice():
+    """A chosen 3-D frame (e.g. the prediction's PCs, shared across columns) draws 3-D panels, and
+    a grid keeps its edges so the sheet reads as a lattice."""
+    import numpy as np
+    from src.code.plot_utils import plot_embedding_panels
+
+    rng = np.random.default_rng(0)
+    E, X, pos = rng.normal(size=(9, 5)), rng.normal(size=(9, 5)), rng.normal(size=(9, 3))
+
+    fig = plot_embedding_panels(E, {"llm": X}, spec={"structure": "grid", "n": 3},
+                                coords={"predicted": pos, "llm": pos})
+
+    assert fig.axes[0].name == "3d" and fig.axes[2].name == "3d"
+    assert len(fig.axes[2].lines) == 12                                    # a 3x3 grid has 12 edges
+    plt.close(fig)
+
+
 def test_ultrametric_survives_leaves_that_are_all_far_apart():
     """The merge-absorbing tolerance must scale with the spread of merge heights, not their
     absolute size. A relational pair code puts every leaf far from every other -- entailment's

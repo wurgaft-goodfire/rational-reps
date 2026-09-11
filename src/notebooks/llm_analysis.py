@@ -39,12 +39,13 @@ def _(mo):
     from src.code.train import resolve_config, graph_overrides
     from src.code.data import init_dataset, structure_adjacency, adjacency_conditional
     from src.code.geometry import predicted_geometry
-    from src.code.analysis_utils import cka
+    from src.code.analysis_utils import cka, align_representations
     from src.code.llm import node_tokens, node_means, bayes_floor
     from src.code import plot_utils
     return (
         Path,
         adjacency_conditional,
+        align_representations,
         bayes_floor,
         cka,
         graph_overrides,
@@ -63,9 +64,10 @@ def _(mo):
 
 @app.cell
 def _(Path, graph_overrides, resolve_config):
-    WINDOW, L, B = 50, 512, 256                # steps averaged, walk length, walks
+    WINDOW, L, B = 50, 1024, 256               # steps averaged, walk length, walks
     WORLDS = {"ring": {"spec": {"structure": "ring", "n": 24, "cooccurrence": "adjacency"}, "backtrack": True},
               "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": False}}
+    VIEW = {"ring": "2d", "grid": "3d"}        # the predicted grid is a curved sheet
 
     def config(world):
         w = WORLDS[world]
@@ -76,7 +78,7 @@ def _(Path, graph_overrides, resolve_config):
 
     def cache_path(world):
         return Path(config(world).run_dir) / "node_means.npz"
-    return B, L, WINDOW, WORLDS, cache_path, config
+    return B, L, VIEW, WINDOW, WORLDS, cache_path, config
 
 
 @app.cell
@@ -128,63 +130,103 @@ def _(WORLDS, adjacency_conditional, cka, np, predicted_geometry, runs, structur
         _M = runs[_w]["means"]
         scores[_w] = {"diffusion": np.array([[cka(_m, predicted(_w, g)) for g in GAMMAS] for _m in _M]),
                       "adjacency": np.array([cka(_m, predicted(_w)) for _m in _M])}
-    return GAMMAS, predicted, scores
+
+    def best_layer(world):
+        """The layer (embedding excluded) and gamma index where the diffusion prediction fits best."""
+        best = scores[world]["diffusion"].max(1)
+        layer = 1 + int(best[1:].argmax())
+        return layer, int(scores[world]["diffusion"][layer].argmax())
+    return GAMMAS, best_layer, predicted, scores
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figures
+    ## Curves
 
-    Top: next-word NLL by step against the walk's Bayes floor (shaded: the averaged window); CKA by
-    layer for the diffusion prediction at its best $\gamma$ and for adjacency; CKA against $\gamma$
-    at the best layer. Bottom: the LLM Gram at the best layer, the predicted Gram at its $\gamma$,
-    and the LLM node means in their top two PCs.
+    Next-word NLL by step against the walk's Bayes floor (shaded: the averaged window); CKA by
+    layer for the diffusion prediction at its best $\gamma$ and for adjacency; CKA against
+    $\gamma$ at the best layer.
     """)
     return
 
 
 @app.cell
-def _(GAMMAS, L, WINDOW, WORLDS, bayes_floor, config, np, plot_utils, plt, predicted, runs, scores, structure_adjacency):
-    def figure(world):
-        run, sc, spec = runs[world], scores[world], WORLDS[world]["spec"]
-        M, best = run["means"], sc["diffusion"].max(1)
-        layer = 1 + int(best[1:].argmax())                                       # skip the embedding
-        gamma = GAMMAS[sc["diffusion"][layer].argmax()]
-        floor = bayes_floor(structure_adjacency(spec), run["walks"], WORLDS[world]["backtrack"])
-
-        fig = plt.figure(figsize=(15, 9)); gs = fig.add_gridspec(2, 3)
-        ax = fig.add_subplot(gs[0, 0])
-        ax.plot(run["nll"], label="Llama-3.1-8B"); ax.plot(floor, "--", color="k", label="Bayes floor")
-        ax.axvspan(L - 1 - WINDOW, L - 1, color="gray", alpha=0.15)
-        ax.set_xlabel("step"); ax.set_ylabel("next-word NLL (nats)"); ax.set_ylim(0, None); ax.legend()
-        ax.set_title(f"{world}: learning the walk in context")
-        ax = fig.add_subplot(gs[0, 1])
-        ax.plot(best, label=r"diffusion, best $\gamma$ per layer"); ax.plot(sc["adjacency"], "--", label="adjacency")
-        ax.set_xlabel("layer"); ax.set_ylabel("CKA to prediction"); ax.set_ylim(0, 1); ax.legend()
-        ax = fig.add_subplot(gs[0, 2])
-        ax.semilogx(GAMMAS, sc["diffusion"][layer], marker="o", label=f"diffusion, layer {layer}")
-        ax.axhline(sc["adjacency"][layer], ls="--", color="C1", label="adjacency")
-        ax.set_xlabel(r"$\gamma$"); ax.set_ylabel("CKA to prediction"); ax.set_ylim(0, 1); ax.legend()
-        plot_utils.gram_heatmap(fig.add_subplot(gs[1, 0]), M[layer], f"Llama layer {layer}, CKA {best[layer]:.2f}")
-        plot_utils.gram_heatmap(fig.add_subplot(gs[1, 1]), predicted(world, gamma), rf"predicted, diffusion $\gamma$={gamma}")
-        plot_utils.draw_embedding(fig, gs[1, 2], M[layer], spec, f"Llama layer {layer}, top PCs")
+def _(GAMMAS, L, WINDOW, WORLDS, bayes_floor, best_layer, config, plot_utils, plt, runs, scores, structure_adjacency):
+    def curves(world):
+        run, sc = runs[world], scores[world]
+        layer, g = best_layer(world)
+        best = sc["diffusion"].max(1)
+        floor = bayes_floor(structure_adjacency(WORLDS[world]["spec"]), run["walks"], WORLDS[world]["backtrack"])
+        fig, (a, b, c) = plt.subplots(1, 3, figsize=(16, 4.2), width_ratios=[2, 1, 1])
+        a.plot(run["nll"], label="Llama-3.1-8B"); a.plot(floor, "--", color="k", label="Bayes floor")
+        a.axvspan(L - 1 - WINDOW, L - 1, color="gray", alpha=0.15)
+        a.set_xlabel("step"); a.set_ylabel("next-word NLL (nats)"); a.set_ylim(0, None); a.legend()
+        a.set_title(f"{world}: learning the walk in context")
+        b.plot(best, label=r"diffusion, best $\gamma$ per layer"); b.plot(sc["adjacency"], "--", label="adjacency")
+        b.set_xlabel("layer"); b.set_ylabel("CKA to prediction"); b.set_ylim(0, 1); b.legend()
+        c.semilogx(GAMMAS, sc["diffusion"][layer], marker="o", label=f"diffusion, layer {layer}")
+        c.axhline(sc["adjacency"][layer], ls="--", color="C1", label="adjacency")
+        c.set_xlabel(r"$\gamma$"); c.set_ylabel("CKA to prediction"); c.set_ylim(0, 1); c.legend()
         fig.tight_layout()
-        print(f"{world}: layer {layer}, CKA diffusion {best[layer]:.3f} (γ={gamma}) vs adjacency "
+        print(f"{world}: layer {layer}, CKA diffusion {best[layer]:.3f} (γ={GAMMAS[g]}) vs adjacency "
               f"{sc['adjacency'][layer]:.3f}; final NLL {run['nll'][-WINDOW:].mean():.3f} vs floor {floor[-WINDOW:].mean():.3f}")
-        return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext"))
-    return (figure,)
+        return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext_curves"))
+    return (curves,)
 
 
-@app.cell
-def _(figure):
-    figure("ring")
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Comparison
+
+    The predicted code beside Llama at the layer where the adjacency prediction peaks and at the
+    layer where the diffusion prediction peaks. Top: top PCs, the LLM's rotated (Procrustes) onto
+    the prediction's PC frame so the panels share one frame (2-D ring, 3-D grid). Bottom: Grams,
+    annotated with the CKA to the shown prediction.
+    """)
     return
 
 
 @app.cell
-def _(figure):
-    figure("grid")
+def _(GAMMAS, VIEW, WORLDS, align_representations, best_layer, config, plot_utils, predicted, runs, scores):
+    def panels(world):
+        run, sc = runs[world], scores[world]
+        layer, g = best_layer(world)
+        layers = {f"Llama L{int(sc['adjacency'].argmax())}": int(sc["adjacency"].argmax()), f"Llama L{layer}": layer}
+        E = predicted(world, GAMMAS[g])
+        k = 3 if VIEW[world] == "3d" else 2
+        ref = plot_utils._pca(E, k)                                             # the prediction's PC frame
+        coords = {"predicted": ref, **{nm: align_representations(run["means"][l], ref, method="rotation", rank=k)[0]
+                                       for nm, l in layers.items()}}
+        fig = plot_utils.plot_embedding_panels(E, {nm: run["means"][l] for nm, l in layers.items()}, WORLDS[world]["spec"],
+                                               scores={nm: sc["diffusion"][l, g] for nm, l in layers.items()}, coords=coords)
+        fig.suptitle(rf"{world}: diffusion prediction, $\gamma$={GAMMAS[g]}", y=1.02)
+        return plot_utils.save_figure(fig, plot_utils.figure_path(config(world), "llm_incontext_panels"))
+    return (panels,)
+
+
+@app.cell
+def _(curves):
+    curves("ring")
+    return
+
+
+@app.cell
+def _(panels):
+    panels("ring")
+    return
+
+
+@app.cell
+def _(curves):
+    curves("grid")
+    return
+
+
+@app.cell
+def _(panels):
+    panels("grid")
     return
 
 
