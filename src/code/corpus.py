@@ -2,6 +2,7 @@
 between concept words and a context vocabulary over trillion-token indexes, cached per query."""
 import hashlib
 import json
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -12,17 +13,19 @@ import numpy as np
 API = "https://api.infini-gram.io/"
 
 
-def query(payload, timeout=60, attempts=3):
-    """POST one infini-gram query and return its response dict. Network failures are retried a few
-    times, then raised; an error reported by the API is raised at once."""
+def query(payload, timeout=60, attempts=8, backoff=2.0):
+    """POST one infini-gram query and return its response dict. Rate limiting (403/429) and network
+    failures are retried with doubling waits from ``backoff`` seconds, then raised; an error
+    reported by the API is raised at once."""
     data = json.dumps(payload).encode()
     for attempt in range(attempts):
         try:
             req = urllib.request.Request(API, data=data, headers={"Content-Type": "application/json"})
             out = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (urllib.error.URLError, TimeoutError):
             if attempt == attempts - 1:
                 raise
+            time.sleep(backoff * 2 ** attempt)
             continue
         if "error" in out:
             raise RuntimeError(f"infini-gram rejected {payload['query']!r}: {out['error']}")
@@ -42,7 +45,7 @@ def _cached(cache_dir, index, payload, query_fn):
 
 
 def cooccurrence(concepts, context, index, window=16, max_clause_freq=500_000, cache_dir="outputs/corpus",
-                 query_fn=query, workers=4):
+                 query_fn=query, workers=2):
     """Windowed co-occurrence counts ``C[i, j]``: how often concept ``i`` and context word ``j`` fall
     within ``window`` tokens of each other in the index. One CNF count query per pair; counts are
     exact for words below ``max_clause_freq`` occurrences and sampled above. (n_concepts, n_context)."""

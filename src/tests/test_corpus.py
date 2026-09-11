@@ -45,6 +45,21 @@ def test_cooccurrence_fills_the_table_from_one_query_per_pair_and_caches_it(tmp_
     assert np.array_equal(again, C) and len(calls) == 4
 
 
+def test_query_backs_off_on_rate_limiting_then_succeeds(monkeypatch):
+    """A 403/429 from the API is a burst limit: sleep with doubling waits and retry; the successful
+    response comes back once the API answers."""
+    import io, urllib.error
+    from src.code import corpus
+    replies = [urllib.error.HTTPError("u", 403, "Forbidden", {}, None),
+               urllib.error.HTTPError("u", 429, "Too Many", {}, None),
+               io.BytesIO(b'{"count": 7}')]
+    sleeps = []
+    monkeypatch.setattr(corpus.urllib.request, "urlopen", lambda req, timeout: (lambda r: (_ for _ in ()).throw(r) if isinstance(r, Exception) else r)(replies.pop(0)))
+    monkeypatch.setattr(corpus.time, "sleep", sleeps.append)
+    assert corpus.query({"query": "x"}, backoff=1.0)["count"] == 7
+    assert sleeps == [1.0, 2.0]
+
+
 @pytest.mark.slow
 def test_query_reaches_the_api():
     r = query({"index": "v4_dolma-v1_7_llama", "query_type": "count", "query": " January"})
