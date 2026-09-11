@@ -66,8 +66,7 @@ def _(mo):
 def _(Path, graph_overrides, resolve_config):
     WINDOW, L, B = 50, 1024, 256               # steps averaged, walk length, walks
     WORLDS = {"ring": {"spec": {"structure": "ring", "n": 24, "cooccurrence": "adjacency"}, "backtrack": True},
-              "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": False},
-              "grid, backtracking": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": True}}
+              "grid": {"spec": {"structure": "grid", "n": 5, "cooccurrence": "adjacency"}, "backtrack": True}}
 
     def config(world):
         w = WORLDS[world]
@@ -223,18 +222,6 @@ def _(curves):
 @app.cell
 def _(panels):
     panels("grid")
-    return
-
-
-@app.cell
-def _(curves):
-    curves("grid, backtracking")
-    return
-
-
-@app.cell
-def _(panels):
-    panels("grid, backtracking")
     return
 
 
