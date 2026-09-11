@@ -4,7 +4,7 @@ import pytest
 import torch
 from transformers import GPTNeoXConfig
 
-from src.code.llm import node_means, node_tokens, pair_means, row_entropy, triple_stream
+from src.code.llm import node_means, node_tokens, pair_means, row_entropy, triple_stream, word_means
 from src.code.models import TransformerModel
 
 
@@ -94,6 +94,23 @@ def test_triple_stream_indexes_a_separate_outcome_alphabet_from_zero():
     returns the outcome index itself (here one of six (feature, yes/no) answers)."""
     triples = triple_stream(_relational("set_difference", 2, 32), 2, 32)
     assert triples[..., 2].min() >= 0 and triples[..., 2].max() < 6
+
+
+def test_word_means_read_the_last_token_of_each_word_in_each_template():
+    """A word's representation is the residual at its last token inside a template, averaged over
+    templates; tokens are given as id lists, so a multi-token word is read at its final piece."""
+    model = _tiny()
+    templates = [([0, 1], [5]), ([2], [])]                     # (prefix ids, suffix ids) around the word
+    words = {"a": [3], "bc": [4, 6]}
+    out = word_means(model, words, templates)
+    with torch.no_grad():
+        for j, (w, ids) in enumerate(words.items()):
+            reps = []
+            for pre, post in templates:
+                res = model(torch.tensor([pre + ids + post]), output_hidden_states=True)
+                reps.append(torch.stack(res["hidden_states"])[:, 0, len(pre) + len(ids) - 1])
+            assert np.allclose(out[:, j], torch.stack(reps).mean(0).numpy(), atol=1e-5)
+    assert out.shape[1] == 2
 
 
 def test_row_entropy_indexes_the_flattened_kernel_by_key():

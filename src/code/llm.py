@@ -79,6 +79,22 @@ def pair_means(model, triples, tokens, out_tokens, colon, sep, window, prefix=()
     return {**out, "seen": seen.numpy()}
 
 
+@torch.no_grad()
+def word_means(model, words, templates):
+    """A word's representation inside templates: the residual at its last token, averaged over the
+    templates. ``words`` {name: token ids}, ``templates`` [(prefix ids, suffix ids)] -> (layers, n, d)."""
+    device = next(model.parameters()).device
+    out = []
+    for ids in words.values():
+        reps = []
+        for pre, post in templates:
+            x = torch.tensor([[*pre, *ids, *post]], device=device)
+            h = torch.stack(model(x, output_hidden_states=True)["hidden_states"])[:, 0, len(pre) + len(ids) - 1]
+            reps.append(h.float())
+        out.append(torch.stack(reps).mean(0))
+    return torch.stack(out, 1).cpu().numpy()
+
+
 def triple_stream(dataset, B, K):
     """(B, K, 3) triples ``(a, b, c)`` from a relational dataset's pointwise rows (every pair
     enumerated, an outcome drawn per row), permuted into ``B`` streams; ``c`` indexes the outcome
