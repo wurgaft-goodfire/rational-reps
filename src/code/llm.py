@@ -79,35 +79,6 @@ def pair_means(model, triples, tokens, out_tokens, colon, sep, window, prefix=()
     return {**out, "seen": seen.numpy()}
 
 
-def entailment_instruction(words, parents):
-    """State an is-a tree in words: one sentence per parent naming its children, then the rule the
-    examples follow. ``parents[i]`` is the parent of node ``i`` (-1 at the root)."""
-    children = {}
-    for i, p in enumerate(parents):
-        if p >= 0:
-            children.setdefault(p, []).append(words[i])
-    lines = [f"{words[p]} includes {' and '.join(kids)}." for p, kids in children.items()]
-    rule = ("A word includes itself and everything below it. Each example gives two words, then a "
-            "colon, then one of the words that includes both of them, chosen at random, then a comma.")
-    return " ".join(lines + [rule])
-
-
-def set_difference_instruction(words, features, answers, salience):
-    """State each item's features, then the rule the examples follow. Item ``i`` has feature ``j``
-    when bit ``j`` of ``i`` is set; ``answers`` holds the yes-word per feature, then the no-word per
-    feature; ``salience`` is how often each feature is the one asked about."""
-    nbit = len(features)
-    has = [[features[j] for j in range(nbit) if i >> j & 1] for i in range(len(words))]
-    lines = [f"{w} has {' and '.join(h) if h else 'nothing'}." for w, h in zip(words, has)]
-    weights = ", ".join(f"{f} ({s:g})" for f, s in zip(features, salience))
-    rule = (f"Each example gives two items, then a colon, then an answer about one feature, picked "
-            f"with weights {weights}: "
-            + " ".join(f"{answers[j]} if the first has {features[j]} and the second lacks it, "
-                       f"else {answers[nbit + j]};" for j in range(nbit))
-            + " then a comma.")
-    return " ".join(lines + [rule])
-
-
 def triple_stream(dataset, B, K):
     """(B, K, 3) triples ``(a, b, c)`` from a relational dataset's pointwise rows (every pair
     enumerated, an outcome drawn per row), permuted into ``B`` streams; ``c`` indexes the outcome

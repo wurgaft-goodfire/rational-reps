@@ -17,7 +17,7 @@ def _(mo):
     # A pretrained LLM reads a task from examples in context
 
     Items are named by unrelated single-token nouns and a Llama-3.1 model reads a long stream of
-    examples. Each key's representation is the residual at the separator after it, averaged over
+    examples with no instruction. Each key's representation is the residual at the separator after it, averaged over
     its appearances in the last 50 steps and over sequences, and is compared to the balanced
     factor $E = U\sqrt{S}$ of a row-centred log-conditional.
 
@@ -28,8 +28,7 @@ def _(mo):
     **Relations.** Triples `a b : c ,` read at the colon: `entailment` (15 tree nodes, $c$ uniform
     over the common ancestors of $a, b$) and `set_difference` (8 feature sets; six outcome words
     for "feature $f$ is in $a$ but not $b$: yes / no", asked with salience $1 : \tfrac12 : \tfrac14$).
-    Three variants: 8B from examples alone, 8B with the structure and the rule stated first, and
-    70B from examples alone. The prediction is the graded kernel's $(a,b) \times c$
+    Read with the 8B and the 70B model. The prediction is the graded kernel's $(a,b) \times c$
     log-conditional; the alternative drops the grading (lowest common ancestor only; equal salience).
     """)
     return
@@ -50,8 +49,7 @@ def _(mo):
                                answer_classes, apply_lapse)
     from src.code.geometry import predicted_geometry, log_conditional, class_means
     from src.code.analysis_utils import cka, align_representations
-    from src.code.llm import (node_tokens, node_means, bayes_floor, pair_means, triple_stream, relation_floor,
-                              entailment_instruction, set_difference_instruction)
+    from src.code.llm import node_tokens, node_means, bayes_floor, pair_means, triple_stream, relation_floor
     from src.code import plot_utils
     return (
         Path,
@@ -62,7 +60,6 @@ def _(mo):
         bayes_floor,
         cka,
         class_means,
-        entailment_instruction,
         graph_overrides,
         init_dataset,
         log_conditional,
@@ -76,7 +73,6 @@ def _(mo):
         relation_floor,
         relation_tensor,
         resolve_config,
-        set_difference_instruction,
         structure_adjacency,
         torch,
         triple_stream,
@@ -105,16 +101,12 @@ def _(Path, graph_overrides, resolve_config):
     K = 400                                    # triples per sequence (five tokens each)
     RELATIONS = {"entailment": {"alt": {"graded": False}},
                  "set_difference": {"alt": {"salience": [1.0, 1.0, 1.0]}}}
-    VARIANTS = {"8B, examples": {"model": "llm", "instruction": False},
-                "8B, instructed": {"model": "llm", "instruction": True},
-                "70B, examples": {"model": "llm_70b", "instruction": False}}
+    VARIANTS = {"8B": "llm", "70B": "llm_70b"}   # the model each relation run reads
     BATCH = {"llm": 16, "llm_70b": 4}          # sequences per forward pass
 
     def rel_config(relation, variant):
-        v = VARIANTS[variant]
-        return resolve_config(["runner=rel_transformer", f"relation={relation}", f"model={v['model']}", "name=llm",
-                               "++lapse=0.0", f"training_kwargs.batch_size={B * K}"]
-                              + (["++instruction=true"] if v["instruction"] else []))
+        return resolve_config(["runner=rel_transformer", f"relation={relation}", f"model={VARIANTS[variant]}",
+                               "name=llm", "++lapse=0.0", f"training_kwargs.batch_size={B * K}"])
 
     def rel_cache(relation, variant):
         return Path(rel_config(relation, variant).run_dir) / "pair_means.npz"
@@ -122,26 +114,7 @@ def _(Path, graph_overrides, resolve_config):
 
 
 @app.cell
-def _(answer_classes, entailment_instruction, np, relation_tensor, set_difference_instruction):
-    def rel_words(relation, dataset):
-        """How many nouns a relation needs beyond its items: a separate outcome alphabet, and
-        feature names for the instruction."""
-        n_features = int(np.log2(dataset.n_items)) if relation == "set_difference" else 0
-        return dataset.n_items + dataset.n_outcomes * dataset.bipartite + n_features
-
-    def rel_instruction(relation, words, dataset):
-        """The instruction text for a relation, from its item / outcome / feature words."""
-        n, m = dataset.n_items, dataset.n_outcomes
-        if relation == "entailment":
-            return entailment_instruction(words, answer_classes("entailment")[1]["parents"])
-        T = relation_tensor({"relation": relation}); nbit = m // 2
-        salience = T[0, 0, :nbit] + T[0, 0, nbit:]                     # how often each feature is asked
-        return set_difference_instruction(words[:n], words[n + m:], words[n:n + m], salience)
-    return rel_instruction, rel_words
-
-
-@app.cell
-def _(B, BATCH, K, RELATIONS, VARIANTS, WINDOW, WORLDS, cache_path, config, init_dataset, node_means, node_tokens, np, pair_means, rel_cache, rel_config, rel_instruction, rel_words, torch, triple_stream):
+def _(B, BATCH, K, RELATIONS, VARIANTS, WINDOW, WORLDS, cache_path, config, init_dataset, node_means, node_tokens, np, pair_means, rel_cache, rel_config, torch, triple_stream):
     # the expensive step, cached raw: the streams, the words and the per-layer means per key; one
     # model load per model that still has work
     _jobs = {}
@@ -151,7 +124,7 @@ def _(B, BATCH, K, RELATIONS, VARIANTS, WINDOW, WORLDS, cache_path, config, init
     for _r in RELATIONS:
         for _v in VARIANTS:
             if not rel_cache(_r, _v).exists():
-                _jobs.setdefault(VARIANTS[_v]["model"], []).append((rel_config(_r, _v), "relation", _r, _v))
+                _jobs.setdefault(VARIANTS[_v], []).append((rel_config(_r, _v), "relation", _r, _v))
     for _model, _todo in _jobs.items():
         from transformers import AutoModelForCausalLM, AutoTokenizer
         _path = _todo[0][0].model_kwargs.model_path
@@ -169,16 +142,13 @@ def _(B, BATCH, K, RELATIONS, VARIANTS, WINDOW, WORLDS, cache_path, config, init
                 np.savez(cache_path(_key), walks=_walks.cpu().numpy(), tokens=_ids, words=_words, **_out)
                 continue
             _triples = triple_stream(_ds, B, K)
-            _ids, _words = node_tokens(_tok, rel_words(_key, _ds), seed=_cfg.random_seed)
             _n, _m = _ds.n_items, _ds.n_outcomes
-            _items, _outs = _ids[:_n], (_ids[_n:_n + _m] if _ds.bipartite else _ids[:_n])
-            _text = rel_instruction(_key, _words, _ds) if VARIANTS[_variant]["instruction"] else ""
-            _prefix = (_tok.bos_token_id, *(_tok.encode(_text + "\n", add_special_tokens=False) if _text else ()))
+            _ids, _words = node_tokens(_tok, _n + _m * _ds.bipartite, seed=_cfg.random_seed)   # own outcome alphabet if bipartite
+            _items, _outs = _ids[:_n], (_ids[_n:] if _ds.bipartite else _ids)
             _out = pair_means(_llm, _triples, _items, _outs, colon=_colon, sep=_sep, window=WINDOW,
-                              prefix=_prefix, batch_size=BATCH[_model])
+                              prefix=(_tok.bos_token_id,), batch_size=BATCH[_model])
             rel_cache(_key, _variant).parent.mkdir(parents=True, exist_ok=True)
-            np.savez(rel_cache(_key, _variant), triples=_triples.numpy(), tokens=_ids, words=_words,
-                     instruction=_text, **_out)
+            np.savez(rel_cache(_key, _variant), triples=_triples.numpy(), tokens=_ids, words=_words, **_out)
         del _llm; torch.cuda.empty_cache()
     runs = {w: dict(np.load(cache_path(w))) for w in WORLDS}
     rel_runs = {(r, v): dict(np.load(rel_cache(r, v))) for r in RELATIONS for v in VARIANTS}
@@ -402,7 +372,7 @@ def _(K, RELATIONS, VARIANTS, WINDOW, np, plot_utils, plt, rel_best_layer, rel_c
         a.set_title(f"{relation}: learning the relation in context")
         b.set_xlabel("layer / depth"); b.set_ylabel("CKA to prediction"); b.set_ylim(0, 1); b.legend()
         fig.tight_layout()
-        return plot_utils.save_figure(fig, plot_utils.figure_path(rel_config(relation, "8B, examples"), "llm_incontext_curves"))
+        return plot_utils.save_figure(fig, plot_utils.figure_path(rel_config(relation, "8B"), "llm_incontext_curves"))
     return (rel_curves,)
 
 
@@ -417,7 +387,7 @@ def _(VARIANTS, answer_classes, class_means, plot_utils, rel_best_layer, rel_con
             spec=draw_spec, cmap=plot_utils.FIG.item_cmap,
             scores={f"{v}, L{l}": rel_scores[relation, v]["graded"][l] for v, l in layers.items()})
         fig.suptitle(f"{relation}: graded prediction", y=1.02)
-        return plot_utils.save_figure(fig, plot_utils.figure_path(rel_config(relation, "8B, examples"), "llm_incontext_panels"))
+        return plot_utils.save_figure(fig, plot_utils.figure_path(rel_config(relation, "8B"), "llm_incontext_panels"))
     return (rel_panels,)
 
 
