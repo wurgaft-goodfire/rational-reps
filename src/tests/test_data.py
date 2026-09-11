@@ -7,7 +7,7 @@ from src.code.config import Config
 from src.code.data import KernelDataset, RelationalDataset
 
 
-def _config(sample_mode, n=24, batch_size=8, context_length=6):
+def _config(sample_mode, n=24, batch_size=8, context_length=6, **extra):
     cfg = OmegaConf.create({
         "setting": "graph-cooccurrence",
         "structure": "ring",
@@ -17,7 +17,7 @@ def _config(sample_mode, n=24, batch_size=8, context_length=6):
         "random_seed": 0,
         "training_kwargs": {"batch_size": batch_size, "context_length": context_length},
     })
-    return Config(cfg)
+    return Config(OmegaConf.merge(cfg, extra))
 
 
 def test_conditional_is_square_and_arity_one():
@@ -259,3 +259,14 @@ def test_bipartite_is_declared_by_the_structure_not_read_off_the_shapes():
     # a plain ring still chains: its outcomes are its nodes
     ring = KernelDataset(_config("sequence"))
     assert ring.connected and not ring.bipartite
+
+
+def test_no_backtrack_walk_never_returns_to_its_predecessor():
+    """``backtrack=False`` forbids the step back: every triple ``(x_{t-1}, x_t, x_{t+1})`` has
+    ``x_{t+1} != x_{t-1}``, while each step still follows an edge of the ring."""
+    ds = KernelDataset(_config("sequence", n=12, batch_size=64, context_length=40, lapse=0.0,
+                               structure_kwargs={"n": 12, "cooccurrence": "adjacency"}))
+    walk = ds._markov_walk(ds.P, torch.zeros(64, dtype=torch.long, device=ds.device), 40, backtrack=False)
+    assert (walk[:, 2:] != walk[:, :-2]).all()
+    step = (walk[:, 1:] - walk[:, :-1]) % 12
+    assert torch.isin(step, torch.tensor([1, 11], device=step.device)).all()

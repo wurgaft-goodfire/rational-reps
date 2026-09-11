@@ -95,7 +95,9 @@ $CACHE_DIR/{setting}/{task}/{overrides}/{name}/
 
 Analysis notebooks in `src/notebooks/` are [marimo](https://marimo.io/) notebooks: plain `.py`
 files, no `.ipynb` in the repo. One notebook per setting (`hmm_analysis.py`,
-`concepts_analysis.py`, …) plus cross-setting geometry studies.
+`concepts_analysis.py`, …) plus cross-setting geometry studies. `llm_analysis.py` feeds graph walks
+to a pretrained LLM (`conf/model/llm.yaml`) and compares its node representations to the diffusion
+prediction; the LLM pass is cached as `node_means.npz` in the run dir, so it needs a GPU only once.
 
 ```bash
 uv run marimo edit src/notebooks/<name>.py     # interactive, in the browser
@@ -171,6 +173,7 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 - `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
 - `src/code/train.py` — Hydra entry point + `train_inline` for tests. `train` sizes the model from the dataset and runs the HF `Trainer` with custom callbacks; `solve` fills a run dir from the theory instead (`runner=theory`). Both write the same checkpoint, history and evaluation files.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.
+- `src/code/llm.py` — a pretrained LM on graph walks: nodes as single-token nouns with a separator, `node_means` (per-layer mean residual per node at its separator, plus the next-word NLL by step) and the walk's `bayes_floor`.
 - `src/code/eval.py` — `Evaluator`: `evaluate(model)` scores every input against its exact target and returns the loss, logits, representation and readout as numpy; `save` writes them to a checkpoint's `eval.npz`. Also the standalone eval entry point.
 - `src/code/analysis_utils.py` — the array side: `load_run` / `load_evaluation` (with `readout_basis` and `representation`), explicit transforms (`feature_vectors`, `leverage`, `logit_map`), and the similarity metrics (`cka`, `cca`, `rsa`, nulls).
 - `src/code/plot_utils.py` — figure styling, `figure_path`, `save_figure`.

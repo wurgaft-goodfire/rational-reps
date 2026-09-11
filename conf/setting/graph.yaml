@@ -8,3 +8,4 @@ structure_kwargs:        # the full structure spec: shape params + the co-occurr
   gamma: 0.8             # diffusion decay for the co-occurrence kernel
   cooccurrence: diffusion  # diffusion (multi-step co-occ) | geodesic (shortest-path gamma**d) | adjacency (raw one-step) | heat (exp(gamma*A))
 sample_mode: sequence    # sequence (a stream of observations) | pointwise (one input, one outcome)
+# ++backtrack=false forbids a sequence walk from stepping back to the previous node (default true)
