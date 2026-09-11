@@ -232,7 +232,7 @@ def _structure_graph(spec):
     from .data import structure_adjacency, tree_parents
     name = spec["structure"]; p = {k: v for k, v in spec.items() if k != "structure"}
     if name == "tree":
-        return _tree_graph(tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents")))
+        return _tree_graph(tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents"), p.get("levels")))
     if name in ("product", "stack"):
         factors = p["factors"]
         if name == "product" and len(factors) == 2 and all(f["structure"] == "ring" for f in factors):
@@ -752,7 +752,7 @@ def _tree_items(spec, n_items):
     holds rather than assuming ``tree_conditional``'s default."""
     from .data import tree_parents
     p = {k: v for k, v in spec.items() if k != "structure"}
-    parents = tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents"))
+    parents = tree_parents(p.get("n", 3), p.get("k", 2), p.get("parents"), p.get("levels"))
     ch = _tree_children(parents)
     leaves = [u for u in range(len(parents)) if u not in ch]
     return parents, (leaves if n_items == len(leaves) else list(range(len(parents))))

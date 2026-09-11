@@ -1,0 +1,14 @@
+# @package _global_
+# A tree whose levels have shapes: the children of every node at level l form the structure levels[l]
+# instead of a complete graph. Two leaves are similar at level l only if they share the parent above it,
+# log p(y|x) = sum_l alpha_l [same parent at l] kappa_l(z_l(x), z_l(y)), so the code is a direct sum ordered
+# by level: the root's shape on every leaf, then one private copy of the next shape per node. Here months
+# (a ring) over latitude bands (a 3-node chain): one shared season circle and a private band line per month,
+# in contrast to the product ring x chain, where the band axis is shared by every month.
+setting: graph-cooccurrence
+structure: tree
+structure_kwargs:
+  levels:
+    - {structure: ring, n: 12, cooccurrence: gaussian, gamma: 1.0, alpha: 1.5}   # alpha 1.5 keeps every leaf above p = 0.003
+    - {structure: chain, n: 3, cooccurrence: gaussian, gamma: 1.0, alpha: 1.0}
+sample_mode: sequence

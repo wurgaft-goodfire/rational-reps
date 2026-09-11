@@ -68,7 +68,7 @@ and the predicted geometry.
 | `relational` | order-2 operation `c = a*b` | bilinear tensor factors |
 | `feature_cube` | N words with Bernoulli(p) attribute bundles → m attribute tokens | packed (superposed) attribute directions |
 | `factors` | N words, K structured attributes (e.g. rings) each sparsely present → the attributes' node tokens | one plane per factor, orthogonal, plus K−1 presence dims |
-| `attribute_tree` | a category tree whose nodes own attributes; items every (leaf, positions) combination | the tree's simplices plus one plane per attribute, occupied by the owner's subtree |
+| `nested_tree` | a tree whose levels have shapes (`tree` with `levels`): the children of each node form a ring, chain, ... | a direct sum ordered by level: the root's shape on every leaf, then a private copy of the next shape per node |
 | `hmm` | latent walk on a graph, emitted tokens | belief state of the forward algorithm |
 
 Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `linear`, `sae`, `llm` (pretrained).

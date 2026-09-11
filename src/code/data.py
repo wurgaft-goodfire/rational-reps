@@ -547,30 +547,46 @@ def cooccur_logcond(A, gamma=0.8):
     return logcond_from_sim(walk_cooccur(A, gamma))
 
 
-def tree_conditional(n=3, k=2, parents=None, gamma=0.85, leaves_only=True):
-    """Tree diffusion log-conditional over all nodes. Balanced (depth n, branching k) or
-    unbalanced via an explicit `parents` list (``parents[i]`` = parent index, root = -1);
-    ``leaves_only=True`` restricts to leaves."""
-    parents = tree_parents(n, k, parents)
-    J = walk_cooccur(tree_adjacency(parents), gamma)
-    if leaves_only:
-        internal = {p for p in parents if p is not None and p >= 0}
-        ids = [i for i in range(len(parents)) if i not in internal]
-        J = J[np.ix_(ids, ids)]
-    return logcond_from_sim(J)
+def tree_conditional(n=3, k=2, parents=None, gamma=0.85, leaves_only=True, levels=None):
+    """Tree log-conditional. Without ``levels``: diffusion over all nodes, balanced (depth n,
+    branching k) or unbalanced via an explicit `parents` list (``parents[i]`` = parent index,
+    root = -1); ``leaves_only=True`` restricts to leaves. With ``levels`` (one structure spec per
+    level, each with ``alpha``): the children of every node at level l form ``levels[l]``, and two
+    leaves are similar at level l only if they share the parent above it,
+    log p(y|x) = sum_l alpha_l [same parent at l] kappa_l(z_l(x), z_l(y)) + const, kappa_l the
+    level's row-centered log-conditional. Leaves only; the code is a direct sum ordered by level."""
+    if levels is None:
+        parents = tree_parents(n, k, parents)
+        J = walk_cooccur(tree_adjacency(parents), gamma)
+        if leaves_only:
+            internal = {p for p in parents if p is not None and p >= 0}
+            ids = [i for i in range(len(parents)) if i not in internal]
+            J = J[np.ix_(ids, ids)]
+        return logcond_from_sim(J)
+    from scipy.special import logsumexp
+    kappas = [graph_conditional({key: v for key, v in lvl.items() if key != "alpha"}) for lvl in levels]
+    kappas = [kap - kap.mean(1, keepdims=True) for kap in kappas]
+    pos = np.array(list(itertools.product(*[range(len(kap)) for kap in kappas])))   # leaf = (z_1, ..., z_L), DFS order
+    Lc = np.zeros((len(pos), len(pos)))
+    for l, (lvl, kap) in enumerate(zip(levels, kappas)):
+        same_parent = (pos[:, None, :l] == pos[None, :, :l]).all(-1)
+        Lc += lvl["alpha"] * same_parent * kap[pos[:, l]][:, pos[:, l]]
+    return Lc - logsumexp(Lc, axis=1, keepdims=True)
 
 
-def tree_parents(n=3, k=2, parents=None):
+def tree_parents(n=3, k=2, parents=None, levels=None):
     """Parent-index list for a tree (root = -1). Explicit ``parents`` if given, else a balanced
-    depth-n, branching-k tree in DFS pre-order, so each node is immediately followed by its whole
-    subtree — subtrees stay contiguous, giving the conditional its nested-block (ultrametric) look."""
+    tree in DFS pre-order, so each node is immediately followed by its whole subtree — subtrees
+    stay contiguous, giving the conditional its nested-block (ultrametric) look. Branching is
+    ``k`` at every level to depth ``n``, or ``levels[l]["n"]`` at level l."""
     if parents is not None:
         return list(parents)
+    ks = [k] * n if levels is None else [lvl["n"] for lvl in levels]
     out = []
     def build(depth, parent):
         me = len(out); out.append(parent)
-        if depth < n:
-            for _ in range(k):
+        if depth < len(ks):
+            for _ in range(ks[depth]):
                 build(depth + 1, me)
     build(0, -1)
     return out
@@ -585,10 +601,10 @@ def tree_adjacency(parents):
     return A
 
 
-def _tree_graph(n=2, k=2, parents=None, **_):
-    """Tree adjacency over *all* nodes (balanced depth-n branch-k, or an explicit ``parents`` list).
-    ``**_`` swallows conditional-only keys (gamma / leaves_only)."""
-    return tree_adjacency(tree_parents(n, k, parents))
+def _tree_graph(n=2, k=2, parents=None, levels=None, **_):
+    """Tree adjacency over *all* nodes (balanced depth-n branch-k, per-level branching from
+    ``levels``, or an explicit ``parents`` list). ``**_`` swallows conditional-only keys."""
+    return tree_adjacency(tree_parents(n, k, parents, levels))
 
 
 def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
@@ -638,36 +654,6 @@ def factors(factors, N=256, p=0.3, decay=0.9, scale=8.0, seed=0):
     blocks = [slice(int(e - len(k)), int(e)) for e, k in zip(ends, kappas)]
     return Lc - logsumexp(Lc, axis=1, keepdims=True), {"Z": Z, "positions": pos, "alpha": alpha,
                                                        "blocks": blocks, "bipartite": True}
-
-
-def attribute_tree(attributes, n=1, k=2, parents=None):
-    """Category tree whose nodes own attribute factors; items are every (leaf, positions) combination.
-    ``attributes``: structure specs with ``node`` (owner) and ``alpha``; a leaf's active attributes are
-    those on its root path. Lc(x,(a,j)) = alpha_a [owner on path] (1 + kappa_a(z_a, j)), kappa_a the
-    attribute's row-centered log-conditional. Returns (L (n_items, sum n_a), {"leaf" (n_items,),
-    "Z" (n_items, A) activity, "positions" (n_items, A), "alpha", "blocks", "parents", "bipartite"})."""
-    from scipy.special import logsumexp
-    parents = tree_parents(n, k, parents)
-    owners = [a["node"] for a in attributes]
-    alpha = np.array([a["alpha"] for a in attributes], float)
-    kappas = [graph_conditional({key: v for key, v in a.items() if key not in ("node", "alpha")}) for a in attributes]
-    kappas = [kap - kap.mean(1, keepdims=True) for kap in kappas]
-    leaves = [v for v in range(len(parents)) if v not in set(parents)]
-    path = lambda v: [] if v < 0 else path(parents[v]) + [v]
-    leaf_col, Z, pos = [], [], []
-    for leaf in leaves:
-        active = [i for i, v in enumerate(owners) if v in path(leaf)]
-        for combo in itertools.product(*[range(kappas[i].shape[0]) for i in active]):
-            z = np.zeros(len(attributes)); p = np.zeros(len(attributes), int)
-            z[active] = 1.0; p[active] = combo
-            leaf_col.append(leaf); Z.append(z); pos.append(p)
-    Z, pos = np.array(Z), np.array(pos)
-    Lc = np.concatenate([Z[:, [i]] * alpha[i] * (1 + kap[pos[:, i]]) for i, kap in enumerate(kappas)], 1)
-    ends = np.cumsum([kap.shape[1] for kap in kappas])                    # an attribute may read out on fewer tokens than positions
-    blocks = [slice(int(e - kap.shape[1]), int(e)) for e, kap in zip(ends, kappas)]
-    return Lc - logsumexp(Lc, axis=1, keepdims=True), {"leaf": np.array(leaf_col), "Z": Z, "positions": pos,
-                                                       "alpha": alpha, "blocks": blocks, "parents": parents,
-                                                       "bipartite": True}
 
 
 # ── Hypothesis spaces (bipartite): hypotheses -> observations, strong sampling p(x|h) = 1/|h| ──
@@ -765,7 +751,6 @@ _STRUCTURES = {
     # bipartite (no adjacency): words -> features; hypothesis spaces -> observations
     "feature_cube": _Structure(None, feature_cube),
     "factors": _Structure(None, factors),
-    "attribute_tree": _Structure(None, attribute_tree),
     "intervals": _Structure(None, interval_hypotheses),
     "rectangles": _Structure(None, rectangle_hypotheses),
     "subtrees": _Structure(None, subtree_hypotheses),
