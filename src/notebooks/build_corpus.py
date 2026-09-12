@@ -1,18 +1,21 @@
-"""Build a corpus's co-occurrence statistics: train a 25k-word tokenizer on it, encode it once into an
-id stream, and accumulate the full vocabulary x vocabulary window co-occurrence matrix on the GPU.
-Writes ``$CACHE_DIR/corpus/{tag}/`` with ``ids.bin`` (uint16), ``doc_lengths.npy``, ``vocab.json``,
-``freq.npy`` and ``C_w{window}_{weighting}.npy``. Run: ``uv run python -m src.notebooks.build_corpus wikipedia [weighting]``."""
+"""Build a corpus's co-occurrence statistics: count the exact 25k-word vocabulary over its shards
+(40 processes), encode it once into an id stream (same pool, Rust word tokenizer), and accumulate the
+full vocabulary x vocabulary window co-occurrence matrix on the GPU. Writes ``$CACHE_DIR/corpus/{tag}/``
+with ``ids.bin`` (uint16), ``doc_lengths.npy``, ``vocab.json``, ``freq.npy`` and
+``C_w{window}_{weighting}.npy``. Run: ``uv run python -m src.notebooks.build_corpus wikipedia [weighting]``."""
 import json
 import os
 import sys
 import time
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 
-from src.code.corpus import at_least, cooccurrence_matrix, encode_corpus, hub_texts, joined, train_tokenizer
+from src.code.corpus import (at_least, cooccurrence_matrix, encode_corpus, hub_shards, joined, parquet_texts, vocabulary,
+                             word_tokenizer)
 
-VOCAB, WINDOW = 25000, 16
+VOCAB, WINDOW, WORKERS = 25000, 16, 40
 CORPORA = {  # repo, shard prefix, text column, article filter (min words), lines joined per passage
     "wikipedia": {"repo": "wikimedia/wikipedia", "prefix": "20231101.en/", "column": "text", "min_words": 200,
                   "join": 1, "tag": "wikipedia_20231101_en"},   # English Wikipedia 2023-11, articles of >= 200 words
@@ -23,8 +26,9 @@ CORPORA = {  # repo, shard prefix, text column, article filter (min words), line
 }
 
 
-def texts_of(corpus):
-    texts = hub_texts(corpus["repo"], corpus["prefix"], column=corpus["column"])
+def shard_texts(corpus, path):
+    """The documents of one parquet shard: passages of ``join`` rows, or single rows of >= ``min_words`` words."""
+    texts = parquet_texts([path], column=corpus["column"])
     return joined(texts, corpus["join"]) if corpus["join"] > 1 else at_least(texts, corpus["min_words"])
 
 
@@ -33,14 +37,16 @@ if __name__ == "__main__":
     out = Path(os.environ.get("CACHE_DIR", "outputs")) / "corpus" / corpus["tag"]; out.mkdir(parents=True, exist_ok=True)
     t = time.time()
     if not (out / "ids.bin").exists():                            # the id stream is built once per corpus
-        tok = train_tokenizer(texts_of(corpus), VOCAB)
-        print(f"tokenizer trained: {time.time() - t:.0f}s", flush=True)
-        ids, docs, vocab, freq = encode_corpus(texts_of(corpus), tok)
+        shards, read = hub_shards(corpus["repo"], corpus["prefix"]), partial(shard_texts, corpus)
+        words, freq = vocabulary(shards, read, VOCAB, WORKERS)
+        print(f"vocabulary of {len(words):,} words from {len(shards)} shards (rarest: {words[-1]!r} x {freq[-1]:,}): {time.time() - t:.0f}s", flush=True)
+        ids, lengths = encode_corpus(shards, read, word_tokenizer(words), WORKERS)
+        assert np.array_equal(np.bincount(ids, minlength=len(words)), freq)   # the Rust tokenizer reproduces the Python counter
         ids.tofile(out / "ids.bin")
-        np.save(out / "doc_lengths.npy", np.bincount(docs).astype(np.int64))
-        (out / "vocab.json").write_text(json.dumps(vocab.tolist()))
+        np.save(out / "doc_lengths.npy", lengths)
+        (out / "vocab.json").write_text(json.dumps(words.tolist()))
         np.save(out / "freq.npy", freq)
-        print(f"encoded {len(ids):,} tokens, {len(vocab):,} words, {docs[-1] + 1:,} documents: {time.time() - t:.0f}s", flush=True)
+        print(f"encoded {len(ids):,} tokens in {len(lengths):,} documents: {time.time() - t:.0f}s", flush=True)
     ids = np.fromfile(out / "ids.bin", dtype=np.uint16)
     docs = np.repeat(np.arange(len(lengths := np.load(out / "doc_lengths.npy")), dtype=np.int32), lengths)
     V = len(json.loads((out / "vocab.json").read_text()))

@@ -3,8 +3,8 @@ for exact n-gram counts."""
 import numpy as np
 import pytest
 
-from src.code.corpus import (at_least, cooccurrence_matrix, cooccurrence_table, encode_corpus, joined, parquet_texts,
-                             query, train_tokenizer, window_counts)
+from src.code.corpus import (at_least, cooccurrence_matrix, encode_corpus, joined, parquet_texts, query, vocabulary,
+                             window_counts, word_tokenizer)
 
 
 def test_window_counts_lowercase_the_text_and_count_every_token_in_the_window():
@@ -15,13 +15,6 @@ def test_window_counts_lowercase_the_text_and_count_every_token_in_the_window():
     assert counts["may"] == {"in": 1, "the": 2, "garden": 2, "bloom": 1}
     assert counts["march"] == {"on": 1, "5": 1, "2010": 1}
     assert freq["may"] == 2 and freq["2010"] == 1
-
-
-def test_cooccurrence_table_uses_the_most_frequent_tokens_concepts_included():
-    counts = {"a": {"x": 3, "y": 1, "b": 2}, "b": {"y": 2, "a": 2}}
-    freq = {"x": 10, "y": 20, "z": 30, "a": 100, "b": 5}
-    C, vocab = cooccurrence_table(counts, freq, ["a", "b"], k=3)
-    assert vocab == ["a", "z", "y"] and np.array_equal(C, [[0, 0, 1], [2, 0, 2]])
 
 
 def test_at_least_filters_short_texts_by_word_count():
@@ -40,30 +33,37 @@ def test_parquet_texts_streams_the_text_column_across_files(tmp_path):
 
 
 TEXTS = ["The cat sat on the mat. The cat sat, 2 cats sat!", "A dog sat; the dog ran to the cat."]   # 11 distinct tokens
+SHARDS = [TEXTS[:1], TEXTS[1:]]                                          # two shards, read with ``list``
 
 
-def test_train_tokenizer_keeps_the_most_frequent_lowercased_tokens():
-    """The word-level tokenizer lowercases, splits on anything that is not a letter or digit, and
-    keeps the ``vocab_size`` most frequent tokens; ids are in frequency order and out-of-vocabulary
-    tokens are dropped from the stream."""
-    tok = train_tokenizer(TEXTS, vocab_size=3)
-    ids, docs, vocab, freq = encode_corpus(TEXTS, tok)
-    assert list(vocab) == ["the", "sat", "cat"] and freq.tolist() == [5, 4, 3]
+def test_vocabulary_keeps_the_most_frequent_lowercased_tokens_in_frequency_order():
+    """Text is lowercased and split on anything that is not a letter or digit; the ``size`` most
+    frequent tokens are kept, counted exactly over all shards."""
+    words, counts = vocabulary(SHARDS, list, 3, workers=2)
+    assert words.tolist() == ["the", "sat", "cat"] and counts.tolist() == [5, 4, 3]
+
+
+def test_encode_corpus_streams_in_vocabulary_ids_per_document():
+    """Ids index the vocabulary; out-of-vocabulary tokens are dropped; ``lengths`` counts the kept
+    tokens of each text, in shard order."""
+    words, _ = vocabulary(SHARDS, list, 3, workers=2)
+    ids, lengths = encode_corpus(SHARDS, list, word_tokenizer(words), workers=2)
     assert ids.dtype == np.uint16 and ids.tolist() == [0, 2, 1, 0, 0, 2, 1, 1, 1, 0, 0, 2]
-    assert docs.tolist() == [0] * 8 + [1] * 4
+    assert lengths.tolist() == [8, 4]
 
 
 def test_cooccurrence_matrix_matches_the_window_counter_and_weights_by_distance():
     """Flat weighting reproduces ``window_counts`` over the same tokens (both orders, same document
     only); ``1/d`` divides each pair's count by its distance."""
-    tok = train_tokenizer(TEXTS, vocab_size=11)
-    ids, docs, vocab, _ = encode_corpus(TEXTS, tok)
-    counts, _ = window_counts(TEXTS, list(vocab), window=3)
-    expected = np.array([[counts[a].get(b, 0) for b in vocab] for a in vocab])
-    C = cooccurrence_matrix(ids, docs, len(vocab), window=3, weighting="flat", device="cpu")
+    words, _ = vocabulary(SHARDS, list, 11, workers=2)
+    ids, lengths = encode_corpus(SHARDS, list, word_tokenizer(words), workers=2)
+    docs = np.repeat(np.arange(len(lengths)), lengths)
+    counts, _ = window_counts(TEXTS, list(words), window=3)
+    expected = np.array([[counts[a].get(b, 0) for b in words] for a in words])
+    C = cooccurrence_matrix(ids, docs, len(words), window=3, weighting="flat", device="cpu")
     assert np.array_equal(C, expected)
-    C1 = cooccurrence_matrix(ids, docs, len(vocab), window=3, weighting="1/d", device="cpu")
-    i, j = list(vocab).index("cat"), list(vocab).index("mat")             # "mat the cat" once, distance 2; nothing else within 3
+    C1 = cooccurrence_matrix(ids, docs, len(words), window=3, weighting="1/d", device="cpu")
+    i, j = list(words).index("cat"), list(words).index("mat")             # "mat the cat" once, distance 2; nothing else within 3
     assert np.isclose(C[i, j], 1) and np.isclose(C1[i, j], 0.5)
 
 
