@@ -1,4 +1,4 @@
-"""Build a corpus's co-occurrence statistics: count the exact 25k-word vocabulary over its shards
+"""Build a corpus's co-occurrence statistics: count the exact 50k-word vocabulary over its shards
 (40 processes), encode it once into an id stream (same pool, Rust word tokenizer), and accumulate the
 full vocabulary x vocabulary window co-occurrence matrix on the GPU. Writes ``$CACHE_DIR/corpus/{tag}/``
 with ``ids.bin`` (uint16), ``doc_lengths.npy``, ``vocab.json``, ``freq.npy`` and
@@ -15,7 +15,7 @@ import numpy as np
 from src.code.corpus import (at_least, cooccurrence_matrix, encode_corpus, hub_shards, joined, parquet_texts, vocabulary,
                              word_tokenizer)
 
-VOCAB, WINDOW, WORKERS = 25000, 16, 40
+VOCAB, WINDOW, WORKERS = 50000, 16, 40
 CORPORA = {  # repo, shard prefix, text column, article filter (min words), lines joined per passage
     "wikipedia": {"repo": "wikimedia/wikipedia", "prefix": "20231101.en/", "column": "text", "min_words": 200,
                   "join": 1, "tag": "wikipedia_20231101_en"},   # English Wikipedia 2023-11, articles of >= 200 words
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     if not (out / "ids.bin").exists():                            # the id stream is built once per corpus
         shards, read = hub_shards(corpus["repo"], corpus["prefix"]), partial(shard_texts, corpus)
         words, freq = vocabulary(shards, read, VOCAB, WORKERS)
-        print(f"vocabulary of {len(words):,} words from {len(shards)} shards (rarest: {words[-1]!r} x {freq[-1]:,}): {time.time() - t:.0f}s", flush=True)
+        print(f"vocabulary of {len(words):,} words from {len(shards)} shards (rarest: {str(words[-1])!r} x {freq[-1]:,}): {time.time() - t:.0f}s", flush=True)
         ids, lengths = encode_corpus(shards, read, word_tokenizer(words), WORKERS)
         assert np.array_equal(np.bincount(ids, minlength=len(words)), freq)   # the Rust tokenizer reproduces the Python counter
         ids.tofile(out / "ids.bin")
