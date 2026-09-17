@@ -141,12 +141,11 @@ def load_corpus(path, window=16, weighting="1/d", chunk=5000):
     return C, vocab, np.load(path / "freq.npy"), np.load(rows_file)
 
 
-def bounded_pmi(C_ij, r_i, r_j, Z):
-    """Karkada's M* = (P_ij - P_i P_j) / (0.5 (P_ij + P_i P_j)) for a (k, m) block of the matrix, with
-    P_ij = C_ij / Z and the marginals P_i = r_i / Z from its row sums; 0 under independence, in [-2, 2]."""
-    P_ij = np.asarray(C_ij, dtype=np.float64) / Z
-    P_iP_j = np.outer(r_i, r_j) / Z ** 2
-    return (P_ij - P_iP_j) / (0.5 * (P_ij + P_iP_j))
+def pmi(C_ij, r_i, r_j, Z, floor=1.0):
+    """log(P_ij / (P_i P_j)) for a (k, m) block of the matrix, with P_ij = C_ij / Z and the marginals
+    P_i = r_i / Z from its row sums; 0 under independence. A cell below ``floor`` co-occurrence weight
+    is scored as ``floor`` (one co-occurrence), so an empty cell is finite."""
+    return np.log(np.maximum(np.asarray(C_ij, dtype=np.float64), floor) * Z / np.outer(r_i, r_j))
 
 
 def parquet_texts(paths, column="text", batch=4096):

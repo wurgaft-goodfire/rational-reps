@@ -18,8 +18,8 @@ def _(mo):
 
     Full 50k x 50k window matrices built by `build_corpus.py` (window 16, weight $1/d$, lowercased
     Wikipedia 2023-11, BabyLM 100M and Project Gutenberg). Each domain's block is normalised as
-    Karkada et al.'s $M^\star_{ij} = (P_{ij} - P_i P_j) / \tfrac12 (P_{ij} + P_i P_j)$, with $P_{ij}$ the
-    cell's share of the matrix and $P_i$ its row's share, and factored into the predicted code
+    $\mathrm{PMI}_{ij} = \log P_{ij} / (P_i P_j)$, with $P_{ij}$ the cell's share of the matrix and $P_i$
+    its row's share (an empty cell counts as one co-occurrence), and factored into the predicted code
     $E = U\sqrt{S}$. "Block" is the concept x concept sub-matrix; "rows" the concept x vocabulary rows.
     """)
     return
@@ -34,13 +34,13 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.corpus import bounded_pmi, load_corpus
+    from src.code.corpus import load_corpus, pmi
     from src.code.geometry import predicted_geometry
     from src.code import plot_utils
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
     FIGURES = CACHE / "figures"; FIGURES.mkdir(parents=True, exist_ok=True)
-    return CACHE, FIGURES, bounded_pmi, load_corpus, np, plot_utils, plt, predicted_geometry
+    return CACHE, FIGURES, load_corpus, np, plot_utils, plt, pmi, predicted_geometry
 
 
 @app.cell
@@ -75,13 +75,13 @@ def _(mo):
     mo.md(r"""
     ## Blocks
 
-    $M^\star$ is symmetric up to counting noise; its diagonal is a concept near another copy of itself.
+    The block is symmetric up to counting noise; its diagonal is a concept near another copy of itself.
     """)
     return
 
 
 @app.cell
-def _(DOMAINS, HEX, bounded_pmi, corpora, index, np, predicted_geometry):
+def _(DOMAINS, HEX, corpora, index, np, pmi, predicted_geometry):
     from matplotlib.colors import ListedColormap
 
 
@@ -96,17 +96,17 @@ def _(DOMAINS, HEX, bounded_pmi, corpora, index, np, predicted_geometry):
 
 
     def block(name, drop=(), corpus="wikipedia"):
-        """The concept x concept block of a domain as bounded PMI, and the concept labels."""
+        """The concept x concept block of a domain as PMI, and the concept labels."""
         C, _, _, r = corpora[corpus]
         ids, words = concept_ids(name, drop, corpus)
-        return bounded_pmi(C[np.ix_(ids, ids)], r[ids], r[ids], r.sum()), words
+        return pmi(C[np.ix_(ids, ids)], r[ids], r[ids], r.sum()), words
 
 
     def rows(name, drop=(), corpus="wikipedia"):
-        """The concept x vocabulary rows of a domain (all 50k context words) as bounded PMI."""
+        """The concept x vocabulary rows of a domain (all 50k context words) as PMI."""
         C, _, _, r = corpora[corpus]
         ids, _ = concept_ids(name, drop, corpus)
-        return bounded_pmi(C[ids], r[ids], r, r.sum())
+        return pmi(C[ids], r[ids], r, r.sum())
 
 
     def predicted(name, drop=(), corpus="wikipedia"):
@@ -123,7 +123,7 @@ def _(mo):
     mo.md(r"""
     ## Months
 
-    Left: the block $M^\star$ itself. Right: the predicted code's top two PCs and its Gram. Once
+    Left: the PMI block itself. Right: the predicted code's top two PCs and its Gram. Once
     with all twelve months, once without "may" (the modal verb shares the token).
     """)
     return
@@ -138,9 +138,9 @@ def _(FIGURES, block, plot_utils, plt):
         im = ax.imshow(M, cmap=plot_utils.FIG.diverging_cmap, vmin=-lim, vmax=lim)
         ax.set_xticks(range(len(concepts))); ax.set_yticks(range(len(concepts)))
         ax.set_xticklabels(concepts, rotation=90, fontsize=7); ax.set_yticklabels(concepts, fontsize=7)
-        ax.set_title(rf"{corpus} {name}: $M^\star$ block"); fig.colorbar(im, ax=ax, shrink=0.8)
+        ax.set_title(f"{corpus} {name}: PMI block"); fig.colorbar(im, ax=ax, shrink=0.8)
         fig.tight_layout()
-        return plot_utils.save_figure(fig, FIGURES / f"block_{corpus}_{name}{'_drop' if drop else ''}_mstar.png")
+        return plot_utils.save_figure(fig, FIGURES / f"block_{corpus}_{name}{'_drop' if drop else ''}_pmi.png")
 
     block_heatmap("months")
     return (block_heatmap,)

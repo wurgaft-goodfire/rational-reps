@@ -88,17 +88,17 @@ def test_query_reaches_the_api():
     assert r["count"] > 1_000_000
 
 
-def test_bounded_pmi_is_zero_under_independence_and_minus_two_for_a_zero_cell():
-    """Karkada's M* = (P_ij - P_i P_j) / (0.5 (P_ij + P_i P_j)) with P from the matrix itself: a
-    matrix C = r r^T / Z has independent words and M* = 0 everywhere; a pair that never co-occurs
-    scores -2, the lower bound; nothing exceeds +2."""
-    from src.code.corpus import bounded_pmi
-    r = np.random.default_rng(0).integers(1, 100, size=6).astype(float); Z = r.sum()
-    C = np.outer(r, r) / Z                                         # row sums of C are exactly r
-    assert np.allclose(bounded_pmi(C[:3], r[:3], r, Z), 0)
-    C[0, 1] = 0
-    M = bounded_pmi(C[:1], r[:1], r, Z)
-    assert M[0, 1] == -2 and (abs(M) <= 2).all()
+def test_pmi_is_zero_under_independence_and_counts_an_empty_cell_as_one_cooccurrence():
+    """log(P_ij / (P_i P_j)) with P from the matrix itself: a matrix C = r r^T / Z has independent words
+    and PMI 0 everywhere; a cell at twice its expectation scores log 2; an empty cell is scored as if
+    it held one co-occurrence of weight 1, so nothing is -inf."""
+    from src.code.corpus import pmi
+    r = np.random.default_rng(0).integers(100, 1000, size=6).astype(float); Z = r.sum()
+    C = np.outer(r, r) / Z                                         # row sums of C are exactly r; every cell > 1
+    assert np.allclose(pmi(C[:3], r[:3], r, Z), 0)
+    C[0, 1] *= 2; C[0, 2] = 0
+    M = pmi(C[:1], r[:1], r, Z)
+    assert np.isclose(M[0, 1], np.log(2)) and np.isclose(M[0, 2], np.log(Z / (r[0] * r[2]))) and np.isfinite(M).all()
 
 
 def test_load_corpus_memory_maps_the_matrix_and_caches_its_row_sums(tmp_path):
