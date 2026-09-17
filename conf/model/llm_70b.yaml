@@ -1,0 +1,4 @@
+# @package model_kwargs
+model_type: llm
+model_path: meta-llama/Llama-3.1-70B
+model_name: llama-3.1-70b

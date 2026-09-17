@@ -190,11 +190,16 @@ def _rankdata(a):
     return ranks
 
 
+def _sqdist(X):
+    """Pairwise squared Euclidean distances (n, n) from the Gram matrix, without an (n, n, d) tensor."""
+    sq = (X * X).sum(1)
+    return np.maximum(sq[:, None] + sq[None] - 2 * X @ X.T, 0.0)
+
+
 def rsa(X, Y):
     """RSA: Spearman correlation of the two Euclidean RDMs (upper triangle). No scipy dependency."""
     X = np.asarray(X, dtype=np.float64); Y = np.asarray(Y, dtype=np.float64)
-    Dx = ((X[:, None] - X[None]) ** 2).sum(-1)
-    Dy = ((Y[:, None] - Y[None]) ** 2).sum(-1)
+    Dx, Dy = _sqdist(X), _sqdist(Y)
     iu = np.triu_indices(len(X), 1)
     rx, ry = _rankdata(Dx[iu]), _rankdata(Dy[iu])
     rx = rx - rx.mean(); ry = ry - ry.mean()

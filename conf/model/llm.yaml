@@ -1,4 +1,4 @@
 # @package model_kwargs
 model_type: llm
-model_path: google/gemma-2-2b
-model_name: gemma-2-2b
+model_path: meta-llama/Llama-3.1-8B
+model_name: llama-3.1-8b

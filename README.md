@@ -71,7 +71,7 @@ and the predicted geometry.
 | `nested_tree` | a tree whose levels have shapes (`tree` with `levels`): the children of each node form a ring, chain, ... | a direct sum ordered by level: the root's shape on every leaf, then a private copy of the next shape per node |
 | `hmm` | latent walk on a graph, emitted tokens | belief state of the forward algorithm |
 
-Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `linear`, `sae`, `llm` (pretrained).
+Models (`conf/model/`): `transformer`, `rnn`, `mlp`, `linear`, `sae`, `llm` and `llm_70b` (pretrained Llama-3.1-8B / 70B).
 
 ## Output structure
 
@@ -97,7 +97,10 @@ $CACHE_DIR/{setting}/{task}/{overrides}/{name}/
 
 Analysis notebooks in `src/notebooks/` are [marimo](https://marimo.io/) notebooks: plain `.py`
 files, no `.ipynb` in the repo. One notebook per setting (`hmm_analysis.py`,
-`concepts_analysis.py`, …) plus cross-setting geometry studies.
+`concepts_analysis.py`, …) plus cross-setting geometry studies. `llm_analysis.py` feeds graph walks
+and relation triples to pretrained LLMs (`conf/model/llm*.yaml`) and compares their in-context
+representations to the predicted codes; each LLM pass is cached as `node_means.npz` /
+`pair_means.npz` in the run dir, so it needs a GPU only once (the 70B needs two).
 
 ```bash
 uv run marimo edit src/notebooks/<name>.py     # interactive, in the browser
@@ -173,6 +176,7 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 - `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
 - `src/code/train.py` — Hydra entry point + `train_inline` for tests. `train` sizes the model from the dataset and runs the HF `Trainer` with custom callbacks; `solve` fills a run dir from the theory instead (`runner=theory`). Both write the same checkpoint, history and evaluation files.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.
+- `src/code/llm.py` — a pretrained LM on in-context streams: items as single-token nouns, `node_means` (walks `word, word, ...`, read at the separator) and `pair_means` (relation triples `a b : c ,`, read at the colon), each returning per-layer means per key plus the NLL of the next token; `triple_stream` builds relation streams from the dataset, `row_entropy` the exact Bayes floor per key.
 - `src/code/eval.py` — `Evaluator`: `evaluate(model)` scores every input against its exact target and returns the loss, logits, representation and readout as numpy; `save` writes them to a checkpoint's `eval.npz`. Also the standalone eval entry point.
 - `src/code/analysis_utils.py` — the array side: `load_run` / `load_evaluation` (with `readout_basis` and `representation`), explicit transforms (`feature_vectors`, `leverage`, `logit_map`), and the similarity metrics (`cka`, `cca`, `rsa`, nulls).
 - `src/code/plot_utils.py` — figure styling, `figure_path`, `save_figure`.

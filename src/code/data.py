@@ -188,12 +188,17 @@ class KernelDataset(Dataset):
     def _batch_size(self):
         return self.config.training_kwargs["batch_size"]
 
-    def _markov_walk(self, P, init, length):
-        """Sample (B, length) walks under transition ``P``, starting from states ``init``."""
+    def _markov_walk(self, P, init, length, backtrack=True):
+        """Sample (B, length) walks under transition ``P``, starting from states ``init``.
+        ``backtrack=False`` forbids the step back to the previous state (the row is renormalised)."""
         walk = torch.empty(len(init), length, dtype=torch.long, device=P.device)
         walk[:, 0] = init
+        rows = torch.arange(len(init), device=P.device)
         for t in range(1, length):
-            walk[:, t] = torch.multinomial(P[walk[:, t - 1]], 1, generator=self.rng).squeeze(1)
+            p = P[walk[:, t - 1]]
+            if not backtrack and t > 1:
+                p = p.clone(); p[rows, walk[:, t - 2]] = 0.0
+            walk[:, t] = torch.multinomial(p, 1, generator=self.rng).squeeze(1)
         return walk
 
     def _start_column(self, B):
@@ -212,7 +217,8 @@ class KernelDataset(Dataset):
         L = self.context_length
         if self.connected:                                        # keep sampling from the chain
             init = torch.randint(0, self.n_items, (B,), generator=self.rng, device=self.device)
-            seq = torch.cat([self._start_column(B), self._markov_walk(self.P, init, L)], dim=1)
+            walk = self._markov_walk(self.P, init, L, backtrack=self.config.get("backtrack", True))
+            seq = torch.cat([self._start_column(B), walk], dim=1)
             return {"input_ids": seq, "labels": seq.clone()}
         init = torch.multinomial(self.prior, B, replacement=True, generator=self.rng)
         z = (self._markov_walk(self.transition, init, L) if self.transition is not None
@@ -851,6 +857,10 @@ def structure_positions(name, params, count=None):
         if count is not None:
             raise ValueError("complete has no coarser outcome grid")
         return np.eye(n)
+    if name == "grid":
+        if count is not None or "m" in params:
+            raise ValueError("grid coordinates are the square n x n lattice (m is the Gaussian's outcome count)")
+        return np.array([(i, j) for i in range(n) for j in range(n)], dtype=float)   # row-major, as `grid`
     raise ValueError(f"No canonical coordinates for structure {name!r}")
 
 
