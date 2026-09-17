@@ -14,14 +14,13 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Concept geometry from Wikipedia co-occurrence: the concept × concept block
+    # Concept geometry from corpus co-occurrence
 
-    Counts from `count_wikipedia.py`: English Wikipedia (2023-11, articles of at least 200 words,
-    lowercased), every occurrence of a concept word counted against the tokens within 16 positions.
-    Here only the block among the concepts themselves is used: how often each month occurs near each
-    other month, each color near each other color, each number near each other number. The block is
-    normalised as Karkada et al.'s $M^\star_{ij} = (P_{ij} - P_i P_j) / \tfrac12 (P_{ij} + P_i P_j)$
-    and factored into the predicted code $E = U\sqrt{S}$ (row-centred).
+    Full 50k x 50k window matrices built by `build_corpus.py` (window 16, weight $1/d$, lowercased
+    Wikipedia 2023-11, BabyLM 100M and Project Gutenberg). Each domain's block is normalised as
+    Karkada et al.'s $M^\star_{ij} = (P_{ij} - P_i P_j) / \tfrac12 (P_{ij} + P_i P_j)$, with $P_{ij}$ the
+    cell's share of the matrix and $P_i$ its row's share, and factored into the predicted code
+    $E = U\sqrt{S}$. "Block" is the concept x concept sub-matrix; "rows" the concept x vocabulary rows.
     """)
     return
 
@@ -35,28 +34,40 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
+    from src.code.corpus import bounded_pmi, load_corpus
     from src.code.geometry import predicted_geometry
     from src.code import plot_utils
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
     FIGURES = CACHE / "figures"; FIGURES.mkdir(parents=True, exist_ok=True)
-    return CACHE, FIGURES, np, plot_utils, plt, predicted_geometry
+    return CACHE, FIGURES, bounded_pmi, load_corpus, np, plot_utils, plt, predicted_geometry
 
 
 @app.cell
-def _(CACHE, np):
-    WINDOW = 16
-    CORPORA = {"wikipedia": "wikipedia_20231101_en", "babylm": "babylm_100M"}       # corpus -> table tag
-    DOMAINS = {"months": {"spec": {"structure": "ring", "n": 12}},
-               "colors": {"spec": None},
-               "numbers": {"spec": None}}
-    tables = {corpus: {name: dict(np.load(CACHE / "corpus" / f"{tag}_{name}_w{WINDOW}.npz")) for name in DOMAINS}
-              for corpus, tag in CORPORA.items()}
-    for _corpus, _ts in tables.items():
-        for _name, _t in _ts.items():
-            print(f"{_corpus:10s} {_name:8s} occurrences {int(_t['concept_counts'].min()):>9,d} to {int(_t['concept_counts'].max()):>10,d}; tokens {int(_t['total']):,}")
+def _(CACHE, load_corpus):
+    TAGS = {"wikipedia": "wikipedia_20231101_en", "babylm": "babylm_100M", "gutenberg": "gutenberg_en"}
+    corpora = {c: load_corpus(CACHE / "corpus" / tag) for c, tag in TAGS.items()
+               if (CACHE / "corpus" / tag / "C_w16_1d.npy").exists()}                 # (C, vocab, freq, row sums)
+    index = {c: {w: i for i, w in enumerate(vocab)} for c, (_, vocab, _, _) in corpora.items()}
+    for _c, (_C, _vocab, _freq, _r) in corpora.items():
+        print(f"{_c:10s} {len(_vocab):,} words, {int(_freq.sum()):>13,d} tokens, matrix weight {_r.sum():.3e}")
+    print("not built:", sorted(set(TAGS) - set(corpora)) or "none")
+    return corpora, index
 
-    return CORPORA, DOMAINS, WINDOW, tables
+
+@app.cell
+def _():
+    HEX = {"red": "#e60000", "scarlet": "#ff2400", "crimson": "#dc143c", "maroon": "#800000", "orange": "#ff8c00",
+           "beige": "#d9c9a3", "yellow": "#f2d600", "lime": "#32cd32", "olive": "#808000", "green": "#008000",
+           "teal": "#008080", "turquoise": "#40e0d0", "cyan": "#00b7eb", "blue": "#0000ff", "indigo": "#4b0082",
+           "violet": "#8f00ff", "purple": "#800080", "magenta": "#ff00ff", "pink": "#ff69b4", "brown": "#8b4513",
+           "black": "#000000", "white": "#d0d0d0", "gray": "#808080"}
+    MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+              "november", "december"]
+    DOMAINS = {"months": {"words": MONTHS, "spec": {"structure": "ring", "n": 12}},
+               "colors": {"words": list(HEX), "spec": None},
+               "numbers": {"words": [str(n) for n in range(1, 501)], "spec": None}}
+    return DOMAINS, HEX
 
 
 @app.cell(hide_code=True)
@@ -64,21 +75,14 @@ def _(mo):
     mo.md(r"""
     ## Blocks
 
-    $P_{ij}$ is the pair rate per window position, $P_i$ and $P_j$ the concepts' token rates. The
-    block is symmetric up to counting noise; its diagonal is a concept near another copy of itself.
+    $M^\star$ is symmetric up to counting noise; its diagonal is a concept near another copy of itself.
     """)
     return
 
 
 @app.cell
-def _(WINDOW, np, predicted_geometry, tables):
+def _(DOMAINS, HEX, bounded_pmi, corpora, index, np, predicted_geometry):
     from matplotlib.colors import ListedColormap
-
-    HEX = {"red": "#e60000", "scarlet": "#ff2400", "crimson": "#dc143c", "maroon": "#800000", "orange": "#ff8c00",
-           "beige": "#d9c9a3", "yellow": "#f2d600", "lime": "#32cd32", "olive": "#808000", "green": "#008000",
-           "teal": "#008080", "turquoise": "#40e0d0", "cyan": "#00b7eb", "blue": "#0000ff", "indigo": "#4b0082",
-           "violet": "#8f00ff", "purple": "#800080", "magenta": "#ff00ff", "pink": "#ff69b4", "brown": "#8b4513",
-           "black": "#000000", "white": "#d0d0d0", "gray": "#808080"}
 
 
     def item_colors(name, concepts):
@@ -86,25 +90,23 @@ def _(WINDOW, np, predicted_geometry, tables):
         return [HEX[c] for c in concepts] if name == "colors" else None
 
 
+    def concept_ids(name, drop=(), corpus="wikipedia"):
+        words = [w for w in DOMAINS[name]["words"] if w not in drop]
+        return [index[corpus][w] for w in words], words
+
+
     def block(name, drop=(), corpus="wikipedia"):
-        """The concept x concept block of a domain's table as bounded PMI, and the concept labels."""
-        t = tables[corpus][name]
-        keep = [i for i, c in enumerate(t["concepts"]) if c not in drop]
-        concepts = [str(t["concepts"][i]) for i in keep]
-        C = t["block"][np.ix_(keep, keep)]                       # concept x concept counts, saved by the pass
-        P_ij = C / (2 * WINDOW * t["total"])
-        P_i = t["concept_counts"][keep][:, None] / t["total"]
-        return (P_ij - P_i * P_i.T) / (0.5 * (P_ij + P_i * P_i.T)), concepts
+        """The concept x concept block of a domain as bounded PMI, and the concept labels."""
+        C, _, _, r = corpora[corpus]
+        ids, words = concept_ids(name, drop, corpus)
+        return bounded_pmi(C[np.ix_(ids, ids)], r[ids], r[ids], r.sum()), words
 
 
     def rows(name, drop=(), corpus="wikipedia"):
-        """The concept x vocabulary rows of a domain's table (all 25k context tokens) as bounded PMI."""
-        t = tables[corpus][name]
-        keep = [i for i, c in enumerate(t["concepts"]) if c not in drop]
-        C = t["C"][keep].astype(np.float64)
-        P_ij = C / (2 * WINDOW * t["total"])
-        P_i, P_j = t["concept_counts"][keep][:, None] / t["total"], t["word_counts"][None] / t["total"]
-        return (P_ij - P_i * P_j) / (0.5 * (P_ij + P_i * P_j))
+        """The concept x vocabulary rows of a domain (all 50k context words) as bounded PMI."""
+        C, _, _, r = corpora[corpus]
+        ids, _ = concept_ids(name, drop, corpus)
+        return bounded_pmi(C[ids], r[ids], r, r.sum())
 
 
     def predicted(name, drop=(), corpus="wikipedia"):
@@ -149,7 +151,7 @@ def _(DOMAINS, FIGURES, ListedColormap, item_colors, plot_utils, predicted):
     def code_panel(name, drop=(), corpus="wikipedia"):
         E_block, E_rows, concepts = predicted(name, drop, corpus)
         hexes = item_colors(name, concepts)
-        fig = plot_utils.plot_embedding_panels(E_block, {"rows (25k contexts)": E_rows}, DOMAINS[name]["spec"],
+        fig = plot_utils.plot_embedding_panels(E_block, {"rows (50k contexts)": E_rows}, DOMAINS[name]["spec"],
                                                cmap=ListedColormap(hexes) if hexes else None)
         fig.suptitle(f"{corpus} {name}: code from the block (left) and from the rows (right)"
                      + (f", without {', '.join(drop)}" if drop else ""), y=1.02)
@@ -172,7 +174,7 @@ def _(mo):
     ## Colors and numbers
 
     Colors in hue order (red, orange, yellow, green, blue, purple, pink) then brown, black, white,
-    gray; numbers 1 to 100 coloured by magnitude.
+    gray; numbers 1 to 500 coloured by magnitude.
     """)
     return
 
@@ -206,9 +208,9 @@ def _(mo):
     mo.md(r"""
     ## Interactive 3-D view
 
-    Pick the domain and any three of the first six PCs. Block code on the left, rows code (25k contexts)
-    on the right, rotatable; hover for the word. Points are coloured in list order (calendar order, hue
-    order, magnitude).
+    Pick the corpus, the domain and any three of the first six PCs. Block code on the left, rows code
+    on the right, rotatable; hover for the word. Points are coloured in list order (calendar order,
+    hue order, magnitude).
     """)
     return
 
@@ -225,7 +227,7 @@ def _(item_colors, mo, np, plot_utils, predicted):
         E_block, E_rows, concepts = predicted(name, drop, corpus)
         hexes = item_colors(name, concepts)
         fig = make_subplots(rows=1, cols=2, specs=[[{"type": "scene"}, {"type": "scene"}]],
-                            subplot_titles=("block", "rows (25k contexts)"))
+                            subplot_titles=("block", "rows (50k contexts)"))
         for col, E in ((1, E_block), (2, E_rows)):
             P = plot_utils._pca(E, max(pcs) + 1)[:, list(pcs)]
             fig.add_trace(go.Scatter3d(x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers", text=concepts, hoverinfo="text",
@@ -243,9 +245,9 @@ def _(item_colors, mo, np, plot_utils, predicted):
 
 
 @app.cell
-def _(CORPORA, DOMAINS, mo):
+def _(DOMAINS, corpora, mo):
     _pcs = {f"PC{i}": i - 1 for i in range(1, 7)}
-    view_corpus = mo.ui.dropdown(options=list(CORPORA), value="wikipedia", label="corpus")
+    view_corpus = mo.ui.dropdown(options=list(corpora), value="wikipedia", label="corpus")
     view_domain = mo.ui.dropdown(options=list(DOMAINS), value="months", label="domain")
     view_x = mo.ui.dropdown(options=_pcs, value="PC1", label="x")
     view_y = mo.ui.dropdown(options=_pcs, value="PC2", label="y")

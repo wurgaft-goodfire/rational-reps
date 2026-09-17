@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 import numpy as np
 
@@ -73,26 +74,37 @@ def word_tokenizer(words):
     return tok
 
 
+def _batches(texts, chars):
+    """Consecutive texts grouped until they hold ``chars`` characters; a longer text goes alone."""
+    batch, size = [], 0
+    for t in texts:
+        if batch and size + len(t) > chars:
+            yield batch
+            batch, size = [], 0
+        batch.append(t); size += len(t)
+    if batch:
+        yield batch
+
+
 def _encode_shard(args):
-    read, shard, tok_json, batch = args
+    read, shard, tok_json, chars = args
     os.environ["TOKENIZERS_PARALLELISM"] = "false"                # one Rust thread per worker process
     from tokenizers import Tokenizer
     tok = Tokenizer.from_str(tok_json); unk = tok.token_to_id("[UNK]")
     parts, lengths = [], []
-    texts = iter(read(shard))
-    for chunk in iter(lambda: list(itertools.islice(texts, batch)), []):
-        for enc in tok.encode_batch(chunk):
+    for batch in _batches(read(shard), chars):
+        for enc in tok.encode_batch_fast(batch):                 # ids only, no offsets or token strings
             a = np.asarray(enc.ids, dtype=np.int64); a = a[a != unk]
             parts.append(a.astype(np.uint16)); lengths.append(len(a))
     return np.concatenate(parts) if parts else np.zeros(0, dtype=np.uint16), np.array(lengths, dtype=np.int64)
 
 
-def encode_corpus(shards, read, tokenizer, workers=40, batch=1000):
+def encode_corpus(shards, read, tokenizer, workers=40, chars=50_000_000):
     """``(ids, lengths)``: every text as its in-vocabulary token ids, concatenated into one uint16 stream
     in shard order, and the number of kept tokens per text. Out-of-vocabulary tokens are dropped.
-    Shards are encoded in parallel."""
+    Shards are encoded in parallel, each in batches of about ``chars`` characters."""
     with ProcessPoolExecutor(workers) as pool:
-        parts = list(pool.map(_encode_shard, ((read, s, tokenizer.to_str(), batch) for s in shards)))
+        parts = list(pool.map(_encode_shard, ((read, s, tokenizer.to_str(), chars) for s in shards)))
     return np.concatenate([p[0] for p in parts]), np.concatenate([p[1] for p in parts])
 
 
@@ -114,6 +126,27 @@ def cooccurrence_matrix(ids, docs, V, window=16, weighting="1/d", device="cuda",
             C.index_add_(0, pair, torch.full((len(pair),), weight(d), device=device))
     C = C.view(V, V)
     return (C + C.T).cpu().numpy()
+
+
+def load_corpus(path, window=16, weighting="1/d", chunk=5000):
+    """``(C, vocab, freq, r)``: a built corpus directory's V x V window matrix (memory-mapped), its words
+    in id order, their counts, and the matrix's row sums, computed once in chunks of rows and cached
+    beside the matrix."""
+    path, name = Path(path), f"C_w{window}_{weighting.replace('/', '')}"
+    C = np.load(path / f"{name}.npy", mmap_mode="r")
+    rows_file = path / f"{name}_rows.npy"
+    if not rows_file.exists():
+        np.save(rows_file, np.concatenate([np.asarray(C[i:i + chunk], dtype=np.float64).sum(1) for i in range(0, len(C), chunk)]))
+    vocab = np.array(json.loads((path / "vocab.json").read_text()))
+    return C, vocab, np.load(path / "freq.npy"), np.load(rows_file)
+
+
+def bounded_pmi(C_ij, r_i, r_j, Z):
+    """Karkada's M* = (P_ij - P_i P_j) / (0.5 (P_ij + P_i P_j)) for a (k, m) block of the matrix, with
+    P_ij = C_ij / Z and the marginals P_i = r_i / Z from its row sums; 0 under independence, in [-2, 2]."""
+    P_ij = np.asarray(C_ij, dtype=np.float64) / Z
+    P_iP_j = np.outer(r_i, r_j) / Z ** 2
+    return (P_ij - P_iP_j) / (0.5 * (P_ij + P_iP_j))
 
 
 def parquet_texts(paths, column="text", batch=4096):

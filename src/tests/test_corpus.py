@@ -86,3 +86,41 @@ def test_query_backs_off_on_rate_limiting_then_succeeds(monkeypatch):
 def test_query_reaches_the_api():
     r = query({"index": "v4_dolma-v1_7_llama", "query_type": "count", "query": " January"})
     assert r["count"] > 1_000_000
+
+
+def test_bounded_pmi_is_zero_under_independence_and_minus_two_for_a_zero_cell():
+    """Karkada's M* = (P_ij - P_i P_j) / (0.5 (P_ij + P_i P_j)) with P from the matrix itself: a
+    matrix C = r r^T / Z has independent words and M* = 0 everywhere; a pair that never co-occurs
+    scores -2, the lower bound; nothing exceeds +2."""
+    from src.code.corpus import bounded_pmi
+    r = np.random.default_rng(0).integers(1, 100, size=6).astype(float); Z = r.sum()
+    C = np.outer(r, r) / Z                                         # row sums of C are exactly r
+    assert np.allclose(bounded_pmi(C[:3], r[:3], r, Z), 0)
+    C[0, 1] = 0
+    M = bounded_pmi(C[:1], r[:1], r, Z)
+    assert M[0, 1] == -2 and (abs(M) <= 2).all()
+
+
+def test_load_corpus_memory_maps_the_matrix_and_caches_its_row_sums(tmp_path):
+    """``load_corpus`` returns the matrix as a memmap, the words, the counts and the row sums; the
+    row sums are computed in chunks and written beside the matrix so later loads skip the pass."""
+    import json
+    from src.code.corpus import load_corpus
+    C = np.random.default_rng(1).random((7, 7)).astype(np.float32); C = C + C.T
+    np.save(tmp_path / "C_w16_1d.npy", C)
+    (tmp_path / "vocab.json").write_text(json.dumps(list("abcdefg"))); np.save(tmp_path / "freq.npy", np.arange(7, 0, -1))
+    Cm, vocab, freq, r = load_corpus(tmp_path, chunk=3)
+    assert isinstance(Cm, np.memmap) and list(vocab) == list("abcdefg") and freq.tolist() == list(range(7, 0, -1))
+    assert np.allclose(r, C.sum(1)) and np.allclose(np.load(tmp_path / "C_w16_1d_rows.npy"), r)
+
+
+def test_encode_corpus_batches_by_characters_without_changing_the_stream():
+    """Texts are encoded in batches of at most ``chars`` characters, a longer text alone, so a shard
+    of whole books never holds thousands of encodings at once; the id stream and the per-text lengths
+    are the same for any budget."""
+    words, _ = vocabulary(SHARDS, list, 11, workers=2)
+    tok = word_tokenizer(words)
+    ids, lengths = encode_corpus(SHARDS, list, tok, workers=2)
+    for chars in (1, 40, 10**9):                                   # every text alone; some pairs; everything at once
+        ids_c, lengths_c = encode_corpus(SHARDS, list, tok, workers=2, chars=chars)
+        assert np.array_equal(ids_c, ids) and np.array_equal(lengths_c, lengths)
