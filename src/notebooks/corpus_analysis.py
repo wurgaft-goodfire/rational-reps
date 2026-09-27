@@ -16,11 +16,12 @@ def _(mo):
     mo.md(r"""
     # Concept geometry from corpus co-occurrence
 
-    Full 50k x 50k window matrices built by `build_corpus.py` (window 16, weight $1/d$, lowercased
-    Wikipedia 2023-11, BabyLM 100M and Project Gutenberg). Each domain's block is normalised as
-    $\mathrm{PMI}_{ij} = \log P_{ij} / (P_i P_j)$, with $P_{ij}$ the cell's share of the matrix and $P_i$
-    its row's share (an empty cell counts as one co-occurrence), and factored into the predicted code
-    $E = U\sqrt{S}$. "Block" is the concept x concept sub-matrix; "rows" the concept x vocabulary rows.
+    Full 50k x 50k window matrices built by `build_corpus.py` (window 16; lowercased Wikipedia 2023-11,
+    BabyLM 100M and Project Gutenberg). A pair $d$ positions apart adds a weight $f(d)$: flat $1$, linear
+    $17 - d$ (word2vec's expected window), or $1/d$ (GloVe). The skip-gram log-conditional
+    $\log P(j \mid i) = \log C_{ij} / r_i$, with $r_i$ the row's total weight (an empty cell counts as one
+    co-occurrence), is factored into the predicted code $E = U\sqrt{S}$ after row centring, as in every
+    other setting. "Block" is the concept x concept sub-matrix; "rows" the concept x vocabulary rows.
     """)
     return
 
@@ -34,25 +35,34 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.corpus import load_corpus, pmi
+    from src.code.corpus import load_corpus, log_conditional
     from src.code.geometry import predicted_geometry
     from src.code import plot_utils
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
     FIGURES = CACHE / "figures"; FIGURES.mkdir(parents=True, exist_ok=True)
-    return CACHE, FIGURES, load_corpus, np, plot_utils, plt, pmi, predicted_geometry
+    return CACHE, FIGURES, load_corpus, log_conditional, np, plot_utils, plt, predicted_geometry
 
 
 @app.cell
-def _(CACHE, load_corpus):
+def _(mo):
+    view_weighting = mo.ui.dropdown(options=["flat", "linear", "1/d"], value="flat", label="window weighting")
+    view_weighting
+    return (view_weighting,)
+
+
+@app.cell
+def _(CACHE, load_corpus, view_weighting):
     TAGS = {"wikipedia": "wikipedia_20231101_en", "babylm": "babylm_100M", "gutenberg": "gutenberg_en"}
-    corpora = {c: load_corpus(CACHE / "corpus" / tag) for c, tag in TAGS.items()
-               if (CACHE / "corpus" / tag / "C_w16_1d.npy").exists()}                 # (C, vocab, freq, row sums)
+    weighting = view_weighting.value
+    tag_w = weighting.replace("/", "")
+    corpora = {c: load_corpus(CACHE / "corpus" / tag, weighting=weighting) for c, tag in TAGS.items()
+               if (CACHE / "corpus" / tag / f"C_w16_{tag_w}.npy").exists()}           # (C, vocab, freq, row sums)
     index = {c: {w: i for i, w in enumerate(vocab)} for c, (_, vocab, _, _) in corpora.items()}
     for _c, (_C, _vocab, _freq, _r) in corpora.items():
         print(f"{_c:10s} {len(_vocab):,} words, {int(_freq.sum()):>13,d} tokens, matrix weight {_r.sum():.3e}")
-    print("not built:", sorted(set(TAGS) - set(corpora)) or "none")
-    return corpora, index
+    print(f"weighting {weighting}; not built:", sorted(set(TAGS) - set(corpora)) or "none")
+    return corpora, index, tag_w, weighting
 
 
 @app.cell
@@ -75,13 +85,14 @@ def _(mo):
     mo.md(r"""
     ## Blocks
 
-    The block is symmetric up to counting noise; its diagonal is a concept near another copy of itself.
+    Each row of the block is a concept's conditional over the other concepts; the counts are symmetric,
+    the row totals are not. The diagonal is a concept near another copy of itself.
     """)
     return
 
 
 @app.cell
-def _(DOMAINS, HEX, corpora, index, np, pmi, predicted_geometry):
+def _(DOMAINS, HEX, corpora, index, log_conditional, np, predicted_geometry):
     from matplotlib.colors import ListedColormap
 
 
@@ -96,17 +107,17 @@ def _(DOMAINS, HEX, corpora, index, np, pmi, predicted_geometry):
 
 
     def block(name, drop=(), corpus="wikipedia"):
-        """The concept x concept block of a domain as PMI, and the concept labels."""
+        """The concept x concept block of a domain as log P(j | i), and the concept labels."""
         C, _, _, r = corpora[corpus]
         ids, words = concept_ids(name, drop, corpus)
-        return pmi(C[np.ix_(ids, ids)], r[ids], r[ids], r.sum()), words
+        return log_conditional(C[np.ix_(ids, ids)], r[ids]), words
 
 
     def rows(name, drop=(), corpus="wikipedia"):
-        """The concept x vocabulary rows of a domain (all 50k context words) as PMI."""
+        """The concept x vocabulary rows of a domain (all 50k context words) as log P(j | i)."""
         C, _, _, r = corpora[corpus]
         ids, _ = concept_ids(name, drop, corpus)
-        return pmi(C[ids], r[ids], r, r.sum())
+        return log_conditional(C[ids], r[ids])
 
 
     def predicted(name, drop=(), corpus="wikipedia"):
@@ -130,32 +141,33 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, block, plot_utils, plt):
+def _(FIGURES, block, plot_utils, plt, tag_w, weighting):
     def block_heatmap(name, drop=(), corpus="wikipedia"):
         M, concepts = block(name, drop, corpus)
+        M = M - M.mean(1, keepdims=True)                          # row-centred, as the factorisation sees it
         fig, ax = plt.subplots(figsize=(5.5, 5))
         lim = abs(M).max()
         im = ax.imshow(M, cmap=plot_utils.FIG.diverging_cmap, vmin=-lim, vmax=lim)
         ax.set_xticks(range(len(concepts))); ax.set_yticks(range(len(concepts)))
         ax.set_xticklabels(concepts, rotation=90, fontsize=7); ax.set_yticklabels(concepts, fontsize=7)
-        ax.set_title(f"{corpus} {name}: PMI block"); fig.colorbar(im, ax=ax, shrink=0.8)
+        ax.set_title(f"{corpus} {name}: row-centred log P(j | i), {weighting}"); fig.colorbar(im, ax=ax, shrink=0.8)
         fig.tight_layout()
-        return plot_utils.save_figure(fig, FIGURES / f"block_{corpus}_{name}{'_drop' if drop else ''}_pmi.png")
+        return plot_utils.save_figure(fig, FIGURES / f"block_{corpus}_{name}{'_drop' if drop else ''}_logcond_{tag_w}.png")
 
     block_heatmap("months")
     return (block_heatmap,)
 
 
 @app.cell
-def _(DOMAINS, FIGURES, ListedColormap, item_colors, plot_utils, predicted):
+def _(DOMAINS, FIGURES, ListedColormap, item_colors, plot_utils, predicted, tag_w, weighting):
     def code_panel(name, drop=(), corpus="wikipedia"):
         E_block, E_rows, concepts = predicted(name, drop, corpus)
         hexes = item_colors(name, concepts)
         fig = plot_utils.plot_embedding_panels(E_block, {"rows (50k contexts)": E_rows}, DOMAINS[name]["spec"],
                                                cmap=ListedColormap(hexes) if hexes else None)
-        fig.suptitle(f"{corpus} {name}: code from the block (left) and from the rows (right)"
+        fig.suptitle(f"{corpus} {name}, {weighting}: code from the block (left) and from the rows (right)"
                      + (f", without {', '.join(drop)}" if drop else ""), y=1.02)
-        return plot_utils.save_figure(fig, FIGURES / f"block_{corpus}_{name}{'_drop' if drop else ''}_code.png")
+        return plot_utils.save_figure(fig, FIGURES / f"block_{corpus}_{name}{'_drop' if drop else ''}_code_{tag_w}.png")
 
     code_panel("months")
 
@@ -239,7 +251,7 @@ def _(mo):
 
 
 @app.cell
-def _(item_colors, mo, np, plot_utils, predicted):
+def _(item_colors, mo, np, plot_utils, predicted, weighting):
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
     from plotly.colors import cyclical
@@ -257,7 +269,7 @@ def _(item_colors, mo, np, plot_utils, predicted):
                                        marker=dict(size=5, color=hexes or np.arange(len(concepts)), colorscale=cyclical.Twilight,
                                                    showscale=False)), row=1, col=col)
         fig.update_layout(height=600, autosize=True, showlegend=False,
-                          title=f"{corpus} {name}: PCs {', '.join(str(p + 1) for p in pcs)}" + (f", without {', '.join(drop)}" if drop else ""))
+                          title=f"{corpus} {name}, {weighting}: PCs {', '.join(str(p + 1) for p in pcs)}" + (f", without {', '.join(drop)}" if drop else ""))
         for scene in ("scene", "scene2"):
             fig.layout[scene].update(xaxis_title=f"PC{pcs[0] + 1}", yaxis_title=f"PC{pcs[1] + 1}", zaxis_title=f"PC{pcs[2] + 1}")
         return mo.ui.plotly(fig)

@@ -88,17 +88,20 @@ def test_query_reaches_the_api():
     assert r["count"] > 1_000_000
 
 
-def test_pmi_is_zero_under_independence_and_counts_an_empty_cell_as_one_cooccurrence():
-    """log(P_ij / (P_i P_j)) with P from the matrix itself: a matrix C = r r^T / Z has independent words
-    and PMI 0 everywhere; a cell at twice its expectation scores log 2; an empty cell is scored as if
-    it held one co-occurrence of weight 1, so nothing is -inf."""
-    from src.code.corpus import pmi
-    r = np.random.default_rng(0).integers(100, 1000, size=6).astype(float); Z = r.sum()
-    C = np.outer(r, r) / Z                                         # row sums of C are exactly r; every cell > 1
-    assert np.allclose(pmi(C[:3], r[:3], r, Z), 0)
-    C[0, 1] *= 2; C[0, 2] = 0
-    M = pmi(C[:1], r[:1], r, Z)
-    assert np.isclose(M[0, 1], np.log(2)) and np.isclose(M[0, 2], np.log(Z / (r[0] * r[2]))) and np.isfinite(M).all()
+def test_log_conditional_is_the_skip_gram_log_probability_with_an_empty_cell_as_one_cooccurrence():
+    """log P(j | i) = log(C_ij / r_i) with r_i the row's total weight: each row exponentiates to a
+    distribution over the vocabulary; an empty cell is scored as one co-occurrence of weight 1, so
+    nothing is -inf; a block keeps the full row total, not the block's."""
+    from src.code.corpus import log_conditional
+    C = np.random.default_rng(0).integers(2, 50, size=(4, 6)).astype(float)
+    r = C.sum(1)
+    L = log_conditional(C, r)
+    assert np.allclose(np.exp(L).sum(1), 1) and np.allclose(L, np.log(C) - np.log(r)[:, None])
+    C[0, 2] = 0
+    L = log_conditional(C[:1], r[:1])
+    assert np.isclose(L[0, 2], -np.log(r[0])) and np.isfinite(L).all()
+    block = log_conditional(C[:2, :3], r[:2])                       # a block: same r, so exp sums to the block's share
+    assert np.allclose(np.exp(block).sum(1), np.maximum(C[:2, :3], 1).sum(1) / r[:2])
 
 
 def test_load_corpus_memory_maps_the_matrix_and_caches_its_row_sums(tmp_path):
