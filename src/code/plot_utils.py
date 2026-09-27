@@ -716,7 +716,7 @@ def merge_panels(paths, labels=None, ncols=2, width=21, label_size=26, header=No
 
 
 def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None, scores=None,
-                          coords=None):
+                          coords=None, score_label="CKA"):
     """Two rows: predicted code beside each model's pre-decode representation (top, laid out per the
     structure's ``view``; see `_view`), and each code's Gram matrix (bottom) — ``E E^T`` for the
     predicted column, so all matrix panels show the same quantity. ``embeddings``: {name: reps}.
@@ -746,7 +746,7 @@ def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None,
         axb = fig.add_subplot(gs[1, j])
         gtitle = r"$E^{*}E^{*\top}$" if j == 0 else r"$EE^{\top}$"
         if scores is not None and name in scores:
-            gtitle += f"   CKA {scores[name]:.2f}"
+            gtitle += f"   {score_label} {scores[name]:.2f}"
         gram_heatmap(axb, r, title=gtitle)
     if headers:                                          # column names for the simplex sub-grids
         fig.canvas.draw()

@@ -39,7 +39,7 @@ def _(mo):
     from src.code.corpus import load_corpus, log_conditional
     from src.code.geometry import predicted_geometry
     from src.code import plot_utils
-    from src.code.analysis_utils import cka
+    from src.code.analysis_utils import rsa
     from src.code.llm import input_embeddings, whitened_unembeddings, word_means
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -51,7 +51,6 @@ def _(mo):
         AutoTokenizer,
         CACHE,
         FIGURES,
-        cka,
         input_embeddings,
         load_corpus,
         log_conditional,
@@ -59,6 +58,7 @@ def _(mo):
         plot_utils,
         plt,
         predicted_geometry,
+        rsa,
         torch,
         whitened_unembeddings,
         word_means,
@@ -176,15 +176,15 @@ def _(mo):
     mo.md(r"""
     ## Corpus code against Llama
 
-    Linear CKA between each domain's block code and Llama's representation of the same words, per
-    residual layer, with the input embedding (square) and the whitened unembedding (triangle) beside it.
+    RSA (Spearman correlation of the Euclidean distance matrices) between each domain's block code
+    and Llama's representation of the same words, per residual layer, with the input embedding (square) and the whitened unembedding (triangle) beside it.
     Months are scored without "may".
     """)
     return
 
 
 @app.cell
-def llm_scores(DOMAINS, block, cka, corpora, llm, np, predicted_geometry):
+def llm_scores(DOMAINS, block, corpora, llm, np, predicted_geometry, rsa):
     LAYERS = np.arange(llm["months"]["residual"].shape[0])
     DROP = {"months": ("may",)}                                        # scored without the modal-verb token
 
@@ -201,15 +201,15 @@ def llm_scores(DOMAINS, block, cka, corpora, llm, np, predicted_geometry):
         for _n in DOMAINS:
             _E = predicted_geometry(block(_n, DROP.get(_n, ()), _c)[0])
             _R = llm_reps(_n, DROP.get(_n, ()))
-            scores[_c, _n] = {"residual": np.array([cka(_E, _R["residual"][l]) for l in LAYERS]),
-                              "input": cka(_E, _R["input"]), "unembedding": cka(_E, _R["unembedding"])}
+            scores[_c, _n] = {"residual": np.array([rsa(_E, _R["residual"][l]) for l in LAYERS]),
+                              "input": rsa(_E, _R["input"]), "unembedding": rsa(_E, _R["unembedding"])}
 
 
     def best_layer(name, corpus):
         return int(scores[corpus, name]["residual"].argmax())
 
 
-    print(f"{'corpus':10s} {'domain':8s} {'best layer':>10s} {'CKA':>6s} {'input':>6s} {'unemb':>6s}")
+    print(f"{'corpus':10s} {'domain':8s} {'best layer':>10s} {'RSA':>6s} {'input':>6s} {'unemb':>6s}")
     for (_c, _n), _s in scores.items():
         _l = best_layer(_n, _c)
         print(f"{_c:10s} {_n:8s} {_l:>10d} {_s['residual'][_l]:6.2f} {_s['input']:6.2f} {_s['unembedding']:6.2f}")
@@ -218,7 +218,7 @@ def llm_scores(DOMAINS, block, cka, corpora, llm, np, predicted_geometry):
 
 
 @app.cell
-def llm_cka_figure(
+def llm_rsa_figure(
     DOMAINS,
     FIGURES,
     LAYERS,
@@ -229,7 +229,7 @@ def llm_cka_figure(
     tag_w,
     weighting,
 ):
-    def cka_by_layer():
+    def rsa_by_layer():
         fig, axes = plt.subplots(1, len(DOMAINS), figsize=(4 * len(DOMAINS), 3.2), sharey=True)
         for ax, name in zip(axes, DOMAINS):
             for c in corpora:
@@ -237,13 +237,14 @@ def llm_cka_figure(
                 line, = ax.plot(LAYERS, s["residual"], label=c)
                 ax.scatter([0], [s["input"]], marker="s", color=line.get_color())
                 ax.scatter([LAYERS[-1]], [s["unembedding"]], marker="^", color=line.get_color())
-            ax.set_title(name); ax.set_xlabel("layer"); ax.set_ylim(0, 1)
-        axes[0].set_ylabel("CKA(corpus block code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
+            ax.axhline(0, color="0.7", lw=0.8)
+            ax.set_title(name); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
+        axes[0].set_ylabel("RSA(corpus block code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
         fig.suptitle(f"square: input embedding; triangle: whitened unembedding; {weighting} window", y=1.02)
-        return plot_utils.save_figure(fig, FIGURES / f"corpus_llm_cka_{tag_w}.png")
+        return plot_utils.save_figure(fig, FIGURES / f"corpus_llm_rsa_{tag_w}.png")
 
 
-    cka_by_layer()
+    rsa_by_layer()
 
     return
 
@@ -325,11 +326,11 @@ def _(
     FIGURES,
     ListedColormap,
     best_layer,
-    cka,
     item_colors,
     llm_reps,
     plot_utils,
     predicted,
+    rsa,
     tag_w,
     weighting,
 ):
@@ -338,10 +339,10 @@ def _(
         L = best_layer(name, corpus)
         R = llm_reps(name, drop)
         reps = {f"Llama L{L}": R["residual"][L], "input": R["input"], "unembedding": R["unembedding"]}
-        sc = {k: cka(E_block, v) for k, v in reps.items()}
+        sc = {k: rsa(E_block, v) for k, v in reps.items()}
         hexes = item_colors(name, concepts)
         fig = plot_utils.plot_embedding_panels(E_block, reps, DOMAINS[name]["spec"],
-                                               cmap=ListedColormap(hexes) if hexes else None, scores=sc)
+                                               cmap=ListedColormap(hexes) if hexes else None, scores=sc, score_label="RSA")
         fig.suptitle(f"{corpus} {name}, {weighting}: corpus block code beside Llama-3.1-8B"
                      + (f", without {', '.join(drop)}" if drop else ""), y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"block_{corpus}_{name}{'_drop' if drop else ''}_code_{tag_w}.png")
