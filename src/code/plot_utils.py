@@ -716,14 +716,15 @@ def merge_panels(paths, labels=None, ncols=2, width=21, label_size=26, header=No
 
 
 def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None, scores=None,
-                          coords=None, score_label="CKA"):
+                          coords=None, score_label="CKA", first_name="predicted", starred="first"):
     """Two rows: predicted code beside each model's pre-decode representation (top, laid out per the
     structure's ``view``; see `_view`), and each code's Gram matrix (bottom) — ``E E^T`` for the
     predicted column, so all matrix panels show the same quantity. ``embeddings``: {name: reps}.
     ``colors``: one scalar per row for the scatters. ``scores``: {name: float} annotated on the
     Grams. ``coords``: {name: (n, 2)} to scatter a chosen plane instead of the top-2 PCA — needed
-    when the spectrum is flat (a group), where PCA picks an arbitrary mixture of irreps."""
-    names = ["predicted"] + list(embeddings)
+    when the spectrum is flat (a group), where PCA picks an arbitrary mixture of irreps.
+    ``starred``: which Grams are labelled ``E* E*^T`` (the predicted ones), ``"first"`` or ``"rest"``."""
+    names = [first_name] + list(embeddings)
     reps = [E_pred] + list(embeddings.values())
     is_tree = spec is not None and spec.get("structure") == "tree"
     view = _view(spec)
@@ -744,7 +745,7 @@ def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None,
             draw_embedding(fig, gs[0, j], r, spec, name, cmap, colors,
                            xy=None if coords is None else coords.get(name))
         axb = fig.add_subplot(gs[1, j])
-        gtitle = r"$E^{*}E^{*\top}$" if j == 0 else r"$EE^{\top}$"
+        gtitle = r"$E^{*}E^{*\top}$" if (j == 0) == (starred == "first") else r"$EE^{\top}$"
         if scores is not None and name in scores:
             gtitle += f"   {score_label} {scores[name]:.2f}"
         gram_heatmap(axb, r, title=gtitle)

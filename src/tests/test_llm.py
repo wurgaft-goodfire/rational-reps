@@ -4,8 +4,7 @@ import pytest
 import torch
 from transformers import GPTNeoXConfig
 
-from src.code.llm import (input_embeddings, node_means, node_tokens, pair_means, row_entropy, triple_stream,
-                          whitened_unembeddings, word_means)
+from src.code.llm import node_means, node_tokens, pair_means, row_entropy, triple_stream, word_means
 from src.code.models import TransformerModel
 
 
@@ -126,28 +125,6 @@ def test_word_means_can_read_the_prompts_last_token_instead():
             reps = [torch.stack(model(torch.tensor([pre + ids + post]), output_hidden_states=True)["hidden_states"])[:, 0, -1]
                     for pre, post in templates]
             assert np.allclose(out[:, j], torch.stack(reps).mean(0).numpy(), atol=1e-5)
-
-
-def test_input_embeddings_are_the_embedding_rows_of_each_words_last_token():
-    """The context-free representation of a word: the input embedding of its final token piece."""
-    model = _tiny()
-    words = {"a": [3], "bc": [4, 6]}
-    E = input_embeddings(model, words)
-    W = model.get_input_embeddings().weight.detach().numpy()
-    assert E.shape == (2, 16) and np.allclose(E, W[[3, 6]])
-
-
-def test_whitened_unembeddings_have_identity_covariance_over_the_vocabulary():
-    """Park et al.'s causal inner product: the unembedding rows are centred over the vocabulary and
-    multiplied by the inverse square root of their covariance, so over every token the whitened rows
-    have zero mean and identity covariance; a word's row is that of its last token."""
-    torch.manual_seed(0)
-    model = TransformerModel(GPTNeoXConfig(vocab_size=40, hidden_size=16, num_hidden_layers=1, num_attention_heads=2,
-                                           intermediate_size=32, max_position_embeddings=32)).eval()
-    every = {str(i): [i] for i in range(40)}
-    G = whitened_unembeddings(model, every)
-    assert G.shape == (40, 16) and np.allclose(G.mean(0), 0, atol=1e-5) and np.allclose(G.T @ G / 40, np.eye(16), atol=1e-4)
-    assert np.allclose(whitened_unembeddings(model, {"bc": [4, 6]})[0], G[6], atol=1e-5)
 
 
 def test_row_entropy_indexes_the_flattened_kernel_by_key():
