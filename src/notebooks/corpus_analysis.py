@@ -102,8 +102,10 @@ def _(mo):
     mo.md(r"""
     ## Llama-3.1-8B representations
 
-    The residual at the word's last token, averaged over six prompts, at every layer; layer 0 is the input
-    embedding. Cached per domain; a changed word list recomputes.
+    Two reads per word, at every layer (layer 0 is the input embedding). **Prompt end**: three domain
+    prompts name the word and the residual is taken at the prompt's final token, e.g. "The color I am
+    thinking about is red." **Word token**: six neutral prefixes and the residual at the word's own last
+    token. Each is averaged over its prompts; cached per domain and prompt set.
     """)
     return
 
@@ -113,9 +115,17 @@ def llm_config(CACHE, DOMAINS):
     import hashlib
 
     LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
-    TEMPLATES = ["", "The word", "She said", "I think of", "Consider", "It was"]   # prefix text; the word follows
     LLM_DIR = CACHE / "corpus" / "llm" / LLM_NAME; LLM_DIR.mkdir(parents=True, exist_ok=True)
     CASE = {"months": str.capitalize}                                              # the corpus token as written in text
+    NEUTRAL = [(t, "") for t in ["", "The word", "She said", "I think of", "Consider", "It was"]]   # read at the word
+    PROMPTS = {                                                                     # (prefix, suffix), read at the prompt's end
+        "months": [("The month I am thinking about is", "."), ("The month of the year is", ". What month is it?"),
+                   ("The event took place in", ".")],
+        "colors": [("The color I am thinking about is", "."), ("The color of the object is", ". What color is the object?"),
+                   ("My favorite color is", ".")],
+        "numbers": [("The number I am thinking about is", "."), ("The number of items is", ". How many items are there?"),
+                    ("The answer is", ".")]}
+    READS = {"end": lambda name: (PROMPTS[name], True), "word": lambda name: (NEUTRAL, False)}   # -> (templates, at_end)
 
 
     def llm_form(name, word):
@@ -123,14 +133,15 @@ def llm_config(CACHE, DOMAINS):
         return " " + CASE.get(name, str)(word)
 
 
-    def llm_cache(name):
-        """``(path, words)``: the cache file for a domain's LLM representations, keyed by its word list."""
+    def llm_cache(name, read):
+        """``(path, words, templates, at_end)`` for one domain and read; the file is keyed by words and prompts."""
         words = [llm_form(name, w) for w in DOMAINS[name]["words"]]
-        key = hashlib.md5(" ".join(words).encode()).hexdigest()[:8]
-        return LLM_DIR / f"{name}_{key}.npz", words
+        templates, at_end = READS[read](name)
+        key = hashlib.md5(" ".join(words + [f"{p}|{s}" for p, s in templates] + [str(at_end)]).encode()).hexdigest()[:8]
+        return LLM_DIR / f"{name}_{read}_{key}.npz", words, templates, at_end
 
 
-    return LLM_PATH, TEMPLATES, llm_cache
+    return LLM_PATH, READS, llm_cache
 
 
 @app.cell
@@ -139,27 +150,27 @@ def llm_reps(
     AutoTokenizer,
     DOMAINS,
     LLM_PATH,
-    TEMPLATES,
+    READS,
     llm_cache,
     np,
     torch,
     word_means,
 ):
-    _missing = [n for n in DOMAINS if not llm_cache(n)[0].exists()]
-    if _missing:                                        # the expensive step, cached raw per domain
+    _missing = [(n, r) for n in DOMAINS for r in READS if not llm_cache(n, r)[0].exists()]
+    if _missing:                                        # the expensive step, cached raw per domain and read
         _tok = AutoTokenizer.from_pretrained(LLM_PATH)
         _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, dtype=torch.bfloat16, device_map="cuda").eval()
-        _templates = [([_tok.bos_token_id] + _tok.encode(t, add_special_tokens=False), []) for t in TEMPLATES]
-        for _n in _missing:
-            _path, _words = llm_cache(_n)
+        for _n, _r in _missing:
+            _path, _words, _templates, _at_end = llm_cache(_n, _r)
             _ids = {w: _tok.encode(w, add_special_tokens=False) for w in _words}
-            np.savez(_path, words=np.array(_words), n_tokens=np.array([len(v) for v in _ids.values()]),
-                     residual=word_means(_model, _ids, _templates))
-            print(f"{_n}: {len(_words)} words cached")
+            _t = [([_tok.bos_token_id] + _tok.encode(p, add_special_tokens=False), _tok.encode(s, add_special_tokens=False))
+                  for p, s in _templates]
+            np.savez(_path, words=np.array(_words), residual=word_means(_model, _ids, _t, at_end=_at_end))
+            print(f"{_n} / {_r}: {len(_words)} words cached")
         del _model; torch.cuda.empty_cache()
-    llm = {n: np.load(llm_cache(n)[0])["residual"] for n in DOMAINS}                 # (layers, n, d)
-    for _n, _R in llm.items():
-        print(f"{_n:8s} residual {_R.shape}")
+    llm = {n: {r: np.load(llm_cache(n, r)[0])["residual"] for r in READS} for n in DOMAINS}     # (layers, n, d)
+    for _n, _d in llm.items():
+        print(f"{_n:8s} " + ", ".join(f"{r} {R.shape}" for r, R in _d.items()))
 
     return (llm,)
 
@@ -170,29 +181,32 @@ def _(mo):
     ## Agreement by layer
 
     RSA (Spearman correlation of the Euclidean distance matrices) between each corpus's block code and
-    Llama's representation of the same words, per layer. The layer shown in the panels below is the one
-    with the best mean over corpora.
+    Llama's representation of the same words, per layer. Solid: prompt-end read; dashed: word-token read.
+    The panels use the prompt-end read at the layer with the best mean over corpora.
     """)
     return
 
 
 @app.cell
-def llm_scores(DOMAINS, corpora, llm, np, predicted, rsa):
-    LAYERS = np.arange(next(iter(llm.values())).shape[0])
+def llm_scores(DOMAINS, READS, corpora, llm, np, predicted, rsa):
+    READ = "end"                                                                    # the read the panels use
+    LAYERS = np.arange(llm["months"][READ].shape[0])
     codes = {(n, c): predicted(n, c)[0] for n in DOMAINS for c in corpora}                  # corpus block codes
-    scores = {(n, c): np.array([rsa(codes[n, c], llm[n][l]) for l in LAYERS]) for n in DOMAINS for c in corpora}
+    scores = {(n, c, r): np.array([rsa(codes[n, c], llm[n][r][l]) for l in LAYERS])
+              for n in DOMAINS for c in corpora for r in READS}
 
 
-    def best_layer(name):
-        return int(np.mean([scores[name, c] for c in corpora], 0).argmax())
+    def best_layer(name, read=READ):
+        return int(np.mean([scores[name, c, read] for c in corpora], 0).argmax())
 
 
-    print(f"{'domain':8s} {'best layer':>10s}  " + "  ".join(f"{c:>10s}" for c in corpora))
+    print(f"{'domain':8s} {'read':5s} {'best layer':>10s}  " + "  ".join(f"{c:>10s}" for c in corpora))
     for _n in DOMAINS:
-        _l = best_layer(_n)
-        print(f"{_n:8s} {_l:>10d}  " + "  ".join(f"{scores[_n, c][_l]:10.2f}" for c in corpora))
+        for _r in READS:
+            _l = best_layer(_n, _r)
+            print(f"{_n:8s} {_r:5s} {_l:>10d}  " + "  ".join(f"{scores[_n, c, _r][_l]:10.2f}" for c in corpora))
 
-    return LAYERS, best_layer, codes, scores
+    return LAYERS, READ, best_layer, codes, scores
 
 
 @app.cell
@@ -212,12 +226,13 @@ def rsa_figure(
         fig, axes = plt.subplots(1, len(DOMAINS), figsize=(4 * len(DOMAINS), 3.2), sharey=True)
         for ax, name in zip(axes, DOMAINS):
             for c in corpora:
-                ax.plot(LAYERS, scores[name, c], label=c)
+                line, = ax.plot(LAYERS, scores[name, c, "end"], label=c)
+                ax.plot(LAYERS, scores[name, c, "word"], ls="--", lw=1, color=line.get_color())
             ax.axvline(best_layer(name), color="0.8", lw=0.8)
             ax.axhline(0, color="0.7", lw=0.8)
             ax.set_title(name); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
         axes[0].set_ylabel("RSA(corpus block code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
-        fig.suptitle(f"{weighting} window; layer 0 = input embedding", y=1.02)
+        fig.suptitle(f"{weighting} window; solid: prompt end, dashed: word token; layer 0 = input embedding", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"corpus_llm_rsa_{tag_w}.png")
 
 
@@ -231,6 +246,7 @@ def panel_functions(
     DOMAINS,
     FIGURES,
     ListedColormap,
+    READ,
     best_layer,
     block,
     codes,
@@ -265,9 +281,9 @@ def panel_functions(
         L = best_layer(name)
         concepts = DOMAINS[name]["words"]
         hexes = item_colors(name, concepts)
-        fig = plot_utils.plot_embedding_panels(llm[name][L], {c: codes[name, c] for c in corpora}, DOMAINS[name]["spec"],
+        fig = plot_utils.plot_embedding_panels(llm[name][READ][L], {c: codes[name, c] for c in corpora}, DOMAINS[name]["spec"],
                                                cmap=ListedColormap(hexes) if hexes else None,
-                                               scores={c: scores[name, c][L] for c in corpora}, score_label="RSA",
+                                               scores={c: scores[name, c, READ][L] for c in corpora}, score_label="RSA",
                                                first_name=f"Llama L{L}", starred="rest")
         fig.suptitle(f"{name}, {weighting} window: Llama-3.1-8B beside the corpus-predicted codes", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"domain_{name}_{tag_w}.png")
@@ -356,6 +372,7 @@ def _(mo):
 @app.cell
 def view3d(
     DOMAINS,
+    READ,
     best_layer,
     codes,
     item_colors,
@@ -377,7 +394,7 @@ def view3d(
         hexes = item_colors(name, concepts)
         fig = make_subplots(rows=1, cols=2, specs=[[{"type": "scene"}, {"type": "scene"}]],
                             subplot_titles=(f"Llama L{L}", f"{corpus} block code"))
-        for col, E in ((1, llm[name][L]), (2, codes[name, corpus])):
+        for col, E in ((1, llm[name][READ][L]), (2, codes[name, corpus])):
             P = plot_utils._pca(E, max(pcs) + 1)[:, list(pcs)]
             fig.add_trace(go.Scatter3d(x=P[:, 0], y=P[:, 1], z=P[:, 2], mode="markers", text=concepts, hoverinfo="text",
                                        marker=dict(size=5, color=hexes or np.arange(len(concepts)), colorscale=cyclical.Twilight,
