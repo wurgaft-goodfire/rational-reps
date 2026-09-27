@@ -67,11 +67,9 @@ def _(CACHE, load_corpus, view_weighting):
 
 @app.cell
 def _():
-    HEX = {"red": "#e60000", "scarlet": "#ff2400", "crimson": "#dc143c", "maroon": "#800000", "orange": "#ff8c00",
-           "yellow": "#f2d600", "lime": "#32cd32", "olive": "#808000", "green": "#008000", "teal": "#008080",
-           "turquoise": "#40e0d0", "blue": "#0000ff", "indigo": "#4b0082", "violet": "#8f00ff", "purple": "#800080",
-           "magenta": "#ff00ff", "pink": "#ff69b4", "brown": "#8b4513", "black": "#000000", "white": "#d0d0d0",
-           "gray": "#808080"}                                     # hue words in all three 50k vocabularies (no beige, cyan)
+    HEX = {"red": "#e60000", "orange": "#ff8c00", "yellow": "#f2d600", "green": "#008000", "blue": "#0000ff",
+           "purple": "#800080", "pink": "#ff69b4", "brown": "#8b4513", "black": "#000000", "white": "#d0d0d0",
+           "gray": "#808080"}                                     # the 11 basic colour terms, hue order then achromatic
     MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
               "november", "december"]
     DOMAINS = {"months": {"words": MONTHS, "spec": {"structure": "ring", "n": 12}},
@@ -220,7 +218,7 @@ def _(mo):
     mo.md(r"""
     ## Gutenberg colours
 
-    Fiction names hues far more often than Wikipedia does; the same block and rows codes from the
+    Fiction names colours far more often than Wikipedia does; the same block and rows codes from the
     Gutenberg matrix.
     """)
     return
