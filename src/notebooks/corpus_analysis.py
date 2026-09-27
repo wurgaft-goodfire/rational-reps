@@ -337,7 +337,7 @@ def _(
         E_block, concepts = predicted(name, drop, corpus)
         L = best_layer(name, corpus)
         R = llm_reps(name, drop)
-        reps = {f"Llama layer {L}": R["residual"][L], "input embedding": R["input"], "whitened unembedding": R["unembedding"]}
+        reps = {f"Llama L{L}": R["residual"][L], "input": R["input"], "unembedding": R["unembedding"]}
         sc = {k: cka(E_block, v) for k, v in reps.items()}
         hexes = item_colors(name, concepts)
         fig = plot_utils.plot_embedding_panels(E_block, reps, DOMAINS[name]["spec"],
