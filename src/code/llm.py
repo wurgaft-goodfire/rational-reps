@@ -96,6 +96,26 @@ def word_means(model, words, templates, at_end=False):
     return torch.stack(out, 1).cpu().numpy()
 
 
+@torch.no_grad()
+def input_embeddings(model, words):
+    """Each word's context-free representation: the input embedding of its last token piece.
+    ``words`` {name: token ids} -> (n, d)."""
+    W = model.get_input_embeddings().weight
+    return torch.stack([W[ids[-1]] for ids in words.values()]).float().cpu().numpy()
+
+
+@torch.no_grad()
+def whitened_unembeddings(model, words):
+    """Each word's readout vector in the causal inner product (Park et al.): the unembedding rows are
+    centred over the vocabulary and multiplied by the inverse square root of their covariance, so the
+    whole vocabulary is white; a word takes its last token's row. ``words`` {name: token ids} -> (n, d)."""
+    U = model.get_output_embeddings().weight.float()
+    U = U - U.mean(0)
+    evals, evecs = torch.linalg.eigh(U.T @ U / len(U))
+    whiten = evecs @ torch.diag(evals.rsqrt()) @ evecs.T
+    return (torch.stack([U[ids[-1]] for ids in words.values()]) @ whiten).cpu().numpy()
+
+
 def triple_stream(dataset, B, K):
     """(B, K, 3) triples ``(a, b, c)`` from a relational dataset's pointwise rows (every pair
     enumerated, an outcome drawn per row), permuted into ``B`` streams; ``c`` indexes the outcome
