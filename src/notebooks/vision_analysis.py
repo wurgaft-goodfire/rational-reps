@@ -57,18 +57,29 @@ def _(VISION, np):
 
 
     def human_votes(dataset, run):
-        """Per-image human vote table (N, C), or None where the relabelling is too sparse per image (ReaL)."""
-        if dataset != "cifar10":
-            return None
-        return np.load(VISION / "labels" / "cifar10h-counts.npy")[run["index"]].astype(np.float64)
+        """``(T, covered)``: per-image human vote table (N, C) and the images it covers. CIFAR-10H: ~51 annotator
+        counts per test image. ImageNet-ReaL raters: the "yes" votes of five raters per candidate label, on the
+        24,889 validation images that were re-rated."""
+        if dataset == "cifar10":
+            return np.load(VISION / "labels" / "cifar10h-counts.npy")[run["index"]].astype(np.float64), np.ones(len(run["index"]), bool)
+        d = np.load(VISION / "labels" / "raters.npz", allow_pickle=True)
+        yes = d["tensor"][:, :, 2].sum(0)                                            # (pairs,) yes votes over raters
+        image = np.array([int(f[15:23]) - 1 for f in d["info"][:, 0]])              # ILSVRC2012_val_NNNNNNNN.JPEG -> 0-based
+        cand = d["info"][:, 1].astype(int)
+        row = np.full(50000, -1); row[run["index"]] = np.arange(len(run["index"]))
+        T = np.zeros((len(run["index"]), run["C"]))
+        np.add.at(T, (row[image], cand), yes)
+        covered = np.zeros(len(run["index"]), bool); covered[row[image]] = True
+        return T, covered
 
 
     RUNS = {("imagenet", "resnet50"), ("imagenet", "vit_b_16"), ("cifar10", "cifar_resnet56")}
     runs = {k: load_run(k[1], k[0]) for k in RUNS if (VISION / k[1] / f"{k[0]}.npz").exists()}
     votes = {k: human_votes(k[0], r) for k, r in runs.items()}
     for (_ds, _m), _r in runs.items():
+        _T, _cov = votes[_ds, _m]
         print(f"{_ds:9s} {_m:14s} top-1 {_r['top1']:.3f}  images {len(_r['labels']):,}  features {_r['features'].shape[1]}  "
-              f"classes {_r['C']}" + ("" if votes[_ds, _m] is None else f"  human votes/image {votes[_ds, _m].sum(1).mean():.0f}"))
+              f"classes {_r['C']}  human votes: {int(_cov.sum()):,} images, {_T[_cov].sum(1).mean():.1f} votes/image")
     print("not cached:", sorted(RUNS - set(runs)) or "none")
 
     return runs, votes
@@ -105,27 +116,30 @@ def _(cka, np, predicted_geometry, rsa, runs, votes):
 
 
     def codes_for(key):
-        """Per-image codes: from the model's row-centred logits, and from the human votes where they exist."""
-        out = {"model logits": predicted_geometry(runs[key]["logits"])}
-        if votes[key] is not None:
-            out["human votes"] = predicted_geometry(log_table(votes[key]))
-        return out
+        """Per-image codes ``{name: (E, covered)}``: from the model's row-centred logits on every image, and from
+        the human votes on the images they cover (rows outside are zero and excluded from every comparison)."""
+        run = runs[key]; T, covered = votes[key]
+        E_h = np.zeros((len(T), min(covered.sum(), run["C"]))); E_h[covered] = predicted_geometry(log_table(T[covered]))
+        return {"model logits": (predicted_geometry(run["logits"]), np.ones(len(T), bool)), "human votes": (E_h, covered)}
 
 
     def scores_for(key, codes_k, seed=0):
         run = runs[key]; H = run["features"]
-        sub = subsample(run["labels"], PER_CLASS[key[0]], seed)
+        valid = np.all([m for _, m in codes_k.values()], 0)                          # images every code covers
+        sub = np.where(valid)[0][subsample(run["labels"][valid], PER_CLASS[key[0]], seed)]
         rng = np.random.default_rng(seed)
-        out = {name: {"CKA": cka(H, E), "CKA floor": float(np.mean([cka(H, E[rng.permutation(len(E))]) for _ in range(5)])),
-                      "RSA (subsample)": rsa(H[sub], E[sub])}
-               for name, E in codes_k.items()}
+        out = {}
+        for name, (E, m) in codes_k.items():
+            out[name] = {"CKA": cka(H[m], E[m]), "CKA floor": float(np.mean([cka(H[m], E[m][rng.permutation(int(m.sum()))]) for _ in range(5)])),
+                         "RSA (subsample)": rsa(H[sub], E[sub]), "images": int(m.sum())}
         return out, sub
 
 
     codes = {k: codes_for(k) for k in runs}
     scores = {k: scores_for(k, codes[k]) for k in runs}
     for _k, (_s, _sub) in scores.items():
-        print(f"{_k[0]:9s} {_k[1]:14s} subsample {len(_sub):,}  " + "  |  ".join(f"{n}: " + " ".join(f"{m} {v:.2f}" for m, v in d.items()) for n, d in _s.items()))
+        print(f"{_k[0]:9s} {_k[1]:14s} subsample {len(_sub):,}  " + "  |  ".join(
+            f"{n} ({d['images']:,} images): " + " ".join(f"{m} {v:.2f}" for m, v in d.items() if m != "images") for n, d in _s.items()))
 
     return PER_CLASS, codes, scores
 
@@ -135,7 +149,7 @@ def _(FIGURES, PER_CLASS, codes, plot_utils, runs, scores):
     def run_panel(key):
         """Features beside the predicted codes on the class-sorted subsample, coloured by class; Grams below with CKA over all images."""
         run, (sc, sub) = runs[key], scores[key]
-        cols = {name: E[sub] for name, E in codes[key].items()}
+        cols = {name: E[sub] for name, (E, _m) in codes[key].items()}
         fig = plot_utils.plot_embedding_panels(run["features"][sub], cols, None, cmap="magma" if run["C"] > 20 else None,
                                                colors=run["labels"][sub], scores={n: sc[n]["CKA"] for n in cols},
                                                score_label="CKA", first_name=f"{key[1]} features", starred="rest",
