@@ -58,6 +58,30 @@ def test_imagenet_val_reads_index_label_and_bytes_from_the_parquet_path(tmp_path
     assert out == [(6, 0, b"a"), (49999, 999, b"b")]
 
 
+def test_superclass_logits_are_the_log_of_summed_probabilities_within_each_group():
+    """A group's logit is the log-sum-exp of its members', so softmax over groups equals the summed
+    member probabilities; a singleton group keeps its logit exactly."""
+    from src.code.vision import superclass_logits
+    rng = np.random.default_rng(0)
+    Z = rng.normal(size=(4, 6))
+    groups = {"a": [0], "b": [1, 2], "c": [3, 4, 5]}
+    S = superclass_logits(Z, groups)
+    P = np.exp(Z) / np.exp(Z).sum(1, keepdims=True)
+    assert S.shape == (4, 3) and np.allclose(S[:, 0], Z[:, 0])
+    Pg = np.exp(S) / np.exp(S).sum(1, keepdims=True)
+    assert np.allclose(Pg, np.stack([P[:, [0]].sum(1), P[:, [1, 2]].sum(1), P[:, [3, 4, 5]].sum(1)], 1))
+
+
+def test_vote_table_counts_participant_answers_per_image_and_noise_level():
+    """Items are (image, noise level) pairs in first-seen order; each trial adds one vote to the
+    answered category, in the fixed category order."""
+    from src.code.vision import vote_table
+    trials = [("img1", 80, "cat"), ("img1", 80, "dog"), ("img1", 80, "cat"), ("img1", 95, "dog"), ("img2", 80, "bird")]
+    items, T = vote_table(trials, ["bird", "cat", "dog"])
+    assert items == [("img1", 80), ("img1", 95), ("img2", 80)]
+    assert np.array_equal(T, [[0, 2, 1], [0, 0, 1], [1, 0, 0]])
+
+
 @pytest.mark.slow
 def test_real_labels_share_the_class_order_of_the_cached_validation_set():
     """Label-order recovery: with matching class ids, the original label sits inside the ReaL set for
