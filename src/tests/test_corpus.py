@@ -224,6 +224,42 @@ def test_concept_rows_match_the_window_counter_around_each_concept_occurrence():
     assert R.shape == (2, len(words)) and np.array_equal(R, expected)
 
 
+def _toy_counts(V=7, seed=0):
+    rng = np.random.default_rng(seed)
+    C = rng.integers(0, 40, size=(V, V)).astype(np.float32)
+    C[0, 3] = C[3, 0] = 0                                                  # an empty cell
+    return (C + C.T) / 2
+
+
+def test_full_embedding_factors_the_bounded_pmi_and_log_ratio_targets_by_their_top_eigenmodes():
+    """``m`` = P_ij / (P_i P_j), ``mstar`` = 2 (P_ij - P_i P_j) / (P_ij + P_i P_j) and ``logm`` = log(P_ij / (P_i P_j) + eps)
+    over the top-V block, with P the block's own joint and marginal probabilities; the embedding is U sqrt(lambda)
+    over the d largest eigenvalues, largest first, so W W^T reproduces the target's positive part when d = V."""
+    from src.code.corpus import full_embedding
+    C = _toy_counts(); V = len(C)
+    P = C / C.sum(); p = P.sum(1); pp = np.outer(p, p)
+    for target, T in [("m", P / pp), ("mstar", 2 * (P - pp) / (P + pp)), ("logm", np.log(P / pp + 0.01))]:
+        W = full_embedding(C, V, target, d=V, device="cpu")
+        lam, U = np.linalg.eigh(T)
+        keep = lam > 0
+        assert W.shape == (V, keep.sum()) and np.allclose(W @ W.T, (U[:, keep] * lam[keep]) @ U[:, keep].T, atol=1e-4)
+        assert np.all(np.diff((W ** 2).sum(0)) <= 1e-6)                    # columns ordered by eigenvalue, largest first
+    assert full_embedding(C, V, "mstar", d=2, device="cpu").shape == (V, 2)
+    idx = np.array([0, 2, 5])                                              # a word subset instead of the top-V block
+    assert np.allclose(full_embedding(C, idx, "mstar", d=3, device="cpu"), full_embedding(C[np.ix_(idx, idx)], 3, "mstar", d=3, device="cpu"))
+
+
+def test_full_embedding_logcond_is_the_balanced_factor_of_the_row_centred_log_conditional():
+    """``logcond`` equals ``predicted_geometry(log_conditional(...))`` on the block, column signs aside."""
+    from src.code.corpus import full_embedding, log_conditional
+    from src.code.geometry import predicted_geometry
+    C = _toy_counts(); V = len(C)
+    W = full_embedding(C, V, "logcond", d=4, device="cpu")
+    E = predicted_geometry(log_conditional(C, C.sum(1)))[:, :4]
+    assert W.shape == (V, 4) and np.allclose(np.abs(W.T @ E), np.diag(np.abs(np.diag(W.T @ E))), atol=1e-4)
+    assert np.allclose((W ** 2).sum(0), (E ** 2).sum(0), atol=1e-4)
+
+
 def test_read_analogies_groups_questions_by_family_keeping_the_case(tmp_path):
     from src.code.corpus import read_analogies
     p = tmp_path / "q.txt"
@@ -250,6 +286,7 @@ def test_analogy_accuracy_is_exact_on_the_attribute_cube_and_chance_when_rows_ar
     words, E, questions = _cube_analogies()
     index = {w: i for i, w in enumerate(words)}
     assert analogy_accuracy(E, index, questions) == 1.0
+    assert analogy_accuracy(E, index, questions, metric="euclidean") == 1.0
     shuffled = analogy_accuracy(E[np.random.default_rng(0).permutation(len(words))], index, questions)
     assert shuffled < 0.2, shuffled
 

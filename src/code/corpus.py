@@ -148,6 +148,29 @@ def log_conditional(C_ij, r_i, floor=1.0):
     return np.log(np.maximum(np.asarray(C_ij, dtype=np.float64), floor)) - np.log(np.asarray(r_i, dtype=np.float64))[:, None]
 
 
+def full_embedding(C, V, target, d, device="cuda", eps=0.01):
+    """(V, d) word embedding from a block of the count matrix ``C`` (its top ``V`` words, or the words at the
+    indices ``V``): the target matrix's d largest eigenmodes as U sqrt(lambda), largest first (the word2vec-style
+    factor of Karkada et al.). With P the block's joint probabilities and p its marginals, ``"m"`` is P / p p^T,
+    ``"mstar"`` is 2 (P - p p^T) / (P + p p^T), ``"logm"`` is log(P / p p^T + eps), and ``"logcond"`` is the
+    row-centred log P(j | i) (one-co-occurrence floor), whose balanced SVD factor U sqrt(S) comes from the
+    eigenmodes of its Gram."""
+    import torch
+    rows = np.arange(V) if isinstance(V, (int, np.integer)) else np.asarray(V)
+    X = torch.as_tensor(np.asarray(C[rows][:, rows] if len(rows) < len(C) else C, dtype=np.float32), device=device).double()
+    if target == "logcond":
+        L = torch.log(X.clamp(min=1.0)); L = L - L.mean(1, keepdim=True)
+        G, power = L @ L.T, 0.25                                          # G = U S^2 U^T, so U (S^2)^(1/4) = U sqrt(S)
+    else:
+        P = X / X.sum(); pp = torch.outer(P.sum(1), P.sum(1))
+        G = {"m": lambda: P / pp, "mstar": lambda: 2 * (P - pp) / (P + pp), "logm": lambda: torch.log(P / pp + eps)}[target]()
+        power = 0.5
+    lam, U = torch.linalg.eigh(G)
+    lam, U = lam.flip(0), U.flip(1)                                        # largest first
+    k = min(d, int((lam > 0).sum()))
+    return (U[:, :k] * lam[:k] ** power).cpu().numpy()
+
+
 def collapse_phrases(ids, docs, phrases, V):
     """The id stream with every in-document occurrence of ``phrases[p]`` (a list of ids) replaced by the single
     id ``V + p``; longer phrases take precedence over their prefixes, occurrences never overlap. Returns
@@ -311,14 +334,18 @@ def read_analogies(path):
     return out
 
 
-def analogy_accuracy(E, index, questions, exclude_queries=True):
-    """Top-1 3CosAdd accuracy of the code ``E`` (rows indexed by ``index`` {word: row}) on ``questions``
-    [(a, b, c, d)]: the fraction whose nearest row by cosine to E_b - E_a + E_c, among all rows but a, b, c, is d."""
+def analogy_accuracy(E, index, questions, exclude_queries=True, metric="cosine"):
+    """Top-1 accuracy of the code ``E`` (rows indexed by ``index`` {word: row}) on ``questions`` [(a, b, c, d)]:
+    the fraction whose nearest row to E_b - E_a + E_c, among all rows but a, b, c, is d. ``"cosine"`` on unit
+    rows (3CosAdd) or ``"euclidean"`` on the raw rows (Korchinski et al.)."""
     U = np.asarray(E, dtype=np.float64)
-    U = U / np.linalg.norm(U, axis=1, keepdims=True)
+    if metric == "cosine":
+        U = U / np.linalg.norm(U, axis=1, keepdims=True)
     q = np.array([[index[w] for w in question] for question in questions])
     target = U[q[:, 1]] - U[q[:, 0]] + U[q[:, 2]]
     sims = target @ U.T
+    if metric == "euclidean":
+        sims = sims - 0.5 * (U ** 2).sum(1)                                  # argmax of x.u - |u|^2/2 = argmin |x - u|
     if exclude_queries:
         np.put_along_axis(sims, q[:, :3], -np.inf, axis=1)
     return float(np.mean(sims.argmax(1) == q[:, 3]))

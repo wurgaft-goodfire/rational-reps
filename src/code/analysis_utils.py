@@ -127,10 +127,14 @@ def leverage(W):
 
 def cka(X, Y):
     """Linear CKA between two representations (rows = items). Invariant to rotation/scale.
-    <Kx, Ky> / (|Kx| |Ky|) over the item Grams, computed from the feature cross-covariance:
-    |X'Y|^2 / (|X'X| |Y'Y|), so the cost is linear in the number of rows."""
+    <Kx, Ky> / (|Kx| |Ky|) over the item Grams; the same number from the feature cross-covariance,
+    |X'Y|^2 / (|X'X| |Y'Y|), when there are more items than features, so the cost is always the smaller side."""
     X = np.asarray(X, dtype=np.float64); Y = np.asarray(Y, dtype=np.float64)
     X = X - X.mean(0); Y = Y - Y.mean(0)
+    if len(X) < max(X.shape[1], Y.shape[1]):
+        Kx, Ky = X @ X.T, Y @ Y.T
+        denom = np.linalg.norm(Kx) * np.linalg.norm(Ky)
+        return float((Kx * Ky).sum() / denom) if denom > 0 else 0.0
     denom = np.linalg.norm(X.T @ X) * np.linalg.norm(Y.T @ Y)
     return float(np.linalg.norm(X.T @ Y) ** 2 / denom) if denom > 0 else 0.0
 

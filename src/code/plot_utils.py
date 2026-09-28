@@ -750,7 +750,7 @@ def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None,
         gtitle = r"$E^{*}E^{*\top}$" if (j == 0) == (starred == "first") else r"$EE^{\top}$"
         if scores is not None and name in scores:
             s = scores[name]                                 # one float under score_label, or {label: value}
-            gtitle += "   " + ("  ".join(f"{k} {v:.2f}" for k, v in s.items()) if isinstance(s, dict) else f"{score_label} {s:.2f}")
+            gtitle += "\n" + ("  ".join(f"{k} {v:.2f}" for k, v in s.items()) if isinstance(s, dict) else f"{score_label} {s:.2f}")
         gram_heatmap(axb, r, title=gtitle, percentile=gram_percentile)
     if headers:                                          # column names for the simplex sub-grids
         fig.canvas.draw()
