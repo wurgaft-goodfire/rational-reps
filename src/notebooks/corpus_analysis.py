@@ -40,7 +40,7 @@ def _(mo):
                                  load_corpus, log_conditional, orthogonality, read_analogies, wordnet_hierarchy)
     from src.code.geometry import predicted_geometry
     from src.code import plot_utils
-    from src.code.analysis_utils import rsa
+    from src.code.analysis_utils import cka, cka_null, cka_shuffle_null, rsa
     from src.code.llm import word_means
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -54,6 +54,9 @@ def _(mo):
         FIGURES,
         analogy_accuracy,
         binary_subtrees,
+        cka,
+        cka_null,
+        cka_shuffle_null,
         coarse_to_fine,
         collapse_phrases,
         concept_rows,
@@ -269,25 +272,29 @@ def _(mo):
 
 
 @app.cell
-def llm_scores(DOMAINS, READS, corpora, llm, np, predicted, rsa):
+def llm_scores(DOMAINS, READS, cka, cka_null, cka_shuffle_null, corpora, llm, np, predicted, rsa):
     READ = "category"                                                                    # the read the panels use
     LAYERS = np.arange(llm["months"][READ].shape[0])
     codes = {(n, c): predicted(n, c)[0] for n in DOMAINS for c in corpora}                  # corpus block codes
     scores = {(n, c, r): np.array([rsa(codes[n, c], llm[n][r][l]) for l in LAYERS])
-              for n in DOMAINS for c in corpora for r in READS}
+              for n in DOMAINS for c in corpora for r in READS}                            # RSA picks the layer
+    scores_cka = {(n, c, r): np.array([cka(codes[n, c], llm[n][r][l]) for l in LAYERS])
+                  for n in DOMAINS for c in corpora for r in READS}
 
 
     def best_layer(name, read=READ):
         return int(np.mean([scores[name, c, read] for c in corpora], 0).argmax())
 
 
-    print(f"{'domain':8s} {'read':5s} {'best layer':>10s}  " + "  ".join(f"{c:>10s}" for c in corpora))
+    print(f"{'domain':8s} {'best layer':>10s}  " + "  ".join(f"{c + ' RSA/CKA':>16s}" for c in corpora) + "   CKA floor random/shuffled")
     for _n in DOMAINS:
         for _r in READS:
             _l = best_layer(_n, _r)
-            print(f"{_n:8s} {_r:5s} {_l:>10d}  " + "  ".join(f"{scores[_n, c, _r][_l]:10.2f}" for c in corpora))
+            _L = llm[_n][_r][_l]
+            print(f"{_n:8s} {_l:>10d}  " + "  ".join(f"{scores[_n, c, _r][_l]:10.2f}/{scores_cka[_n, c, _r][_l]:.2f}" for c in corpora)
+                  + f"   {cka_null(_L):.2f}/{cka_shuffle_null(_L):.2f}")
 
-    return LAYERS, READ, best_layer, codes, scores
+    return LAYERS, READ, best_layer, codes, scores, scores_cka
 
 
 @app.cell
@@ -301,6 +308,7 @@ def rsa_figure(
     plot_utils,
     plt,
     scores,
+    scores_cka,
     tag_w,
     weighting,
 ):
@@ -308,11 +316,12 @@ def rsa_figure(
         fig, axes = plt.subplots(1, len(DOMAINS), figsize=(4 * len(DOMAINS), 3.2), sharey=True)
         for ax, name in zip(axes, DOMAINS):
             for c in corpora:
-                ax.plot(LAYERS, scores[name, c, READ], label=c)
+                line, = ax.plot(LAYERS, scores[name, c, READ], label=c)
+                ax.plot(LAYERS, scores_cka[name, c, READ], ls="--", lw=0.9, color=line.get_color())
             ax.axvline(best_layer(name), color="0.8", lw=0.8)
             ax.axhline(0, color="0.7", lw=0.8)
             ax.set_title(name); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
-        axes[0].set_ylabel("RSA(corpus block code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
+        axes[0].set_ylabel("corpus block code vs Llama\nRSA (solid), CKA (dashed)"); axes[0].legend(frameon=False, fontsize=8)
         fig.suptitle(f"{weighting} window; layer 0 = input embedding", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"corpus_llm_rsa_{tag_w}.png")
 
@@ -338,6 +347,7 @@ def panel_functions(
     plot_utils,
     plt,
     scores,
+    scores_cka,
     tag_w,
     weighting,
 ):
@@ -362,13 +372,13 @@ def panel_functions(
 
     def domain_panel(name, layer="best"):
         """Llama's layer (the best over corpora, or a chosen one) on the left, each corpus's predicted code
-        beside it, Grams below with RSA."""
+        beside it, Grams below with RSA and CKA."""
         L = best_layer(name) if layer == "best" else int(layer)
         concepts = DOMAINS[name]["words"]
         hexes = item_colors(name, concepts)
         fig = plot_utils.plot_embedding_panels(llm[name][READ][L], {c: codes[name, c] for c in corpora}, DOMAINS[name]["spec"],
                                                cmap=ListedColormap(hexes) if hexes else DOMAINS[name]["cmap"],
-                                               scores={c: scores[name, c, READ][L] for c in corpora}, score_label="RSA",
+                                               scores={c: {"RSA": scores[name, c, READ][L], "CKA": scores_cka[name, c, READ][L]} for c in corpora},
                                                first_name=f"Llama L{L}", starred="rest")
         fig.suptitle(f"{name}, {weighting} window: Llama-3.1-8B beside the corpus-predicted codes", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"domain_{name}_{tag_w}.png")
@@ -383,7 +393,7 @@ def _(mo):
     ## Panels
 
     Pick a domain and a Llama layer. First the corpora's row-centred blocks side by side, then Llama's
-    representation beside the code predicted from each corpus, Grams below with RSA.
+    representation beside the code predicted from each corpus, Grams below with RSA and CKA.
     """)
     return
 
@@ -553,7 +563,7 @@ def _(neutral_reps, tree_words):
 
 
 @app.cell
-def _(coarse_to_fine, corpora, index, log_conditional, np, orthogonality, predicted_geometry, rsa, tree_llm, trees):
+def _(cka, cka_null, cka_shuffle_null, coarse_to_fine, corpora, index, log_conditional, np, orthogonality, predicted_geometry, rsa, tree_llm, trees):
     def tree_nodes(tree):
         return [w for level in tree for w in level]
 
@@ -570,9 +580,16 @@ def _(coarse_to_fine, corpora, index, log_conditional, np, orthogonality, predic
 
 
     TREE_LAYERS = np.arange(next(iter(tree_llm["organism"].values())).shape[0])
-    tree_rsa = {r: np.array([[np.mean([rsa(tree_code(t, c), tree_llm_code(t, r, l)) for t in ts]) for c in corpora]
-                             for l in TREE_LAYERS]) for r, ts in trees.items()}                      # (layers, corpora)
-    TREE_LAYER = int(np.mean([v.mean(1) for v in tree_rsa.values()], 0).argmax())
+
+
+    def tree_scores(metric):
+        """root -> (layers, corpora): the metric between corpus and Llama tree codes, mean over the root's trees."""
+        return {r: np.array([[np.mean([metric(tree_code(t, c), tree_llm_code(t, r, l)) for t in ts]) for c in corpora]
+                             for l in TREE_LAYERS]) for r, ts in trees.items()}
+
+
+    tree_rsa, tree_cka = tree_scores(rsa), tree_scores(cka)
+    TREE_LAYER = int(np.mean([v.mean(1) for v in tree_rsa.values()], 0).argmax())                 # RSA picks the layer
 
 
     def tree_measures(root, seed=0):
@@ -589,23 +606,26 @@ def _(coarse_to_fine, corpora, index, log_conditional, np, orthogonality, predic
 
     print(f"Llama layer {TREE_LAYER} (best mean RSA over trees and corpora)")
     for _r in trees:
-        print(f"{_r:10s} RSA(corpus code, Llama) " + "  ".join(f"{c} {v:.2f}" for c, v in zip(corpora, tree_rsa[_r][TREE_LAYER])))
+        _floor = np.mean([[cka_null(tree_llm_code(t, _r, TREE_LAYER)), cka_shuffle_null(tree_llm_code(t, _r, TREE_LAYER))] for t in trees[_r]], 0)
+        print(f"{_r:10s} corpus code vs Llama, RSA/CKA " + "  ".join(f"{c} {v:.2f}/{w:.2f}" for c, v, w in zip(corpora, tree_rsa[_r][TREE_LAYER], tree_cka[_r][TREE_LAYER]))
+              + f"   CKA floor random/shuffled {_floor[0]:.2f}/{_floor[1]:.2f}")
         for _name, _m in tree_measures(_r).items():
             print(f"{'':10s} {_name:16s} coarse-to-fine k=1 {_m[0]:.2f}  k=3 {_m[1]:.2f}  k=7 {_m[2]:.2f}   parent-child |cos| {_m[3]:.2f}")
-    return TREE_LAYER, TREE_LAYERS, tree_code, tree_llm_code, tree_nodes, tree_rsa
+    return TREE_LAYER, TREE_LAYERS, tree_cka, tree_code, tree_llm_code, tree_nodes, tree_rsa
 
 
 @app.cell
-def _(FIGURES, TREE_LAYER, TREE_LAYERS, corpora, plot_utils, plt, tag_w, tree_rsa, trees):
+def _(FIGURES, TREE_LAYER, TREE_LAYERS, corpora, plot_utils, plt, tag_w, tree_cka, tree_rsa, trees):
     def tree_rsa_by_layer():
         fig, axes = plt.subplots(1, len(trees), figsize=(4 * len(trees), 3.2), sharey=True)
-        for ax, (root, S) in zip(axes, tree_rsa.items()):
+        for ax, root in zip(axes, trees):
             for j, c in enumerate(corpora):
-                ax.plot(TREE_LAYERS, S[:, j], label=c)
+                line, = ax.plot(TREE_LAYERS, tree_rsa[root][:, j], label=c)
+                ax.plot(TREE_LAYERS, tree_cka[root][:, j], ls="--", lw=0.9, color=line.get_color())
             ax.axvline(TREE_LAYER, color="0.8", lw=0.8); ax.axhline(0, color="0.7", lw=0.8)
             ax.set_title(root); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
-        axes[0].set_ylabel("RSA(corpus tree code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
-        fig.suptitle(f"{len(next(iter(trees.values())))} depth-3 WordNet subtrees per root, mean RSA; {tag_w} window", y=1.02)
+        axes[0].set_ylabel("corpus tree code vs Llama\nRSA (solid), CKA (dashed)"); axes[0].legend(frameon=False, fontsize=8)
+        fig.suptitle(f"{len(next(iter(trees.values())))} depth-3 WordNet subtrees per root, mean over trees; {tag_w} window", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"tree_llm_rsa_{tag_w}.png")
 
 
@@ -622,7 +642,7 @@ def _(mo, trees):
 
 
 @app.cell
-def _(FIGURES, ListedColormap, TREE_LAYER, corpora, mo, plot_utils, rsa, tag_w, tree_code, tree_llm_code, trees, view_root, view_tree):
+def _(FIGURES, ListedColormap, TREE_LAYER, cka, corpora, mo, plot_utils, rsa, tag_w, tree_code, tree_llm_code, trees, view_root, view_tree):
     LEAF_COLORS = ["#1f4e9c"] * 2 + ["#7fb2e5"] * 2 + ["#b22222"] * 2 + ["#f4a582"] * 2   # leaf pairs; hue = side of the root
 
 
@@ -635,8 +655,8 @@ def _(FIGURES, ListedColormap, TREE_LAYER, corpora, mo, plot_utils, rsa, tag_w, 
         E = tree_llm_code(tree, root, TREE_LAYER)
         codes_t = {c: tree_code(tree, c) for c in corpora}
         fig = plot_utils.plot_embedding_panels(E, codes_t, spec, cmap=ListedColormap(["0.5"] * 7 + LEAF_COLORS),
-                                               scores={c: rsa(E, v) for c, v in codes_t.items()},
-                                               score_label="RSA", first_name=f"Llama L{TREE_LAYER}", starred="rest")
+                                               scores={c: {"RSA": rsa(E, v), "CKA": cka(E, v)} for c, v in codes_t.items()},
+                                               first_name=f"Llama L{TREE_LAYER}", starred="rest")
         fig.suptitle(f"{root} tree {i}: " + " / ".join(", ".join(level) for level in tree), y=1.04, fontsize=9)
         return plot_utils.save_figure(fig, FIGURES / f"tree_{root}_{tag_w}.png")
 
@@ -692,13 +712,14 @@ def _(analogy_form, analogy_words, corpora, index, log_conditional, neutral_reps
 
 
 @app.cell
-def _(analogies, analogy_accuracy, analogy_codes, analogy_index, analogy_llm, corpora, np, rsa):
+def _(analogies, analogy_accuracy, analogy_codes, analogy_index, analogy_llm, cka, cka_null, cka_shuffle_null, corpora, np, rsa):
     RANKS = [2, 4, 8, 16, 32, 64, 128, 256, 512]
     acc_corpus = {c: np.array([[analogy_accuracy(E[:, :K], analogy_index, qs) for qs in analogies.values()] for K in RANKS])
                   for c, E in analogy_codes.items()}                                              # corpus -> (ranks, families)
     acc_llm = np.array([[analogy_accuracy(analogy_llm[l], analogy_index, qs) for qs in analogies.values()]
                         for l in range(analogy_llm.shape[0])])                                     # (layers, families)
     analogy_rsa = np.array([[rsa(E, analogy_llm[l]) for E in analogy_codes.values()] for l in range(analogy_llm.shape[0])])
+    analogy_cka = np.array([[cka(E, analogy_llm[l]) for E in analogy_codes.values()] for l in range(analogy_llm.shape[0])])
     ANALOGY_LAYER = int(acc_llm.mean(1).argmax())
     BEST_RANK = {c: RANKS[int(a.mean(1).argmax())] for c, a in acc_corpus.items()}
     print(f"Llama best layer {ANALOGY_LAYER} (mean accuracy {acc_llm[ANALOGY_LAYER].mean():.2f}); best ranks {BEST_RANK}")
@@ -706,12 +727,13 @@ def _(analogies, analogy_accuracy, analogy_codes, analogy_index, analogy_llm, co
     for _j, _f in enumerate(analogies):
         print(f"{_f:28s} {acc_llm[ANALOGY_LAYER, _j]:6.2f}  " + "  ".join(f"{acc_corpus[c][RANKS.index(BEST_RANK[c]), _j]:10.2f}" for c in corpora))
     print(f"{'mean':28s} {acc_llm[ANALOGY_LAYER].mean():6.2f}  " + "  ".join(f"{acc_corpus[c][RANKS.index(BEST_RANK[c])].mean():10.2f}" for c in corpora))
-    print("RSA(block code, Llama) at the best layer: " + ", ".join(f"{c} {v:.2f}" for c, v in zip(corpora, analogy_rsa[ANALOGY_LAYER])))
-    return ANALOGY_LAYER, BEST_RANK, RANKS, acc_corpus, acc_llm, analogy_rsa
+    print("block code vs Llama at the best layer, RSA/CKA: " + ", ".join(f"{c} {v:.2f}/{w:.2f}" for c, v, w in zip(corpora, analogy_rsa[ANALOGY_LAYER], analogy_cka[ANALOGY_LAYER]))
+          + f"; CKA floor random/shuffled {cka_null(analogy_llm[ANALOGY_LAYER], repeats=5):.2f}/{cka_shuffle_null(analogy_llm[ANALOGY_LAYER], repeats=5):.2f}")
+    return ANALOGY_LAYER, BEST_RANK, RANKS, acc_corpus, acc_llm, analogy_cka, analogy_rsa
 
 
 @app.cell
-def _(ANALOGY_LAYER, FIGURES, RANKS, acc_corpus, acc_llm, analogy_rsa, corpora, plot_utils, plt, tag_w):
+def _(ANALOGY_LAYER, FIGURES, RANKS, acc_corpus, acc_llm, analogy_cka, analogy_rsa, corpora, plot_utils, plt, tag_w):
     def analogy_figure():
         fig, axes = plt.subplots(1, 3, figsize=(12.5, 3.3))
         for c, a in acc_corpus.items():
@@ -725,9 +747,10 @@ def _(ANALOGY_LAYER, FIGURES, RANKS, acc_corpus, acc_llm, analogy_rsa, corpora, 
         axes[1].fill_between(layers, acc_llm.mean(1) - acc_llm.std(1), acc_llm.mean(1) + acc_llm.std(1), color="0.3", alpha=0.12)
         axes[1].set_xlabel("layer"); axes[1].set_title("Llama-3.1-8B")
         for j, c in enumerate(corpora):
-            axes[2].plot(layers, analogy_rsa[:, j], label=c)
-        axes[2].axhline(0, color="0.7", lw=0.8); axes[2].set_xlabel("layer"); axes[2].set_ylabel("RSA(block code, Llama)")
-        axes[2].set_title("code vs Llama, all analogy words")
+            line, = axes[2].plot(layers, analogy_rsa[:, j], label=c)
+            axes[2].plot(layers, analogy_cka[:, j], ls="--", lw=0.9, color=line.get_color())
+        axes[2].axhline(0, color="0.7", lw=0.8); axes[2].set_xlabel("layer"); axes[2].set_ylabel("RSA (solid), CKA (dashed)")
+        axes[2].set_title("block code vs Llama, all analogy words")
         for ax in axes[:2]:
             ax.set_ylim(0, 1)
         fig.suptitle(f"Google analogies, mean over 14 families (band: sd across families); {tag_w} window", y=1.03)

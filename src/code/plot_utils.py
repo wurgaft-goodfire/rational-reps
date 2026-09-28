@@ -749,7 +749,8 @@ def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None,
         axb = fig.add_subplot(gs[1, j])
         gtitle = r"$E^{*}E^{*\top}$" if (j == 0) == (starred == "first") else r"$EE^{\top}$"
         if scores is not None and name in scores:
-            gtitle += f"   {score_label} {scores[name]:.2f}"
+            s = scores[name]                                 # one float under score_label, or {label: value}
+            gtitle += "   " + ("  ".join(f"{k} {v:.2f}" for k, v in s.items()) if isinstance(s, dict) else f"{score_label} {s:.2f}")
         gram_heatmap(axb, r, title=gtitle, percentile=gram_percentile)
     if headers:                                          # column names for the simplex sub-grids
         fig.canvas.draw()
