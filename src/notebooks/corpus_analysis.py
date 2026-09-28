@@ -36,7 +36,7 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.corpus import load_corpus, log_conditional
+    from src.code.corpus import collapse_phrases, concept_rows, load_corpus, log_conditional
     from src.code.geometry import predicted_geometry
     from src.code import plot_utils
     from src.code.analysis_utils import rsa
@@ -81,7 +81,7 @@ def _(CACHE, load_corpus, view_weighting):
     for _c, (_C, _vocab, _freq, _r) in corpora.items():
         print(f"{_c:10s} {len(_vocab):,} words, {int(_freq.sum()):>13,d} tokens, matrix weight {_r.sum():.3e}")
     print(f"weighting {weighting}; not built:", sorted(set(TAGS) - set(corpora)) or "none")
-    return corpora, index, tag_w, weighting
+    return TAGS, corpora, index, tag_w, weighting
 
 
 @app.cell
@@ -93,11 +93,13 @@ def _():
               "november", "december"]
     DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     YEARS = [str(y) for y in range(1700, 1974)]                    # Karkada's historical years, cut where Gutenberg's vocabulary ends
-    STATES = ["alabama", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "georgia",
-              "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts",
-              "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "ohio", "oklahoma",
-              "oregon", "pennsylvania", "tennessee", "texas", "utah", "vermont", "virginia", "washington", "wisconsin",
-              "wyoming"]                                            # the 38 contiguous states whose names are one corpus token
+    STATES = ["alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida",
+              "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
+              "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska",
+              "nevada", "new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota", "ohio",
+              "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", "texas",
+              "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming"]
+    # all 50 states; the two-word names are counted as phrases in the id stream (flat window only)
     DOMAINS = {"months": {"words": MONTHS, "spec": {"structure": "ring", "n": 12}, "cmap": None},
                "days": {"words": DAYS, "spec": {"structure": "ring", "n": 7}, "cmap": None},
                "colors": {"words": list(HEX), "spec": None, "cmap": None},
@@ -110,7 +112,30 @@ def _():
 
 
 @app.cell
-def _(DOMAINS, HEX, corpora, index, log_conditional, np, predicted_geometry):
+def _(CACHE, DOMAINS, TAGS, collapse_phrases, concept_rows, corpora, index, np):
+    def concept_rows_for(name, corpus):
+        """``(R, cols)`` for a domain with multi-word items: flat window co-occurrence rows over the vocabulary
+        plus one id per phrase, counted from the corpus's id stream and cached beside its matrices; ``cols``
+        are the items' own ids, so ``R[:, cols]`` is the block."""
+        tag = TAGS[corpus]; path = CACHE / "corpus" / tag / f"rows_{name}.npz"
+        words = DOMAINS[name]["words"]
+        if not path.exists():
+            ix = index[corpus]; V = len(corpora[corpus][1])
+            phrases = [[ix[t] for t in w.split()] for w in words if " " in w]
+            lengths = np.load(CACHE / "corpus" / tag / "doc_lengths.npy")
+            ids, docs = collapse_phrases(np.fromfile(CACHE / "corpus" / tag / "ids.bin", dtype=np.uint16),
+                                         np.repeat(np.arange(len(lengths), dtype=np.int32), lengths), phrases, V)
+            cols = [V + phrases.index([ix[t] for t in w.split()]) if " " in w else ix[w] for w in words]
+            np.savez(path, rows=concept_rows(ids, docs, cols, V + len(phrases)), cols=np.array(cols))
+        d = np.load(path)
+        return d["rows"], d["cols"]
+
+
+    return (concept_rows_for,)
+
+
+@app.cell
+def _(DOMAINS, HEX, concept_rows_for, corpora, index, log_conditional, np, predicted_geometry):
     from matplotlib.colors import ListedColormap
 
 
@@ -121,8 +146,11 @@ def _(DOMAINS, HEX, corpora, index, log_conditional, np, predicted_geometry):
 
     def block(name, drop=(), corpus="wikipedia"):
         """The concept x concept block of a domain as log P(j | i), and the concept labels."""
-        C, _, _, r = corpora[corpus]
         words = [w for w in DOMAINS[name]["words"] if w not in drop]
+        if any(" " in w for w in words):                          # multi-word items: rows counted from the id stream
+            R, cols = concept_rows_for(name, corpus)
+            return log_conditional(R[:, cols], R.sum(1)), words
+        C, _, _, r = corpora[corpus]
         ids = [index[corpus][w] for w in words]
         return log_conditional(C[np.ix_(ids, ids)], r[ids]), words
 
@@ -154,7 +182,7 @@ def llm_config(CACHE, DOMAINS):
 
     LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
     LLM_DIR = CACHE / "corpus" / "llm" / LLM_NAME; LLM_DIR.mkdir(parents=True, exist_ok=True)
-    CASE = {"months": str.capitalize, "days": str.capitalize, "states": str.capitalize}                    # the corpus token as written in text
+    CASE = {"months": str.capitalize, "days": str.capitalize, "states": str.title}                         # the corpus token as written in text
     PROMPTS = {                                                                     # the word follows; read at its last token
         "months": ["The month of the year is", "It happened in the month of", "She was born in the month of",
                    "The calendar month is", "The event is scheduled for the month of", "The month written on the form is"],

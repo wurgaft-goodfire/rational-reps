@@ -148,6 +148,44 @@ def log_conditional(C_ij, r_i, floor=1.0):
     return np.log(np.maximum(np.asarray(C_ij, dtype=np.float64), floor)) - np.log(np.asarray(r_i, dtype=np.float64))[:, None]
 
 
+def collapse_phrases(ids, docs, phrases, V):
+    """The id stream with every in-document occurrence of ``phrases[p]`` (a list of ids) replaced by the single
+    id ``V + p``; longer phrases take precedence over their prefixes, occurrences never overlap. Returns
+    ``(ids, docs)`` of the shorter stream."""
+    ids = np.asarray(ids); docs = np.asarray(docs)
+    out = ids.astype(np.uint16 if V + len(phrases) < 2 ** 16 else np.int32)
+    taken = np.zeros(len(ids), dtype=bool)
+    for p in sorted(range(len(phrases)), key=lambda p: -len(phrases[p])):
+        phrase, k = phrases[p], len(phrases[p])
+        n = len(ids) - k + 1
+        match = np.ones(n, dtype=bool)
+        for t, tok in enumerate(phrase):
+            match &= ids[t:t + n] == tok
+        match &= docs[:n] == docs[k - 1:k - 1 + n]
+        last = -k
+        for s in np.flatnonzero(match):
+            if s < last + k or taken[s:s + k].any():
+                continue
+            out[s] = V + p; taken[s + 1:s + k] = True; last = s
+    return out[~taken], docs[~taken]
+
+
+def concept_rows(ids, docs, concepts, n_ids, window=16):
+    """(len(concepts), n_ids): flat window counts of every id within ``window`` positions, same document, of
+    each occurrence of each concept id; the rows of the co-occurrence matrix for those concepts only."""
+    ids = np.asarray(ids); docs = np.asarray(docs)
+    which = np.full(n_ids, -1, dtype=np.int64); which[list(concepts)] = np.arange(len(concepts))
+    pos = np.flatnonzero(which[ids] >= 0)
+    row = which[ids[pos]]
+    R = np.zeros(len(concepts) * n_ids, dtype=np.float64)
+    for d in range(1, window + 1):
+        for q in (pos - d, pos + d):
+            ok = (q >= 0) & (q < len(ids))
+            ok[ok] &= docs[q[ok]] == docs[pos[ok]]
+            R += np.bincount(row[ok] * n_ids + ids[q[ok]].astype(np.int64), minlength=len(R))
+    return R.reshape(len(concepts), n_ids)
+
+
 def parquet_texts(paths, column="text", batch=4096):
     """The ``column`` strings of parquet files, streamed file by file in row batches."""
     import pyarrow.parquet as pq

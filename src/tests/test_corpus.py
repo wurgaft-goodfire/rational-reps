@@ -127,3 +127,27 @@ def test_encode_corpus_batches_by_characters_without_changing_the_stream():
     for chars in (1, 40, 10**9):                                   # every text alone; some pairs; everything at once
         ids_c, lengths_c = encode_corpus(SHARDS, list, tok, workers=2, chars=chars)
         assert np.array_equal(ids_c, ids) and np.array_equal(lengths_c, lengths)
+
+
+def test_collapse_phrases_replaces_each_in_document_occurrence_with_one_new_id():
+    """A phrase's tokens, consecutive and in the same document, become the single id V + p; a phrase
+    straddling a document boundary is left alone; longer phrases win over their prefixes."""
+    from src.code.corpus import collapse_phrases
+    ids = np.array([3, 1, 2, 5, 1, 2, 9, 1, 2, 9, 7], dtype=np.uint16)
+    docs = np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1], dtype=np.int32)
+    ids2, docs2 = collapse_phrases(ids, docs, [[1, 2], [1, 2, 9]], V=10)
+    assert ids2.tolist() == [3, 10, 5, 1, 2, 9, 11, 7] and docs2.tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
+
+
+def test_concept_rows_match_the_window_counter_around_each_concept_occurrence():
+    """Flat counts of every id within ``window`` positions of each occurrence of a concept, same document
+    only, both sides; agrees with ``window_counts`` on the same tokens."""
+    from src.code.corpus import concept_rows
+    words, _ = vocabulary(SHARDS, list, 11, workers=2)
+    ids, lengths = encode_corpus(SHARDS, list, word_tokenizer(words), workers=2)
+    docs = np.repeat(np.arange(len(lengths), dtype=np.int32), lengths)
+    concepts = [list(words).index("cat"), list(words).index("dog")]
+    R = concept_rows(ids, docs, concepts, n_ids=len(words), window=3)
+    counts, _ = window_counts(TEXTS, ["cat", "dog"], window=3)
+    expected = np.array([[counts[c].get(w, 0) for w in words] for c in ("cat", "dog")])
+    assert R.shape == (2, len(words)) and np.array_equal(R, expected)
