@@ -97,6 +97,33 @@ def _():
     return DOMAINS, HEX
 
 
+@app.cell
+def _(DOMAINS, HEX, corpora, index, log_conditional, np, predicted_geometry):
+    from matplotlib.colors import ListedColormap
+
+
+    def item_colors(name, concepts):
+        """Hex colour per item: the colour words in their own colour, else None (list-order colouring)."""
+        return [HEX[c] for c in concepts] if name == "colors" else None
+
+
+    def block(name, drop=(), corpus="wikipedia"):
+        """The concept x concept block of a domain as log P(j | i), and the concept labels."""
+        C, _, _, r = corpora[corpus]
+        words = [w for w in DOMAINS[name]["words"] if w not in drop]
+        ids = [index[corpus][w] for w in words]
+        return log_conditional(C[np.ix_(ids, ids)], r[ids]), words
+
+
+    def predicted(name, corpus):
+        """``(E_block, concepts)``: the code factored from a corpus's block."""
+        M, concepts = block(name, (), corpus)
+        return predicted_geometry(M), concepts
+
+
+    return ListedColormap, block, item_colors, predicted
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
@@ -105,7 +132,8 @@ def _(mo):
     The residual at the word's last token, at every layer (layer 0 is the input embedding). **Neutral**:
     six prefixes, "red", "The word red", "She said red", "I think of red", "Consider red", "It was red".
     **Company**: six draws of three other words from the same domain in random order before the word,
-    "blue, brown, pink, red", the block's conditioning made explicit. Cached per domain and prompt set.
+    "blue, brown, pink, red", the block's conditioning made explicit. **Karkada**: one sentence with the word last, "The month of
+    the year is January", "The color of the object is red", "The number is 42". Cached per domain and prompt set.
     """)
     return
 
@@ -133,13 +161,16 @@ def llm_config(CACHE, DOMAINS, np):
         return [", ".join(rng.choice(others, COMPANY, replace=False)) + "," for _ in range(DRAWS)]
 
 
-    READS = {"word": lambda name, word: PREFIXES, "company": company_prefixes}     # -> prefixes for one word
+    KARKADA = {"months": "The month of the year is", "colors": "The color of the object is", "numbers": "The number is"}
+    READS = {"word": lambda name, word: PREFIXES, "company": company_prefixes,
+             "karkada": lambda name, word: [KARKADA[name]]}                        # -> prefixes for one word
 
 
     def llm_cache(name, read):
         """``(path, words)`` for one domain and read; the file is keyed by the words and the read's settings."""
         words = DOMAINS[name]["words"]
-        setting = f"{read} " + (" ".join(PREFIXES) if read == "word" else f"company={COMPANY} draws={DRAWS}")
+        setting = f"{read} " + {"word": " ".join(PREFIXES), "company": f"company={COMPANY} draws={DRAWS}",
+                             "karkada": KARKADA[name]}[read]
         key = hashlib.md5(" ".join([llm_form(name, w) for w in words] + [setting]).encode()).hexdigest()[:8]
         return LLM_DIR / f"{name}_{read}_{key}.npz", words
 
@@ -233,11 +264,12 @@ def rsa_figure(
             for c in corpora:
                 line, = ax.plot(LAYERS, scores[name, c, "word"], label=c)
                 ax.plot(LAYERS, scores[name, c, "company"], ls="--", lw=1, color=line.get_color())
+                ax.plot(LAYERS, scores[name, c, "karkada"], ls=":", lw=1, color=line.get_color())
             ax.axvline(best_layer(name), color="0.8", lw=0.8)
             ax.axhline(0, color="0.7", lw=0.8)
             ax.set_title(name); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
         axes[0].set_ylabel("RSA(corpus block code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
-        fig.suptitle(f"{weighting} window; solid: neutral prefixes, dashed: three domain words before the word; layer 0 = input embedding", y=1.02)
+        fig.suptitle(f"{weighting} window; solid: neutral prefixes, dashed: three domain words before the word, dotted: one Karkada-style sentence; layer 0 = input embedding", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"corpus_llm_rsa_{tag_w}.png")
 
 
@@ -457,33 +489,6 @@ def _(DOMAINS, LAYERS, corpora, mo):
 def _(code_3d, view_corpus, view_domain, view_layer, view_x, view_y, view_z):
     code_3d(view_domain.value, view_corpus.value, pcs=(view_x.value, view_y.value, view_z.value), layer=view_layer.value)
     return
-
-
-@app.cell
-def _(DOMAINS, HEX, corpora, index, log_conditional, np, predicted_geometry):
-    from matplotlib.colors import ListedColormap
-
-
-    def item_colors(name, concepts):
-        """Hex colour per item: the colour words in their own colour, else None (list-order colouring)."""
-        return [HEX[c] for c in concepts] if name == "colors" else None
-
-
-    def block(name, drop=(), corpus="wikipedia"):
-        """The concept x concept block of a domain as log P(j | i), and the concept labels."""
-        C, _, _, r = corpora[corpus]
-        words = [w for w in DOMAINS[name]["words"] if w not in drop]
-        ids = [index[corpus][w] for w in words]
-        return log_conditional(C[np.ix_(ids, ids)], r[ids]), words
-
-
-    def predicted(name, corpus):
-        """``(E_block, concepts)``: the code factored from a corpus's block."""
-        M, concepts = block(name, (), corpus)
-        return predicted_geometry(M), concepts
-
-
-    return ListedColormap, block, item_colors, predicted
 
 
 if __name__ == "__main__":
