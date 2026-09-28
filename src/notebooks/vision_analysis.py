@@ -38,30 +38,57 @@ def _(mo):
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
     from src.code.analysis_utils import cka, rsa
     from src.code.geometry import predicted_geometry
+    from src.code.vision import IMAGENET16, superclass_logits, vote_table
     from src.code import plot_utils
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
     VISION = CACHE / "vision"
     FIGURES = CACHE / "figures"; FIGURES.mkdir(parents=True, exist_ok=True)
-    return FIGURES, VISION, cka, np, plot_utils, predicted_geometry, rsa
+    return (
+        FIGURES,
+        IMAGENET16,
+        VISION,
+        cka,
+        np,
+        plot_utils,
+        predicted_geometry,
+        rsa,
+        superclass_logits,
+        vote_table,
+    )
 
 
 @app.cell
-def _(VISION, np):
+def _(IMAGENET16, VISION, np, superclass_logits, vote_table):
     def load_run(model, dataset):
-        """Cached per-image features, logits and labels of ``model`` on ``dataset``."""
+        """Cached per-image features, logits and labels of ``model`` on ``dataset`` (ImageNet-16H rows also carry
+        the image name and noise level, and their model table is the 16-way superclass logit)."""
         d = dict(np.load(VISION / model / f"{dataset}.npz"))
-        return {"features": d["features"].astype(np.float32), "logits": d["logits"].astype(np.float64),
-                "labels": d["labels"], "index": d["index"], "C": d["logits"].shape[1],
-                "top1": float((d["logits"].argmax(1) == d["labels"]).mean())}
+        logits = d["logits"].astype(np.float64)
+        if dataset == "imagenet16h":
+            logits = superclass_logits(logits, IMAGENET16)
+        return {"features": d["features"].astype(np.float32), "logits": logits, "labels": d["labels"], "index": d["index"],
+                "C": logits.shape[1], "top1": float((logits.argmax(1) == d["labels"]).mean()),
+                "names": d.get("names"), "noise": d.get("noise")}
 
 
     def human_votes(dataset, run):
         """``(T, covered)``: per-image human vote table (N, C) and the images it covers. CIFAR-10H: ~51 annotator
         counts per test image. ImageNet-ReaL raters: the "yes" votes of five raters per candidate label, on the
-        24,889 validation images that were re-rated."""
+        24,889 validation images that were re-rated. ImageNet-16H: ~6 participants' answers per (image, noise level);
+        the noise-free originals were never shown."""
         if dataset == "cifar10":
             return np.load(VISION / "labels" / "cifar10h-counts.npy")[run["index"]].astype(np.float64), np.ones(len(run["index"]), bool)
+        if dataset == "imagenet16h":
+            import csv
+            trials = [(r["image_name"], int(r["noise_level"]), r["participant_classification"])
+                      for r in csv.DictReader(open(VISION / "imagenet16h" / "human_only_classification_6per_img_export.csv"))]
+            items, votes_ = vote_table(trials, list(IMAGENET16))
+            row = {(n, int(z)): i for i, (n, z) in enumerate(zip(run["names"], run["noise"]))}
+            T = np.zeros((len(run["labels"]), run["C"])); covered = np.zeros(len(run["labels"]), bool)
+            for item, v in zip(items, votes_):
+                T[row[item]] = v; covered[row[item]] = True
+            return T, covered
         d = np.load(VISION / "labels" / "raters.npz", allow_pickle=True)
         yes = d["tensor"][:, :, 2].sum(0)                                            # (pairs,) yes votes over raters
         image = np.array([int(f[15:23]) - 1 for f in d["info"][:, 0]])              # ILSVRC2012_val_NNNNNNNN.JPEG -> 0-based
@@ -73,12 +100,13 @@ def _(VISION, np):
         return T, covered
 
 
-    RUNS = {("imagenet", "resnet50"), ("imagenet", "vit_b_16"), ("cifar10", "cifar_resnet56")}
+    RUNS = {("imagenet", "resnet50"), ("imagenet", "vit_b_16"), ("cifar10", "cifar_resnet56"),
+            ("imagenet16h", "resnet50"), ("imagenet16h", "vit_b_16")}
     runs = {k: load_run(k[1], k[0]) for k in RUNS if (VISION / k[1] / f"{k[0]}.npz").exists()}
     votes = {k: human_votes(k[0], r) for k, r in runs.items()}
-    for (_ds, _m), _r in runs.items():
+    for (_ds, _m), _r in sorted(runs.items()):
         _T, _cov = votes[_ds, _m]
-        print(f"{_ds:9s} {_m:14s} top-1 {_r['top1']:.3f}  images {len(_r['labels']):,}  features {_r['features'].shape[1]}  "
+        print(f"{_ds:11s} {_m:14s} top-1 {_r['top1']:.3f}  images {len(_r['labels']):,}  features {_r['features'].shape[1]}  "
               f"classes {_r['C']}  human votes: {int(_cov.sum()):,} images, {_T[_cov].sum(1).mean():.1f} votes/image")
     print("not cached:", sorted(RUNS - set(runs)) or "none")
 
@@ -112,7 +140,7 @@ def _(cka, np, predicted_geometry, rsa, runs, votes):
         return idx[np.argsort(labels[idx], kind="stable")]
 
 
-    PER_CLASS = {"imagenet": 5, "cifar10": 500}
+    PER_CLASS = {"imagenet": 5, "cifar10": 500, "imagenet16h": 300}
 
 
     def codes_for(key):
@@ -159,6 +187,39 @@ def _(FIGURES, PER_CLASS, codes, plot_utils, runs, scores):
 
 
     return (run_panel,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## ImageNet-16H by noise level
+
+    The same 1,200 images at four levels of phase noise; humans answered about six times per image and level.
+    CKA between the features and each code within each noise level, and the human top-1 agreement with the
+    category, showing how soft the human conditional gets as the images degrade.
+    """)
+    return
+
+
+@app.cell
+def by_noise(cka, codes, runs, votes):
+    def by_noise(key):
+        run = runs[key]; T, covered = votes[key]
+        rows = []
+        for z in sorted(set(run["noise"].tolist()) - {0}):
+            m = (run["noise"] == z) & covered
+            human_top1 = float((T[m].argmax(1) == run["labels"][m]).mean())
+            rows.append((z, int(m.sum()), human_top1, float((run["logits"][m].argmax(1) == run["labels"][m]).mean()),
+                         *[cka(run["features"][m], E[m]) for E, _ in codes[key].values()]))
+        return rows
+
+
+    for _k in sorted(k for k in runs if k[0] == "imagenet16h"):
+        print(f"{_k[1]}: noise  images  human top-1  model top-1  " + "  ".join(f"CKA {n}" for n in codes[_k]))
+        for _row in by_noise(_k):
+            print(f"{'':>{len(_k[1]) + 1}s} {_row[0]:5d}  {_row[1]:6d}  {_row[2]:11.2f}  {_row[3]:11.2f}  " + "  ".join(f"{v:8.2f}" for v in _row[4:]))
+
+    return
 
 
 @app.cell
