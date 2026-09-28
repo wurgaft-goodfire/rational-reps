@@ -194,14 +194,15 @@ def test_binary_subtrees_samples_uniformly_over_structures_not_child_pairs():
 
 
 def test_wordnet_hierarchy_names_synsets_by_vocabulary_words_and_contracts_unnamed_nodes():
-    """A word names its most-counted noun sense when that sense holds most of the word's WordNet counts
-    ("young", mostly an adjective, names nothing); a synset takes its first eligible word in vocabulary
-    order (person before someone); a synset's parent is its deepest hypernym (person under organism, not
-    causal agent) contracted to the nearest named ancestor (bird under animal, skipping chordate and
-    vertebrate; owl under bird, skipping bird of prey)."""
+    """A word names its most-tagged noun sense when that sense holds most of the word's WordNet tags
+    ("young", mostly an adjective, names nothing; untagged "conch" names nothing; "it" and "amon" match only
+    the capitalised lemmas IT and Amon); a synset takes its first eligible word in vocabulary order (person
+    before someone); a synset's parent is its deepest hypernym (person under organism, not causal agent)
+    contracted to the nearest named ancestor (bird under animal, skipping chordate and vertebrate; owl under
+    bird, skipping bird of prey)."""
     from nltk.corpus import wordnet as wn
     from src.code.corpus import wordnet_hierarchy
-    children, word = wordnet_hierarchy(["organism", "person", "someone", "animal", "young", "bird", "owl"])
+    children, word = wordnet_hierarchy(["it", "organism", "person", "someone", "animal", "young", "bird", "owl", "amon", "conch"])
     assert sorted(word.values()) == ["animal", "bird", "organism", "owl", "person"]
     assert word[wn.synset("bird.n.01")] == "bird" and wn.synset("bird.n.02") not in word
     assert {wn.synset("animal.n.01"), wn.synset("person.n.01")} <= set(children[wn.synset("organism.n.01")])

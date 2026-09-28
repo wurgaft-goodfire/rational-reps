@@ -269,22 +269,21 @@ def binary_subtrees(children, root, depth, n, seed=0):
 
 def wordnet_hierarchy(vocab):
     """WordNet's noun hyponymy contracted to the synsets named by ``vocab`` (words, most frequent first):
-    ({synset: [child synsets]}, {synset: word}). A word names its most-counted noun sense when that sense holds
-    at least half of the word's WordNet counts (an uncounted word only when it has a single sense); a synset takes
-    its first eligible word; a synset's parent is its deepest hypernym, contracted to the nearest named ancestor."""
+    ({synset: [child synsets]}, {synset: word}). A word names its most-tagged noun sense when that sense holds
+    at least half of the word's WordNet tags (so at least one); a synset takes its first eligible word; a synset's
+    parent is its deepest hypernym, contracted to the nearest named ancestor. Lemmas must be spelled exactly as
+    the word, so capitalised proper nouns and acronyms ("Amon", "IT") never name a synset."""
     from nltk.corpus import wordnet as wn
     word = {}
     for w in vocab:
         if not (w.isalpha() and w.islower()):
             continue
-        lemmas = wn.lemmas(w)
+        lemmas = [l for l in wn.lemmas(w) if l.name() == w]
         nouns = [l for l in lemmas if l.synset().pos() == "n"]
-        total = sum(l.count() for l in lemmas)
         if not nouns:
             continue
         top = max(nouns, key=lambda l: l.count())
-        share = top.count() / total if total else float(len(lemmas) == 1)
-        if share >= 0.5:
+        if top.count() and top.count() / sum(l.count() for l in lemmas) >= 0.5:
             word.setdefault(top.synset(), w)
 
     def parent(s):                                          # deepest hypernym, ties by name

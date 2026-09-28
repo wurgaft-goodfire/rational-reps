@@ -494,8 +494,9 @@ def _(mo):
     ## Hierarchy: WordNet subtrees
 
     Nava and Wyart's setup: WordNet's noun hyponymy contracted to the words every corpus has (a word names a
-    sense only when that sense holds most of its WordNet counts), then perfect binary subtrees of depth 3 under
-    a root, 15 words each, drawn uniformly over the valid structures. The corpus block code of the 15 words
+    sense only when that sense holds most of its WordNet tags, at least one; a few words whose WordNet sense is far from
+    their use are excluded), then perfect binary subtrees of depth 3 under a root, 15 words each, drawn uniformly over the
+    valid structures. Roots: organism, artifact (WordNet's instrumentality, whose word is "instrumentation"), event. The corpus block code of the 15 words
     against Llama's representation of them, per tree; then two tree measures on both codes against shuffled node order:
     coarse-to-fine alignment, how far the top k PCs span the k coarsest splits (k = 1, 3, 7), and parent-child
     orthogonality, the mean |cos| between a child's offset from its parent and the parent's vector.
@@ -506,11 +507,13 @@ def _(mo):
 @app.cell
 def _(binary_subtrees, corpora, wordnet_hierarchy):
     from nltk.corpus import wordnet as wn
-    ROOTS = {"organism": "organism.n.01", "event": "event.n.01", "cognition": "cognition.n.01"}
+    ROOTS = {"organism": "organism.n.01", "artifact": "instrumentality.n.03", "event": "event.n.01"}   # artifact's word is "instrumentation"
     N_TREES, DEPTH = 40, 3
+    EXCLUDE = {"cricket", "queen", "nobody", "gallant", "widower", "beau", "coon", "buff",         # WordNet senses far from the word's use
+               "opener", "shear", "crunch", "dealings", "scourge", "gig", "transit", "gourd", "binder", "trapping"}
     _vocabs = [v[1].tolist() for v in corpora.values()]
     _others = [set(v) for v in _vocabs[1:]]
-    _shared = [w for w in _vocabs[0] if all(w in s for s in _others)]              # words every corpus has, by frequency
+    _shared = [w for w in _vocabs[0] if all(w in s for s in _others) and w not in EXCLUDE]   # words every corpus has, by frequency
     _children, _word = wordnet_hierarchy(_shared)
     trees = {r: [[[_word[s] for s in level] for level in t] for t in binary_subtrees(_children.get, wn.synset(name), DEPTH, N_TREES, seed=0)]
              for r, name in ROOTS.items()}
