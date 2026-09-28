@@ -14,14 +14,15 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Class geometry of vision classifiers from soft labels
+    # Image geometry of vision classifiers from soft labels
 
-    A classifier's pre-readout class means times its readout are its class log-conditional, so the
-    theory predicts the class-mean geometry from any table of $P(y \mid x)$ over classes. Two
-    tables per dataset: the human relabelling (ImageNet-ReaL votes, CIFAR-10H annotator votes) and
-    the model's own mean softmax per class. One-hot labels would give the equiangular frame of neural
-    collapse, whose distances are all equal. Each is factored as $E^\star = $ `factor_logcond`$(\log P)$ with an empty
-    cell counted as one vote, and compared with the model's class means by RSA.
+    A classifier's pre-readout features times its readout are its log-conditional over classes, one row per
+    image. The theory therefore predicts every image's representation as the balanced factor of an image x class
+    table: $E^\star = $ `factor_logcond`$(L)$, $L_{iy} = \log P(y \mid \text{image } i)$. Two tables: the model's
+    own logits (row-centred, they are the log-conditional exactly), and human votes per image where a relabelling
+    gives them, CIFAR-10H's ~51 annotators per test image (ImageNet-ReaL has 1.15 labels per image, too sparse
+    per image). Agreement with the actual features is CKA over all images and RSA over a class-sorted subsample,
+    whose Grams show the class blocks.
     """)
     return
 
@@ -35,61 +36,42 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.analysis_utils import pair_auc, rsa
-    from src.code.geometry import class_means, predicted_geometry
-    from src.code.vision import real_table, soft_table
+    from src.code.analysis_utils import cka, rsa
+    from src.code.geometry import predicted_geometry
     from src.code import plot_utils
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
     VISION = CACHE / "vision"
     FIGURES = CACHE / "figures"; FIGURES.mkdir(parents=True, exist_ok=True)
-    return (
-        FIGURES,
-        VISION,
-        class_means,
-        json,
-        np,
-        pair_auc,
-        plot_utils,
-        predicted_geometry,
-        real_table,
-        rsa,
-        soft_table,
-    )
+    return FIGURES, VISION, cka, np, plot_utils, predicted_geometry, rsa
 
 
 @app.cell
-def _(VISION, class_means, json, np, real_table, soft_table):
+def _(VISION, np):
     def load_run(model, dataset):
-        """Cached features and logits of ``model`` on ``dataset``, with the class means and the mean softmax per class."""
+        """Cached per-image features, logits and labels of ``model`` on ``dataset``."""
         d = dict(np.load(VISION / model / f"{dataset}.npz"))
-        C = d["logits"].shape[1]
-        P = np.exp(d["logits"].astype(np.float64)); P /= P.sum(1, keepdims=True)
-        return {"features": d["features"].astype(np.float32), "labels": d["labels"], "index": d["index"], "C": C,
-                "means": class_means(d["features"].astype(np.float64), d["labels"], C)[0],
-                "softmax": np.stack([P[d["labels"] == x].mean(0) for x in range(C)]),
+        return {"features": d["features"].astype(np.float32), "logits": d["logits"].astype(np.float64),
+                "labels": d["labels"], "index": d["index"], "C": d["logits"].shape[1],
                 "top1": float((d["logits"].argmax(1) == d["labels"]).mean())}
 
 
-    def human_table(dataset, run):
-        """The human relabelling as a (C, C) table in the run's class order."""
-        if dataset == "imagenet":
-            real = json.load(open(VISION / "labels" / "real.json"))
-            return real_table([real[i] for i in run["index"]], run["labels"], run["C"])
-        counts = np.load(VISION / "labels" / "cifar10h-counts.npy")                 # ~51 annotator votes per image
-        n = np.bincount(run["labels"], minlength=run["C"])[:, None]
-        return soft_table(counts[run["index"]], run["labels"], run["C"]) * n       # votes per class pair
+    def human_votes(dataset, run):
+        """Per-image human vote table (N, C), or None where the relabelling is too sparse per image (ReaL)."""
+        if dataset != "cifar10":
+            return None
+        return np.load(VISION / "labels" / "cifar10h-counts.npy")[run["index"]].astype(np.float64)
 
 
     RUNS = {("imagenet", "resnet50"), ("imagenet", "vit_b_16"), ("cifar10", "cifar_resnet56")}
     runs = {k: load_run(k[1], k[0]) for k in RUNS if (VISION / k[1] / f"{k[0]}.npz").exists()}
-    tables = {k: human_table(k[0], r) for k, r in runs.items()}
+    votes = {k: human_votes(k[0], r) for k, r in runs.items()}
     for (_ds, _m), _r in runs.items():
-        _T = tables[_ds, _m]
-        print(f"{_ds:9s} {_m:14s} top-1 {_r['top1']:.3f}  classes {_r['C']}  human table: off-diagonal mass "
-              f"{1 - np.trace(_T) / _T.sum():.3f}, classes with any off-diagonal vote {int(((_T - np.diag(np.diag(_T))).sum(1) > 0).sum())}")
+        print(f"{_ds:9s} {_m:14s} top-1 {_r['top1']:.3f}  images {len(_r['labels']):,}  features {_r['features'].shape[1]}  "
+              f"classes {_r['C']}" + ("" if votes[_ds, _m] is None else f"  human votes/image {votes[_ds, _m].sum(1).mean():.0f}"))
     print("not cached:", sorted(RUNS - set(runs)) or "none")
-    return runs, tables
+
+    return runs, votes
 
 
 @app.cell(hide_code=True)
@@ -97,58 +79,67 @@ def _(mo):
     mo.md(r"""
     ## Predicted codes and agreement
 
-    For each run: the model's class means beside the codes factored from the human table and the model's own
-    softmax table. RSA over class pairs, with the floor from shuffling classes. The
-    human table is sparse, so a second test asks whether the class pairs humans ever confuse are closer
-    in the model than the rest (area under the curve, 0.5 = no relation).
+    Per run: the features beside the codes factored from the model's logits and, for CIFAR-10, from the human
+    votes per image. CKA over every image; RSA over a subsample with the same number of images per class,
+    against a floor from shuffling images. The subsample is sorted by class, so the Grams show the class blocks.
     """)
     return
 
 
 @app.cell
-def _(np, pair_auc, predicted_geometry, rsa, runs, tables):
+def _(cka, np, predicted_geometry, rsa, runs, votes):
     def log_table(T, floor=1.0):
-        """log P(y | x) from a (C, C) vote table, an empty cell counted as ``floor`` votes."""
+        """log P(y | x) from an (N, C) vote table, an empty cell counted as ``floor`` votes."""
         T = np.maximum(np.asarray(T, dtype=np.float64), floor)
         return np.log(T / T.sum(1, keepdims=True))
 
 
-    def codes_for(key):
-        """Codes from two vote tables on the same footing: human votes, and the model's mean softmax scaled to
-        votes (one per image of the class)."""
-        run, T = runs[key], tables[key]
-        n = np.bincount(run["labels"], minlength=run["C"])[:, None].astype(float)
-        return {"human": predicted_geometry(log_table(T)),
-                "model softmax": predicted_geometry(log_table(run["softmax"] * n))}
-
-
-    def scores_for(key, codes, seed=0):
+    def subsample(labels, per_class, seed=0):
+        """Indices of up to ``per_class`` images of each class, sorted by class so Grams show blocks."""
         rng = np.random.default_rng(seed)
-        E = runs[key]["means"]
-        out = {name: rsa(E, code) for name, code in codes.items()}
-        out["shuffle floor"] = float(np.mean([rsa(E, codes["human"][rng.permutation(len(E))]) for _ in range(20)]))
-        T = tables[key]
-        confusable = (T + T.T - 2 * np.diag(np.diag(T))) > 0
-        out["confusable pairs closer (AUC)"] = pair_auc(E, confusable)
+        idx = np.concatenate([rng.permutation(np.where(labels == c)[0])[:per_class] for c in range(labels.max() + 1)])
+        return idx[np.argsort(labels[idx], kind="stable")]
+
+
+    PER_CLASS = {"imagenet": 5, "cifar10": 500}
+
+
+    def codes_for(key):
+        """Per-image codes: from the model's row-centred logits, and from the human votes where they exist."""
+        out = {"model logits": predicted_geometry(runs[key]["logits"])}
+        if votes[key] is not None:
+            out["human votes"] = predicted_geometry(log_table(votes[key]))
         return out
+
+
+    def scores_for(key, codes_k, seed=0):
+        run = runs[key]; H = run["features"]
+        sub = subsample(run["labels"], PER_CLASS[key[0]], seed)
+        rng = np.random.default_rng(seed)
+        out = {name: {"CKA": cka(H, E), "RSA": rsa(H[sub], E[sub]),
+                      "RSA floor": float(np.mean([rsa(H[sub], E[sub][rng.permutation(len(sub))]) for _ in range(5)]))}
+               for name, E in codes_k.items()}
+        return out, sub
 
 
     codes = {k: codes_for(k) for k in runs}
     scores = {k: scores_for(k, codes[k]) for k in runs}
-    for _k, _s in scores.items():
-        print(f"{_k[0]:9s} {_k[1]:14s} " + "  ".join(f"{n} {v:.2f}" for n, v in _s.items()))
-    return codes, scores
+    for _k, (_s, _sub) in scores.items():
+        print(f"{_k[0]:9s} {_k[1]:14s} subsample {len(_sub):,}  " + "  |  ".join(f"{n}: " + " ".join(f"{m} {v:.2f}" for m, v in d.items()) for n, d in _s.items()))
+
+    return PER_CLASS, codes, scores
 
 
 @app.cell
-def _(FIGURES, codes, plot_utils, runs, scores):
+def _(FIGURES, PER_CLASS, codes, plot_utils, runs, scores):
     def run_panel(key):
-        """The model's class means beside the three predicted codes, Grams below with RSA."""
-        run = runs[key]
-        fig = plot_utils.plot_embedding_panels(run["means"], codes[key], None, cmap="magma" if run["C"] > 20 else None,
-                                               scores={n: scores[key][n] for n in codes[key]}, score_label="RSA",
-                                               first_name=f"{key[1]} class means", starred="rest")
-        fig.suptitle(f"{key[0]}: class means beside the codes predicted from the two label tables", y=1.02)
+        """Features beside the predicted codes on the class-sorted subsample, coloured by class; Grams below with RSA."""
+        run, (sc, sub) = runs[key], scores[key]
+        cols = {name: E[sub] for name, E in codes[key].items()}
+        fig = plot_utils.plot_embedding_panels(run["features"][sub], cols, None, cmap="magma" if run["C"] > 20 else None,
+                                               colors=run["labels"][sub], scores={n: sc[n]["RSA"] for n in cols},
+                                               score_label="RSA", first_name=f"{key[1]} features", starred="rest")
+        fig.suptitle(f"{key[0]}: {len(sub):,} images, {PER_CLASS[key[0]]} per class, sorted and coloured by class", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"vision_{key[0]}_{key[1]}.png")
 
 
