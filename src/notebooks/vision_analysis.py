@@ -18,7 +18,7 @@ def _(mo):
 
     A classifier's pre-readout class means times its readout are its class log-conditional, so the
     theory predicts the class-mean geometry from any table of $P(y \mid x)$ over classes. Three
-    tables per dataset: the human relabelling (ImageNet-ReaL votes, CIFAR-10H annotator distributions),
+    tables per dataset: the human relabelling (ImageNet-ReaL votes, CIFAR-10H annotator votes),
     the model's own mean softmax per class, and the one-hot labels, whose factor is the equiangular
     frame of neural collapse. Each is factored as $E^\star = $ `factor_logcond`$(\log P)$ with an empty
     cell counted as one vote, and compared with the model's class means by RSA.
@@ -64,8 +64,9 @@ def _(VISION, class_means, json, np, real_table, soft_table):
         if dataset == "imagenet":
             real = json.load(open(VISION / "labels" / "real.json"))
             return real_table([real[i] for i in run["index"]], run["labels"], run["C"])
-        probs = np.load(VISION / "labels" / "cifar10h-probs.npy")
-        return soft_table(probs[run["index"]], run["labels"], run["C"])
+        counts = np.load(VISION / "labels" / "cifar10h-counts.npy")                 # ~51 annotator votes per image
+        n = np.bincount(run["labels"], minlength=run["C"])[:, None]
+        return soft_table(counts[run["index"]], run["labels"], run["C"]) * n       # votes per class pair
 
 
     RUNS = {("imagenet", "resnet50"), ("imagenet", "vit_b_16"), ("cifar10", "cifar_resnet56")}
