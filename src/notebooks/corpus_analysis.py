@@ -102,22 +102,23 @@ def _(mo):
     mo.md(r"""
     ## Llama-3.1-8B representations
 
-    The residual at the word's last token, at every layer (layer 0 is the input embedding), averaged over
-    six neutral prefixes: "red", "The word red", "She said red", "I think of red", "Consider red", "It was
-    red". Cached per domain and prompt set.
+    The residual at the word's last token, at every layer (layer 0 is the input embedding). **Neutral**:
+    six prefixes, "red", "The word red", "She said red", "I think of red", "Consider red", "It was red".
+    **Company**: six draws of three other words from the same domain in random order before the word,
+    "blue, brown, pink, red", the block's conditioning made explicit. Cached per domain and prompt set.
     """)
     return
 
 
 @app.cell
-def llm_config(CACHE, DOMAINS):
+def llm_config(CACHE, DOMAINS, np):
     import hashlib
 
     LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
     LLM_DIR = CACHE / "corpus" / "llm" / LLM_NAME; LLM_DIR.mkdir(parents=True, exist_ok=True)
     CASE = {"months": str.capitalize}                                              # the corpus token as written in text
     PREFIXES = ["", "The word", "She said", "I think of", "Consider", "It was"]   # the word follows; read at its last token
-    READS = {"word": lambda name: [(p, "") for p in PREFIXES]}
+    COMPANY, DRAWS = 3, 6                                                          # other domain words listed before the word
 
 
     def llm_form(name, word):
@@ -125,15 +126,25 @@ def llm_config(CACHE, DOMAINS):
         return " " + CASE.get(name, str)(word)
 
 
+    def company_prefixes(name, word):
+        """``DRAWS`` prefixes listing ``COMPANY`` other words of the domain in random order: "March, June, May,"."""
+        others = [llm_form(name, w).strip() for w in DOMAINS[name]["words"] if w != word]
+        rng = np.random.default_rng(int(hashlib.md5(f"{name} {word}".encode()).hexdigest()[:8], 16))
+        return [", ".join(rng.choice(others, COMPANY, replace=False)) + "," for _ in range(DRAWS)]
+
+
+    READS = {"word": lambda name, word: PREFIXES, "company": company_prefixes}     # -> prefixes for one word
+
+
     def llm_cache(name, read):
-        """``(path, words, templates)`` for one domain and read; the file is keyed by words and prompts."""
-        words = [llm_form(name, w) for w in DOMAINS[name]["words"]]
-        templates = READS[read](name)
-        key = hashlib.md5(" ".join(words + [f"{p}|{s}" for p, s in templates] + ["False"]).encode()).hexdigest()[:8]
-        return LLM_DIR / f"{name}_{read}_{key}.npz", words, templates
+        """``(path, words)`` for one domain and read; the file is keyed by the words and the read's settings."""
+        words = DOMAINS[name]["words"]
+        setting = f"{read} " + (" ".join(PREFIXES) if read == "word" else f"company={COMPANY} draws={DRAWS}")
+        key = hashlib.md5(" ".join([llm_form(name, w) for w in words] + [setting]).encode()).hexdigest()[:8]
+        return LLM_DIR / f"{name}_{read}_{key}.npz", words
 
 
-    return LLM_PATH, READS, llm_cache
+    return LLM_PATH, READS, llm_cache, llm_form
 
 
 @app.cell
@@ -144,6 +155,7 @@ def llm_reps(
     LLM_PATH,
     READS,
     llm_cache,
+    llm_form,
     np,
     torch,
     word_means,
@@ -153,11 +165,12 @@ def llm_reps(
         _tok = AutoTokenizer.from_pretrained(LLM_PATH)
         _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, dtype=torch.bfloat16, device_map="cuda").eval()
         for _n, _r in _missing:
-            _path, _words, _templates = llm_cache(_n, _r)
-            _ids = {w: _tok.encode(w, add_special_tokens=False) for w in _words}
-            _t = [([_tok.bos_token_id] + _tok.encode(p, add_special_tokens=False), _tok.encode(s, add_special_tokens=False))
-                  for p, s in _templates]
-            np.savez(_path, words=np.array(_words), residual=word_means(_model, _ids, _t))
+            _path, _words = llm_cache(_n, _r)
+            _reps = []
+            for _w in _words:                           # prefixes may depend on the word, so one call per word
+                _t = [([_tok.bos_token_id] + _tok.encode(p, add_special_tokens=False), []) for p in READS[_r](_n, _w)]
+                _reps.append(word_means(_model, {_w: _tok.encode(llm_form(_n, _w), add_special_tokens=False)}, _t)[:, 0])
+            np.savez(_path, words=np.array(_words), residual=np.stack(_reps, 1))
             print(f"{_n} / {_r}: {len(_words)} words cached")
         del _model; torch.cuda.empty_cache()
     llm = {n: {r: np.load(llm_cache(n, r)[0])["residual"] for r in READS} for n in DOMAINS}     # (layers, n, d)
@@ -173,8 +186,8 @@ def _(mo):
     ## Agreement by layer
 
     RSA (Spearman correlation of the Euclidean distance matrices) between each corpus's block code and
-    Llama's representation of the same words, per layer. Each panel below opens at the layer with the
-    best mean over corpora; its selector picks any other.
+    Llama's representation of the same words, per layer. Solid: neutral read; dashed: company read. Each
+    panel below opens at the neutral read's best layer over corpora; its selector picks any other.
     """)
     return
 
@@ -206,7 +219,6 @@ def rsa_figure(
     DOMAINS,
     FIGURES,
     LAYERS,
-    READ,
     best_layer,
     corpora,
     plot_utils,
@@ -219,12 +231,13 @@ def rsa_figure(
         fig, axes = plt.subplots(1, len(DOMAINS), figsize=(4 * len(DOMAINS), 3.2), sharey=True)
         for ax, name in zip(axes, DOMAINS):
             for c in corpora:
-                ax.plot(LAYERS, scores[name, c, READ], label=c)
+                line, = ax.plot(LAYERS, scores[name, c, "word"], label=c)
+                ax.plot(LAYERS, scores[name, c, "company"], ls="--", lw=1, color=line.get_color())
             ax.axvline(best_layer(name), color="0.8", lw=0.8)
             ax.axhline(0, color="0.7", lw=0.8)
             ax.set_title(name); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
         axes[0].set_ylabel("RSA(corpus block code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
-        fig.suptitle(f"{weighting} window; layer 0 = input embedding", y=1.02)
+        fig.suptitle(f"{weighting} window; solid: neutral prefixes, dashed: three domain words before the word; layer 0 = input embedding", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"corpus_llm_rsa_{tag_w}.png")
 
 
