@@ -36,7 +36,8 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.corpus import collapse_phrases, concept_rows, load_corpus, log_conditional
+    from src.code.corpus import (binary_subtrees, coarse_to_fine, collapse_phrases, concept_rows, load_corpus,
+                                 log_conditional, orthogonality, wordnet_hierarchy)
     from src.code.geometry import predicted_geometry
     from src.code import plot_utils
     from src.code.analysis_utils import rsa
@@ -51,15 +52,21 @@ def _(mo):
         AutoTokenizer,
         CACHE,
         FIGURES,
+        binary_subtrees,
+        coarse_to_fine,
+        collapse_phrases,
+        concept_rows,
         load_corpus,
         log_conditional,
         np,
+        orthogonality,
         plot_utils,
         plt,
         predicted_geometry,
         rsa,
         torch,
         word_means,
+        wordnet_hierarchy,
     )
 
 
@@ -211,7 +218,7 @@ def llm_config(CACHE, DOMAINS):
         return LLM_DIR / f"{name}_{read}_{key}.npz", words
 
 
-    return LLM_PATH, READS, llm_cache, llm_form
+    return LLM_DIR, LLM_PATH, READS, llm_cache, llm_form
 
 
 @app.cell
@@ -476,6 +483,160 @@ def _(corpora, mo):
 @app.cell
 def _(code_3d, view_corpus, view_domain, view_layer, view_x, view_y, view_z):
     code_3d(view_domain.value, view_corpus.value, pcs=(view_x.value, view_y.value, view_z.value), layer=view_layer.value)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Hierarchy: WordNet subtrees
+
+    Nava and Wyart's setup: WordNet's noun hyponymy contracted to the words every corpus has (a word names a
+    sense only when that sense holds most of its WordNet counts), then perfect binary subtrees of depth 3 under
+    a root, 15 words each, drawn uniformly over the valid structures. The corpus block code of the 15 words
+    against Llama's representation of them, per tree; then two tree measures on both codes against shuffled node order:
+    coarse-to-fine alignment, how far the top k PCs span the k coarsest splits (k = 1, 3, 7), and parent-child
+    orthogonality, the mean |cos| between a child's offset from its parent and the parent's vector.
+    """)
+    return
+
+
+@app.cell
+def _(binary_subtrees, corpora, wordnet_hierarchy):
+    from nltk.corpus import wordnet as wn
+    ROOTS = {"organism": "organism.n.01", "event": "event.n.01", "cognition": "cognition.n.01"}
+    N_TREES, DEPTH = 40, 3
+    _vocabs = [v[1].tolist() for v in corpora.values()]
+    _others = [set(v) for v in _vocabs[1:]]
+    _shared = [w for w in _vocabs[0] if all(w in s for s in _others)]              # words every corpus has, by frequency
+    _children, _word = wordnet_hierarchy(_shared)
+    trees = {r: [[[_word[s] for s in level] for level in t] for t in binary_subtrees(_children.get, wn.synset(name), DEPTH, N_TREES, seed=0)]
+             for r, name in ROOTS.items()}
+    tree_words = {r: sorted({w for t in ts for level in t for w in level}) for r, ts in trees.items()}
+    for _r, _ts in trees.items():
+        print(f"{_r:10s} {len(_ts)} trees, {len(tree_words[_r])} distinct words; e.g. {_ts[0]}")
+    return DEPTH, ROOTS, tree_words, trees
+
+
+@app.cell
+def _(AutoModelForCausalLM, AutoTokenizer, LLM_DIR, LLM_PATH, np, torch, tree_words, word_means):
+    import hashlib as _hashlib
+
+    NEUTRAL = ["", "The word", "She said", "I think of", "Consider", "It was"]        # no category for generic nouns
+
+
+    def tree_cache(root):
+        words = tree_words[root]
+        return LLM_DIR / f"tree_{root}_{_hashlib.md5(' '.join(words + NEUTRAL).encode()).hexdigest()[:8]}.npz", words
+
+
+    _missing = [r for r in tree_words if not tree_cache(r)[0].exists()]
+    if _missing:
+        _tok = AutoTokenizer.from_pretrained(LLM_PATH)
+        _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, dtype=torch.bfloat16, device_map="cuda").eval()
+        _t = [([_tok.bos_token_id] + _tok.encode(p, add_special_tokens=False), []) for p in NEUTRAL]
+        for _r in _missing:
+            _path, _words = tree_cache(_r)
+            np.savez(_path, words=np.array(_words),
+                     residual=word_means(_model, {w: _tok.encode(" " + w, add_special_tokens=False) for w in _words}, _t))
+            print(f"{_r}: {len(_words)} tree words cached")
+        del _model; torch.cuda.empty_cache()
+    tree_llm = {r: dict(zip(tree_cache(r)[1], np.moveaxis(np.load(tree_cache(r)[0])["residual"], 1, 0)))
+                for r in tree_words}                                                   # root -> word -> (layers, d)
+    return (tree_llm,)
+
+
+@app.cell
+def _(coarse_to_fine, corpora, index, log_conditional, np, orthogonality, predicted_geometry, rsa, tree_llm, trees):
+    def tree_nodes(tree):
+        return [w for level in tree for w in level]
+
+
+    def tree_code(tree, corpus):
+        """The corpus block code of a tree's 15 words, in level order."""
+        C, _, _, r = corpora[corpus]
+        ids = [index[corpus][w] for w in tree_nodes(tree)]
+        return predicted_geometry(log_conditional(C[np.ix_(ids, ids)], r[ids]))
+
+
+    def tree_llm_code(tree, root, layer):
+        return np.stack([tree_llm[root][w][layer] for w in tree_nodes(tree)])
+
+
+    TREE_LAYERS = np.arange(next(iter(tree_llm["organism"].values())).shape[0])
+    tree_rsa = {r: np.array([[np.mean([rsa(tree_code(t, c), tree_llm_code(t, r, l)) for t in ts]) for c in corpora]
+                             for l in TREE_LAYERS]) for r, ts in trees.items()}                      # (layers, corpora)
+    TREE_LAYER = int(np.mean([v.mean(1) for v in tree_rsa.values()], 0).argmax())
+
+
+    def tree_measures(root, seed=0):
+        """Per code (Llama at TREE_LAYER, each corpus, and a shuffled Llama): coarse-to-fine alignment at k = 1, 3,
+        7 and parent-child |cos|, averaged over the root's trees."""
+        rng = np.random.default_rng(seed)
+        out = {}
+        for name, code in [("Llama", lambda t: tree_llm_code(t, root, TREE_LAYER)), *[(c, (lambda c: lambda t: tree_code(t, c))(c)) for c in corpora],
+                           ("Llama shuffled", lambda t: tree_llm_code(t, root, TREE_LAYER)[rng.permutation(15)])]:
+            rows = [[coarse_to_fine(code(t), t, k) for k in (1, 3, 7)] + [orthogonality(code(t), t)] for t in trees[root]]
+            out[name] = np.mean(rows, 0)
+        return out
+
+
+    print(f"Llama layer {TREE_LAYER} (best mean RSA over trees and corpora)")
+    for _r in trees:
+        print(f"{_r:10s} RSA(corpus code, Llama) " + "  ".join(f"{c} {v:.2f}" for c, v in zip(corpora, tree_rsa[_r][TREE_LAYER])))
+        for _name, _m in tree_measures(_r).items():
+            print(f"{'':10s} {_name:16s} coarse-to-fine k=1 {_m[0]:.2f}  k=3 {_m[1]:.2f}  k=7 {_m[2]:.2f}   parent-child |cos| {_m[3]:.2f}")
+    return TREE_LAYER, TREE_LAYERS, tree_code, tree_llm_code, tree_nodes, tree_rsa
+
+
+@app.cell
+def _(FIGURES, TREE_LAYER, TREE_LAYERS, corpora, plot_utils, plt, tag_w, tree_rsa, trees):
+    def tree_rsa_by_layer():
+        fig, axes = plt.subplots(1, len(trees), figsize=(4 * len(trees), 3.2), sharey=True)
+        for ax, (root, S) in zip(axes, tree_rsa.items()):
+            for j, c in enumerate(corpora):
+                ax.plot(TREE_LAYERS, S[:, j], label=c)
+            ax.axvline(TREE_LAYER, color="0.8", lw=0.8); ax.axhline(0, color="0.7", lw=0.8)
+            ax.set_title(root); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
+        axes[0].set_ylabel("RSA(corpus tree code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
+        fig.suptitle(f"{len(next(iter(trees.values())))} depth-3 WordNet subtrees per root, mean RSA; {tag_w} window", y=1.02)
+        return plot_utils.save_figure(fig, FIGURES / f"tree_llm_rsa_{tag_w}.png")
+
+
+    tree_rsa_by_layer()
+    return
+
+
+@app.cell
+def _(mo, trees):
+    view_root = mo.ui.dropdown(options=list(trees), value="organism", label="root")
+    view_tree = mo.ui.dropdown(options=[str(i) for i in range(len(trees["organism"]))], value="0", label="tree")
+    mo.hstack([view_root, view_tree], justify="start")
+    return view_root, view_tree
+
+
+@app.cell
+def _(FIGURES, ListedColormap, TREE_LAYER, corpora, mo, plot_utils, rsa, tag_w, tree_code, tree_llm_code, trees, view_root, view_tree):
+    LEAF_COLORS = ["#1f4e9c"] * 2 + ["#7fb2e5"] * 2 + ["#b22222"] * 2 + ["#f4a582"] * 2   # leaf pairs; hue = side of the root
+
+
+    def tree_panel(root, i):
+        """Llama's tree code beside each corpus's, as ultrametric dendrograms of the 8 leaves (coloured by their
+        parent, hue by the root's side), Grams below."""
+        tree = trees[root][i]
+        parents = [-1] + [(u - 1) // 2 for u in range(1, 15)]                       # level order: children of u at 2u+1, 2u+2
+        spec = {"structure": "tree", "parents": parents, "view": "ultrametric"}
+        E = tree_llm_code(tree, root, TREE_LAYER)
+        codes_t = {c: tree_code(tree, c) for c in corpora}
+        fig = plot_utils.plot_embedding_panels(E, codes_t, spec, cmap=ListedColormap(["0.5"] * 7 + LEAF_COLORS),
+                                               scores={c: rsa(E, v) for c, v in codes_t.items()},
+                                               score_label="RSA", first_name=f"Llama L{TREE_LAYER}", starred="rest")
+        fig.suptitle(f"{root} tree {i}: " + " / ".join(", ".join(level) for level in tree), y=1.04, fontsize=9)
+        return plot_utils.save_figure(fig, FIGURES / f"tree_{root}_{tag_w}.png")
+
+
+    mo.vstack([mo.md("  \n".join(f"level {l}: " + ", ".join(level) for l, level in enumerate(trees[view_root.value][int(view_tree.value)]))),
+               tree_panel(view_root.value, int(view_tree.value))])
     return
 
 

@@ -139,6 +139,76 @@ def test_collapse_phrases_replaces_each_in_document_occurrence_with_one_new_id()
     assert ids2.tolist() == [3, 10, 5, 1, 2, 9, 11, 7] and docs2.tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
 
 
+TREE = [["organism"], ["plant", "animal"], ["flower", "tree", "bird", "fish"],
+        ["rose", "tulip", "oak", "pine", "robin", "crow", "trout", "shark"]]        # levels of a perfect binary tree
+
+
+def test_tree_splits_are_the_haar_vectors_of_the_tree_coarse_to_fine():
+    """One vector per internal node: +1 on the nodes under its first child, -1 under its second, 0 elsewhere,
+    ordered root first; they are orthogonal and there are 2^depth - 1 of them over 2^(depth+1) - 1 nodes."""
+    from src.code.corpus import tree_splits
+    S = tree_splits(TREE)
+    nodes = [w for level in TREE for w in level]
+    assert S.shape == (7, 15) and np.allclose(S @ S.T, np.diag((S ** 2).sum(1)))
+    root = dict(zip(nodes, S[0]))
+    assert root["organism"] == 0 and root["plant"] == root["rose"] == 1 and root["animal"] == root["shark"] == -1
+
+
+def test_coarse_to_fine_and_orthogonality_are_perfect_for_a_code_built_from_the_splits():
+    """A code whose columns are the tree's split vectors with decreasing scale has top-k PCs spanning the
+    k coarsest splits (alignment 1 at k = 1, 3, 7) and every child's offset from its parent orthogonal to
+    the parent (mean |cos| 0); a shuffled code does neither."""
+    from src.code.corpus import coarse_to_fine, orthogonality, tree_splits
+    S = tree_splits(TREE)
+    E = (S * (2.0 ** -np.arange(7))[:, None]).T                          # (15 nodes, 7), coarse splits largest
+    assert np.allclose([coarse_to_fine(E, TREE, k) for k in (1, 3, 7)], 1)
+    assert abs(orthogonality(E, TREE)) < 1e-9
+    rng = np.random.default_rng(0)
+    Es = E[np.r_[0, 1 + rng.permutation(14)]]                         # root fixed: its vector is 0 in this code
+    assert coarse_to_fine(Es, TREE, 3) < 0.9 and orthogonality(Es, TREE) > 0.1
+
+
+KIDS = {"r": ["a", "b", "c"], "a": ["a1", "a2", "a3"], "b": ["b1", "b2"], "c": ["c1", "c2"]}   # 3+3+1 = 7 depth-2 trees
+
+
+def test_binary_subtrees_enumerates_every_distinct_full_tree():
+    """Depth-2 trees under a toy children map: each internal node has two distinct children of its own,
+    children in sorted order, and asking for more trees than exist returns exactly the 7 structures."""
+    from src.code.corpus import binary_subtrees
+    trees = binary_subtrees(KIDS.get, "r", depth=2, n=20, seed=0)
+    assert len(trees) == 7 and len({tuple(map(tuple, t)) for t in trees}) == 7
+    for t in trees:
+        assert [len(l) for l in t] == [1, 2, 4]
+        for level, nxt in zip(t[:-1], t[1:]):
+            for i, parent in enumerate(level):
+                pair = nxt[2 * i:2 * i + 2]
+                assert set(pair) <= set(KIDS[parent]) and pair[0] < pair[1]
+
+
+def test_binary_subtrees_samples_uniformly_over_structures_not_child_pairs():
+    """The pair {b, c} heads 1 of the 7 depth-2 trees, so uniform sampling draws it 1/7 of the time (100
+    of 700 seeds); drawing child pairs uniformly would give 1/3 (233)."""
+    from src.code.corpus import binary_subtrees
+    hits = sum(binary_subtrees(KIDS.get, "r", depth=2, n=1, seed=s)[0][1] == ["b", "c"] for s in range(700))
+    assert 70 <= hits <= 130, hits
+
+
+def test_wordnet_hierarchy_names_synsets_by_vocabulary_words_and_contracts_unnamed_nodes():
+    """A word names its most-counted noun sense when that sense holds most of the word's WordNet counts
+    ("young", mostly an adjective, names nothing); a synset takes its first eligible word in vocabulary
+    order (person before someone); a synset's parent is its deepest hypernym (person under organism, not
+    causal agent) contracted to the nearest named ancestor (bird under animal, skipping chordate and
+    vertebrate; owl under bird, skipping bird of prey)."""
+    from nltk.corpus import wordnet as wn
+    from src.code.corpus import wordnet_hierarchy
+    children, word = wordnet_hierarchy(["organism", "person", "someone", "animal", "young", "bird", "owl"])
+    assert sorted(word.values()) == ["animal", "bird", "organism", "owl", "person"]
+    assert word[wn.synset("bird.n.01")] == "bird" and wn.synset("bird.n.02") not in word
+    assert {wn.synset("animal.n.01"), wn.synset("person.n.01")} <= set(children[wn.synset("organism.n.01")])
+    assert children[wn.synset("animal.n.01")] == [wn.synset("bird.n.01")]
+    assert children[wn.synset("bird.n.01")] == [wn.synset("owl.n.01")]
+
+
 def test_concept_rows_match_the_window_counter_around_each_concept_occurrence():
     """Flat counts of every id within ``window`` positions of each occurrence of a concept, same document
     only, both sides; agrees with ``window_counts`` on the same tokens."""

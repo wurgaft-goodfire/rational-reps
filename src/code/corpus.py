@@ -186,6 +186,121 @@ def concept_rows(ids, docs, concepts, n_ids, window=16):
     return R.reshape(len(concepts), n_ids)
 
 
+def tree_splits(tree):
+    """(2^depth - 1, nodes) split vectors of a perfect binary tree given as levels of words: one row per
+    internal node, root first, +1 on the nodes under its first child, -1 under its second, 0 elsewhere."""
+    nodes = [w for level in tree for w in level]
+    pos = {w: i for i, w in enumerate(nodes)}
+    depth = len(tree) - 1
+
+    def under(level, i):                                      # every node in the subtree headed by tree[level][i]
+        return [w for l in range(level, depth + 1) for w in tree[l][i * 2 ** (l - level):(i + 1) * 2 ** (l - level)]]
+
+    S = np.zeros((2 ** depth - 1, len(nodes)))
+    row = 0
+    for level in range(depth):
+        for i in range(len(tree[level])):
+            for sign, child in ((1, 2 * i), (-1, 2 * i + 1)):
+                S[row, [pos[w] for w in under(level + 1, child)]] = sign
+            row += 1
+    return S
+
+
+def coarse_to_fine(E, tree, k):
+    """Alignment (1/k) ||U_k^T V_k||_F^2 in [0, 1] between the top-k PCs of the tree's node code ``E`` (nodes in
+    level order) and the k coarsest split vectors: 1 when the code's leading PCs are exactly the tree's splits,
+    root split first."""
+    E = np.asarray(E, dtype=np.float64); E = E - E.mean(0)
+    U = np.linalg.svd(E, full_matrices=False)[0][:, :k]
+    S = tree_splits(tree)[:k]
+    V = np.linalg.qr(S.T)[0]
+    return float(np.linalg.norm(U.T @ V) ** 2 / k)
+
+
+def orthogonality(E, tree):
+    """Mean |cos| between each child's offset from its parent and the parent's own vector, over every parent
+    below the root, in the node-centred code ``E``: 0 when the hierarchy is encoded orthogonally."""
+    E = np.asarray(E, dtype=np.float64); E = E - E.mean(0)
+    nodes = [w for level in tree for w in level]
+    pos = {w: i for i, w in enumerate(nodes)}
+    cos = []
+    for level in range(1, len(tree) - 1):
+        for i, parent in enumerate(tree[level]):
+            p = E[pos[parent]]
+            for child in tree[level + 1][2 * i:2 * i + 2]:
+                d = E[pos[child]] - p
+                cos.append(abs(d @ p) / (np.linalg.norm(d) * np.linalg.norm(p)))
+    return float(np.mean(cos))
+
+
+def binary_subtrees(children, root, depth, n, seed=0):
+    """Up to ``n`` distinct perfect binary subtrees of ``depth`` levels below ``root`` in the tree ``children(node)``,
+    as levels of nodes (each node's children in sorted order), drawn uniformly over the valid structures: with
+    N(u, d) the number of depth-d trees at u, a child pair (a, b) is chosen with weight N(a, d-1) N(b, d-1)."""
+    from functools import cache
+    rng = np.random.default_rng(seed)
+
+    @cache
+    def count(node, d):
+        return 1 if d == 0 else sum(w for _, w in pairs(node, d))
+
+    def pairs(node, d):
+        kids = sorted(children(node) or [], key=str)
+        return [((a, b), count(a, d - 1) * count(b, d - 1)) for i, a in enumerate(kids) for b in kids[i + 1:]
+                if count(a, d - 1) * count(b, d - 1) > 0]
+
+    def grow(node, d):
+        if d == 0:
+            return [[node]]
+        opts, weights = zip(*pairs(node, d))
+        a, b = opts[rng.choice(len(opts), p=np.array(weights, float) / sum(weights))]
+        return [[node]] + [l + r for l, r in zip(grow(a, d - 1), grow(b, d - 1))]
+
+    trees, seen = [], set()
+    for _ in range(50 * n if count(root, depth) else 0):
+        t = grow(root, depth)
+        nodes = tuple(w for level in t for w in level)
+        if nodes not in seen:
+            seen.add(nodes); trees.append(t)
+        if len(trees) == n:
+            break
+    return trees
+
+
+def wordnet_hierarchy(vocab):
+    """WordNet's noun hyponymy contracted to the synsets named by ``vocab`` (words, most frequent first):
+    ({synset: [child synsets]}, {synset: word}). A word names its most-counted noun sense when that sense holds
+    at least half of the word's WordNet counts (an uncounted word only when it has a single sense); a synset takes
+    its first eligible word; a synset's parent is its deepest hypernym, contracted to the nearest named ancestor."""
+    from nltk.corpus import wordnet as wn
+    word = {}
+    for w in vocab:
+        if not (w.isalpha() and w.islower()):
+            continue
+        lemmas = wn.lemmas(w)
+        nouns = [l for l in lemmas if l.synset().pos() == "n"]
+        total = sum(l.count() for l in lemmas)
+        if not nouns:
+            continue
+        top = max(nouns, key=lambda l: l.count())
+        share = top.count() / total if total else float(len(lemmas) == 1)
+        if share >= 0.5:
+            word.setdefault(top.synset(), w)
+
+    def parent(s):                                          # deepest hypernym, ties by name
+        hyper = s.hypernyms()
+        return min(hyper, key=lambda h: (-h.max_depth(), h.name())) if hyper else None
+
+    children = {s: [] for s in word}
+    for s in word:
+        p = parent(s)
+        while p is not None and p not in word:
+            p = parent(p)
+        if p is not None:
+            children[p].append(s)
+    return children, word
+
+
 def parquet_texts(paths, column="text", batch=4096):
     """The ``column`` strings of parquet files, streamed file by file in row batches."""
     import pyarrow.parquet as pq
