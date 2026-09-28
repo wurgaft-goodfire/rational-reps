@@ -102,10 +102,10 @@ def _(mo):
     mo.md(r"""
     ## Llama-3.1-8B representations
 
-    Two reads per word, at every layer (layer 0 is the input embedding). **Prompt end**: three domain
-    prompts name the word and the residual is taken at the prompt's final token, e.g. "The color I am
-    thinking about is red." **Word token**: six neutral prefixes and the residual at the word's own last
-    token. Each is averaged over its prompts; cached per domain and prompt set.
+    The residual at the word's last token, at every layer (layer 0 is the input embedding), averaged over
+    six prefixes that name the category: "She said the color red", "She said the number 15", "She said the
+    month January". The same prefixes without the category ("She said red") are the dashed comparison.
+    Cached per domain and prompt set.
     """)
     return
 
@@ -117,15 +117,12 @@ def llm_config(CACHE, DOMAINS):
     LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
     LLM_DIR = CACHE / "corpus" / "llm" / LLM_NAME; LLM_DIR.mkdir(parents=True, exist_ok=True)
     CASE = {"months": str.capitalize}                                              # the corpus token as written in text
-    NEUTRAL = [(t, "") for t in ["", "The word", "She said", "I think of", "Consider", "It was"]]   # read at the word
-    PROMPTS = {                                                                     # (prefix, suffix), read at the prompt's end
-        "months": [("The month I am thinking about is", "."), ("The month of the year is", ". What month is it?"),
-                   ("The event took place in", ".")],
-        "colors": [("The color I am thinking about is", "."), ("The color of the object is", ". What color is the object?"),
-                   ("My favorite color is", ".")],
-        "numbers": [("The number I am thinking about is", "."), ("The number of items is", ". How many items are there?"),
-                    ("The answer is", ".")]}
-    READS = {"end": lambda name: (PROMPTS[name], True), "word": lambda name: (NEUTRAL, False)}   # -> (templates, at_end)
+    CATEGORY = {"months": "month", "colors": "color", "numbers": "number"}
+    PREFIXES = ["The {cat}", "She said the {cat}", "I think of the {cat}", "Consider the {cat}", "It was the {cat}",
+                "They chose the {cat}"]
+    NEUTRAL = ["", "The word", "She said", "I think of", "Consider", "It was"]
+    READS = {"context": lambda name: [(p.format(cat=CATEGORY[name]), "") for p in PREFIXES],   # read at the word's last token
+             "word": lambda name: [(p, "") for p in NEUTRAL]}
 
 
     def llm_form(name, word):
@@ -134,11 +131,11 @@ def llm_config(CACHE, DOMAINS):
 
 
     def llm_cache(name, read):
-        """``(path, words, templates, at_end)`` for one domain and read; the file is keyed by words and prompts."""
+        """``(path, words, templates)`` for one domain and read; the file is keyed by words and prompts."""
         words = [llm_form(name, w) for w in DOMAINS[name]["words"]]
-        templates, at_end = READS[read](name)
-        key = hashlib.md5(" ".join(words + [f"{p}|{s}" for p, s in templates] + [str(at_end)]).encode()).hexdigest()[:8]
-        return LLM_DIR / f"{name}_{read}_{key}.npz", words, templates, at_end
+        templates = READS[read](name)
+        key = hashlib.md5(" ".join(words + [f"{p}|{s}" for p, s in templates] + ["False"]).encode()).hexdigest()[:8]
+        return LLM_DIR / f"{name}_{read}_{key}.npz", words, templates
 
 
     return LLM_PATH, READS, llm_cache
@@ -161,11 +158,11 @@ def llm_reps(
         _tok = AutoTokenizer.from_pretrained(LLM_PATH)
         _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, dtype=torch.bfloat16, device_map="cuda").eval()
         for _n, _r in _missing:
-            _path, _words, _templates, _at_end = llm_cache(_n, _r)
+            _path, _words, _templates = llm_cache(_n, _r)
             _ids = {w: _tok.encode(w, add_special_tokens=False) for w in _words}
             _t = [([_tok.bos_token_id] + _tok.encode(p, add_special_tokens=False), _tok.encode(s, add_special_tokens=False))
                   for p, s in _templates]
-            np.savez(_path, words=np.array(_words), residual=word_means(_model, _ids, _t, at_end=_at_end))
+            np.savez(_path, words=np.array(_words), residual=word_means(_model, _ids, _t))
             print(f"{_n} / {_r}: {len(_words)} words cached")
         del _model; torch.cuda.empty_cache()
     llm = {n: {r: np.load(llm_cache(n, r)[0])["residual"] for r in READS} for n in DOMAINS}     # (layers, n, d)
@@ -181,15 +178,15 @@ def _(mo):
     ## Agreement by layer
 
     RSA (Spearman correlation of the Euclidean distance matrices) between each corpus's block code and
-    Llama's representation of the same words, per layer. Solid: prompt-end read; dashed: word-token read.
-    The panels use the prompt-end read at the layer with the best mean over corpora.
+    Llama's representation of the same words, per layer. Solid: prefixes naming the category; dashed: the
+    same prefixes without it. The panels use the category prefixes at the layer with the best mean over corpora.
     """)
     return
 
 
 @app.cell
 def llm_scores(DOMAINS, READS, corpora, llm, np, predicted, rsa):
-    READ = "end"                                                                    # the read the panels use
+    READ = "context"                                                                    # the read the panels use
     LAYERS = np.arange(llm["months"][READ].shape[0])
     codes = {(n, c): predicted(n, c)[0] for n in DOMAINS for c in corpora}                  # corpus block codes
     scores = {(n, c, r): np.array([rsa(codes[n, c], llm[n][r][l]) for l in LAYERS])
@@ -226,13 +223,13 @@ def rsa_figure(
         fig, axes = plt.subplots(1, len(DOMAINS), figsize=(4 * len(DOMAINS), 3.2), sharey=True)
         for ax, name in zip(axes, DOMAINS):
             for c in corpora:
-                line, = ax.plot(LAYERS, scores[name, c, "end"], label=c)
+                line, = ax.plot(LAYERS, scores[name, c, "context"], label=c)
                 ax.plot(LAYERS, scores[name, c, "word"], ls="--", lw=1, color=line.get_color())
             ax.axvline(best_layer(name), color="0.8", lw=0.8)
             ax.axhline(0, color="0.7", lw=0.8)
             ax.set_title(name); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
         axes[0].set_ylabel("RSA(corpus block code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
-        fig.suptitle(f"{weighting} window; solid: prompt end, dashed: word token; layer 0 = input embedding", y=1.02)
+        fig.suptitle(f"{weighting} window; solid: category named, dashed: neutral prefix; layer 0 = input embedding", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"corpus_llm_rsa_{tag_w}.png")
 
 
