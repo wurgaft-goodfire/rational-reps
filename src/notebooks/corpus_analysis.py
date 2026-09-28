@@ -92,12 +92,10 @@ def _():
     MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
               "november", "december"]
     DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    YEARS = [str(y) for y in range(1700, 1974)]                    # Karkada's historical years, cut where Gutenberg's vocabulary ends
     DOMAINS = {"months": {"words": MONTHS, "spec": {"structure": "ring", "n": 12}, "cmap": None},
                "days": {"words": DAYS, "spec": {"structure": "ring", "n": 7}, "cmap": None},
                "colors": {"words": list(HEX), "spec": None, "cmap": None},
-               "numbers": {"words": [str(n) for n in range(1, 501)], "spec": None, "cmap": "magma"},
-               "years": {"words": YEARS, "spec": None, "cmap": "magma"}}
+               "numbers": {"words": [str(n) for n in range(1, 501)], "spec": None, "cmap": "magma"}}
     # cmap: matplotlib map for list-order colouring (None = the house cyclic map); the colour words use their own hexes
 
     return DOMAINS, HEX
@@ -157,9 +155,7 @@ def llm_config(CACHE, DOMAINS):
         "numbers": ["The number is", "The number of items is", "The number she picked is", "The count came to the number",
                     "The number written on the card is", "The winning number is"],
         "days": ["The day of the week is", "It happened on", "She was born on a", "The meeting is on",
-                 "The day written on the form is", "The weekday is"],
-        "years": ["In the year", "It happened in the year", "She was born in the year", "The year is",
-                  "The event took place in the year", "The year written on the document is"]}
+                 "The day written on the form is", "The weekday is"]}
     READS = {"category": lambda name, word: PROMPTS[name]}                          # -> prefixes for one word
 
 
