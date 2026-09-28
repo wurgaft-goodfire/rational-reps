@@ -285,9 +285,9 @@ def test_analogy_accuracy_is_exact_on_the_attribute_cube_and_chance_when_rows_ar
     from src.code.corpus import analogy_accuracy
     words, E, questions = _cube_analogies()
     index = {w: i for i, w in enumerate(words)}
-    assert analogy_accuracy(E, index, questions) == 1.0
-    assert analogy_accuracy(E, index, questions, metric="euclidean") == 1.0
-    shuffled = analogy_accuracy(E[np.random.default_rng(0).permutation(len(words))], index, questions)
+    assert analogy_accuracy(E, index, questions, device="cpu") == 1.0
+    assert analogy_accuracy(E, index, questions, metric="euclidean", device="cpu") == 1.0
+    shuffled = analogy_accuracy(E[np.random.default_rng(0).permutation(len(words))], index, questions, device="cpu")
     assert shuffled < 0.2, shuffled
 
 
@@ -297,5 +297,5 @@ def test_analogy_accuracy_excludes_the_query_words_from_the_candidates():
     from src.code.corpus import analogy_accuracy
     E = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.1, 1.0]])
     index = {"a": 0, "b": 1, "c": 2, "d": 3}
-    assert analogy_accuracy(E, index, [("a", "b", "c", "d")]) == 1.0
-    assert analogy_accuracy(E, index, [("a", "b", "c", "d")], exclude_queries=False) == 0.0
+    assert analogy_accuracy(E, index, [("a", "b", "c", "d")], device="cpu") == 1.0
+    assert analogy_accuracy(E, index, [("a", "b", "c", "d")], exclude_queries=False, device="cpu") == 0.0

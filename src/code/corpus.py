@@ -334,21 +334,21 @@ def read_analogies(path):
     return out
 
 
-def analogy_accuracy(E, index, questions, exclude_queries=True, metric="cosine"):
+def analogy_accuracy(E, index, questions, exclude_queries=True, metric="cosine", device="cuda"):
     """Top-1 accuracy of the code ``E`` (rows indexed by ``index`` {word: row}) on ``questions`` [(a, b, c, d)]:
     the fraction whose nearest row to E_b - E_a + E_c, among all rows but a, b, c, is d. ``"cosine"`` on unit
-    rows (3CosAdd) or ``"euclidean"`` on the raw rows (Korchinski et al.)."""
-    U = np.asarray(E, dtype=np.float64)
+    rows (3CosAdd) or ``"euclidean"`` on the raw rows (Korchinski et al.). The search runs on ``device``."""
+    import torch
+    U = torch.as_tensor(np.asarray(E, dtype=np.float32), device=device)
     if metric == "cosine":
-        U = U / np.linalg.norm(U, axis=1, keepdims=True)
-    q = np.array([[index[w] for w in question] for question in questions])
-    target = U[q[:, 1]] - U[q[:, 0]] + U[q[:, 2]]
-    sims = target @ U.T
+        U = U / U.norm(dim=1, keepdim=True)
+    q = torch.as_tensor(np.array([[index[w] for w in question] for question in questions]), device=device)
+    sims = (U[q[:, 1]] - U[q[:, 0]] + U[q[:, 2]]) @ U.T
     if metric == "euclidean":
         sims = sims - 0.5 * (U ** 2).sum(1)                                  # argmax of x.u - |u|^2/2 = argmin |x - u|
     if exclude_queries:
-        np.put_along_axis(sims, q[:, :3], -np.inf, axis=1)
-    return float(np.mean(sims.argmax(1) == q[:, 3]))
+        sims.scatter_(1, q[:, :3], float("-inf"))
+    return float((sims.argmax(1) == q[:, 3]).float().mean())
 
 
 def parquet_texts(paths, column="text", batch=4096):

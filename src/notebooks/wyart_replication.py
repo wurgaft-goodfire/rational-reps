@@ -52,9 +52,31 @@ def _():
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
     FIGURES = CACHE / "figures"; FIGURES.mkdir(parents=True, exist_ok=True)
-    return (AutoModelForCausalLM, AutoTokenizer, CACHE, FIGURES, ListedColormap, analogy_accuracy, binary_subtrees, cka,
-            cka_null, cka_shuffle_null, full_embedding, hashlib, load_corpus, log_conditional, np, plot_utils, plt,
-            predicted_geometry, read_analogies, rsa, torch, word_means, wordnet_hierarchy)
+    return (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        CACHE,
+        FIGURES,
+        ListedColormap,
+        analogy_accuracy,
+        binary_subtrees,
+        cka,
+        cka_null,
+        cka_shuffle_null,
+        full_embedding,
+        hashlib,
+        load_corpus,
+        log_conditional,
+        np,
+        plot_utils,
+        plt,
+        predicted_geometry,
+        read_analogies,
+        rsa,
+        torch,
+        word_means,
+        wordnet_hierarchy,
+    )
 
 
 @app.cell
@@ -76,7 +98,30 @@ def _(mo):
 
 
 @app.cell
-def _(CACHE, TAGS, cka, corpora, full_embedding, index, log_conditional, np, predicted_geometry, rsa):
+def _(
+    CACHE,
+    TAGS,
+    cka,
+    corpora,
+    full_embedding,
+    hashlib,
+    index,
+    log_conditional,
+    np,
+    predicted_geometry,
+    rsa,
+):
+    REPL = CACHE / "corpus" / "replication"; REPL.mkdir(parents=True, exist_ok=True)
+
+
+    def cached(name, key, compute):
+        """Swept tables (layer curves, accuracy sweeps) as .npz under outputs/corpus/replication, keyed by the md5 of ``key``."""
+        path = REPL / f"{name}_{hashlib.md5(key.encode()).hexdigest()[:8]}.npz"
+        if not path.exists():
+            np.savez(path, **compute())
+        return dict(np.load(path))
+
+
     def embedding(c, weighting, V, target, d, label=None):
         """Cached (V, d) full-vocabulary embedding of the corpus: rows are its first V words, or the words at indices V."""
         path = CACHE / "corpus" / TAGS[c] / f"emb_{weighting.replace('/', '')}_{target}_V{label or V}_d{d}.npy"
@@ -96,11 +141,25 @@ def _(CACHE, TAGS, cka, corpora, full_embedding, index, log_conditional, np, pre
         return {"RSA": rsa(E, R), "CKA": cka(E, R)}
 
 
-    return block_code, embedding, scores
+    def layer_table(codes, G, key):
+        """{"rsa", "cka"}: (layers, codes) of each code against every Gemma layer, cached under ``key``."""
+        return cached("layers", key, lambda: {m.__name__: np.array([[m(E, G[l]) for E in codes.values()] for l in range(G.shape[0])])
+                                              for m in (rsa, cka)})
+
+
+    return block_code, cached, embedding, layer_table, scores
 
 
 @app.cell
-def _(AutoModelForCausalLM, AutoTokenizer, CACHE, hashlib, np, torch, word_means):
+def _(
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    CACHE,
+    hashlib,
+    np,
+    torch,
+    word_means,
+):
     GEMMA = "google/gemma-2-2b"
     GEMMA_DIR = CACHE / "corpus" / "llm" / "gemma-2-2b"; GEMMA_DIR.mkdir(parents=True, exist_ok=True)
     TEMPLATES = {"months": "The month of the year is", "years": "In the year", "states": "The location of the US state", "word": ""}
@@ -160,7 +219,7 @@ def _(mo):
 
 
 @app.cell
-def _(TAGS, block_code, corpora, embedding, index):
+def _(TAGS, block_code, embedding, index):
     V_K, D_K = 25000, 1000                                                   # Karkada's vocabulary and embedding dimension
     YEARS_ALL = [str(y) for y in range(1700, 2021)]
 
@@ -180,23 +239,32 @@ def _(TAGS, block_code, corpora, embedding, index):
     years = {c: in_vocab(c, YEARS_ALL) for c in TAGS}
     for _c in TAGS:
         print(f"{_c:10s} {len(years[_c])} of {len(YEARS_ALL)} years in the top {V_K:,} words ({years[_c][0]}-{years[_c][-1]})")
-    return D_K, V_K, YEARS_ALL, code_rows, in_vocab, years
+    return YEARS_ALL, code_rows, years
 
 
 @app.cell
-def _(TAGS, TEMPLATES, YEARS_ALL, code_rows, gemma_reps, np, rsa, years):
+def _(TAGS, TEMPLATES, YEARS_ALL, code_rows, gemma_reps, layer_table, np, years):
     _G = gemma_reps("years", YEARS_ALL, TEMPLATES["years"])                  # (layers, 321, d)
     _pos = {y: i for i, y in enumerate(YEARS_ALL)}
     gemma_years = {c: _G[:, [_pos[y] for y in years[c]]] for c in TAGS}
     year_codes = {c: code_rows(c, years[c]) for c in TAGS}
-    year_rsa = {c: np.array([[rsa(E, gemma_years[c][l]) for E in year_codes[c].values()] for l in range(_G.shape[0])]) for c in TAGS}
+    _t = {c: layer_table(year_codes[c], gemma_years[c], f"years {c} {TEMPLATES['years']} L{_G.shape[0]} " + " ".join(years[c])) for c in TAGS}
+    year_rsa, year_cka = {c: t["rsa"] for c, t in _t.items()}, {c: t["cka"] for c, t in _t.items()}
     YEAR_LAYER = int(np.mean([v.mean(1) for v in year_rsa.values()], 0).argmax())
     print(f"Gemma layer {YEAR_LAYER} (best mean RSA over codes and corpora)")
-    return YEAR_LAYER, gemma_years, year_codes, year_rsa
+    return YEAR_LAYER, gemma_years, year_cka, year_codes, year_rsa
 
 
 @app.cell
-def _(FIGURES, YEAR_LAYER, gemma_years, plot_utils, scores, view_corpus, year_codes):
+def _(
+    FIGURES,
+    YEAR_LAYER,
+    gemma_years,
+    plot_utils,
+    scores,
+    view_corpus,
+    year_codes,
+):
     def years_panel(c):
         G = gemma_years[c][YEAR_LAYER]
         fig = plot_utils.plot_embedding_panels(G, year_codes[c], None, cmap="magma", scores={k: scores(E, G) for k, E in year_codes[c].items()},
@@ -210,7 +278,19 @@ def _(FIGURES, YEAR_LAYER, gemma_years, plot_utils, scores, view_corpus, year_co
 
 
 @app.cell
-def _(FIGURES, TAGS, YEAR_LAYER, cka, cka_null, cka_shuffle_null, gemma_years, np, plot_utils, plt, year_codes, year_rsa):
+def _(
+    FIGURES,
+    TAGS,
+    YEAR_LAYER,
+    cka_null,
+    cka_shuffle_null,
+    gemma_years,
+    plot_utils,
+    plt,
+    year_cka,
+    year_codes,
+    year_rsa,
+):
     def layer_curves(name, rsa_by, cka_by, layer, labels, fname):
         """RSA (solid) and CKA (dashed) of each code against Gemma, by layer, one panel per corpus."""
         fig, axes = plt.subplots(1, len(TAGS), figsize=(4 * len(TAGS), 3.2), sharey=True)
@@ -223,7 +303,6 @@ def _(FIGURES, TAGS, YEAR_LAYER, cka, cka_null, cka_shuffle_null, gemma_years, n
         return plot_utils.save_figure(fig, FIGURES / fname)
 
 
-    year_cka = {c: np.array([[cka(E, gemma_years[c][l]) for E in year_codes[c].values()] for l in range(gemma_years[c].shape[0])]) for c in TAGS}
     for _c in TAGS:
         _G = gemma_years[_c][YEAR_LAYER]
         print(f"{_c:10s} " + "  ".join(f"{k} {year_rsa[_c][YEAR_LAYER, j]:.2f}/{year_cka[_c][YEAR_LAYER, j]:.2f}" for j, k in enumerate(year_codes[_c]))
@@ -278,7 +357,19 @@ def _(np):
 
 
 @app.cell
-def _(FIGURES, YEAR_LAYER, gemma_years, np, pcs, plot_utils, plt, sinusoid_r2, view_corpus, year_codes, years):
+def _(
+    FIGURES,
+    YEAR_LAYER,
+    gemma_years,
+    np,
+    pcs,
+    plot_utils,
+    plt,
+    sinusoid_r2,
+    view_corpus,
+    year_codes,
+    years,
+):
     def lissajous(c):
         codes = {f"Gemma L{YEAR_LAYER}": gemma_years[c][YEAR_LAYER], **year_codes[c]}
         t = np.array([int(y) for y in years[c]])
@@ -301,7 +392,18 @@ def _(FIGURES, YEAR_LAYER, gemma_years, np, pcs, plot_utils, plt, sinusoid_r2, v
 
 
 @app.cell
-def _(FIGURES, YEAR_LAYER, decoding_curve, gemma_years, np, plot_utils, plt, view_corpus, year_codes, years):
+def _(
+    FIGURES,
+    YEAR_LAYER,
+    decoding_curve,
+    gemma_years,
+    np,
+    plot_utils,
+    plt,
+    view_corpus,
+    year_codes,
+    years,
+):
     def year_decoding(c):
         keep = [i for i, y in enumerate(years[c]) if int(y) >= 1900]
         y = np.array([int(years[c][i]) for i in keep])
@@ -333,7 +435,7 @@ def _(mo):
 
 
 @app.cell
-def _(TAGS, TEMPLATES, code_rows, gemma_reps, np, rsa):
+def _(TAGS, TEMPLATES, code_rows, gemma_reps, layer_table, np):
     CENTROIDS = {"alabama": (32.8, -86.8), "arizona": (34.3, -111.7), "arkansas": (34.9, -92.4), "california": (37.2, -119.5),
                  "colorado": (39.0, -105.5), "connecticut": (41.6, -72.7), "delaware": (39.0, -75.5), "florida": (28.6, -82.4),
                  "georgia": (32.7, -83.4), "idaho": (44.4, -114.6), "illinois": (40.0, -89.2), "indiana": (39.9, -86.3),
@@ -349,14 +451,23 @@ def _(TAGS, TEMPLATES, code_rows, gemma_reps, np, rsa):
     _G = gemma_reps("states", [s.title() for s in STATES], TEMPLATES["states"])
     gemma_states = {c: _G for c in TAGS}
     state_codes = {c: code_rows(c, STATES) for c in TAGS}
-    state_rsa = {c: np.array([[rsa(E, _G[l]) for E in state_codes[c].values()] for l in range(_G.shape[0])]) for c in TAGS}
+    _t = {c: layer_table(state_codes[c], _G, f"states {c} {TEMPLATES['states']} L{_G.shape[0]} " + " ".join(STATES)) for c in TAGS}
+    state_rsa, state_cka = {c: t["rsa"] for c, t in _t.items()}, {c: t["cka"] for c, t in _t.items()}
     STATE_LAYER = int(np.mean([v.mean(1) for v in state_rsa.values()], 0).argmax())
     print(f"{len(STATES)} single-word contiguous states; Gemma layer {STATE_LAYER}")
-    return LATLON, STATES, STATE_LAYER, gemma_states, state_codes, state_rsa
+    return LATLON, STATES, STATE_LAYER, gemma_states, state_cka, state_codes, state_rsa
 
 
 @app.cell
-def _(FIGURES, STATE_LAYER, gemma_states, plot_utils, scores, state_codes, view_corpus):
+def _(
+    FIGURES,
+    STATE_LAYER,
+    gemma_states,
+    plot_utils,
+    scores,
+    state_codes,
+    view_corpus,
+):
     def states_panel(c):
         G = gemma_states[c][STATE_LAYER]
         fig = plot_utils.plot_embedding_panels(G, state_codes[c], None, scores={k: scores(E, G) for k, E in state_codes[c].items()},
@@ -370,8 +481,17 @@ def _(FIGURES, STATE_LAYER, gemma_states, plot_utils, scores, state_codes, view_
 
 
 @app.cell
-def _(STATE_LAYER, TAGS, cka, cka_null, cka_shuffle_null, gemma_states, layer_curves, np, state_codes, state_rsa):
-    state_cka = {c: np.array([[cka(E, gemma_states[c][l]) for E in state_codes[c].values()] for l in range(gemma_states[c].shape[0])]) for c in TAGS}
+def _(
+    STATE_LAYER,
+    TAGS,
+    cka_null,
+    cka_shuffle_null,
+    gemma_states,
+    layer_curves,
+    state_cka,
+    state_codes,
+    state_rsa,
+):
     for _c in TAGS:
         _G = gemma_states[_c][STATE_LAYER]
         print(f"{_c:10s} " + "  ".join(f"{k} {state_rsa[_c][STATE_LAYER, j]:.2f}/{state_cka[_c][STATE_LAYER, j]:.2f}" for j, k in enumerate(state_codes[_c]))
@@ -391,7 +511,18 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, LATLON, STATES, STATE_LAYER, gemma_states, pcs, plot_utils, plt, state_codes, view_corpus):
+def _(
+    FIGURES,
+    LATLON,
+    STATES,
+    STATE_LAYER,
+    gemma_states,
+    pcs,
+    plot_utils,
+    plt,
+    state_codes,
+    view_corpus,
+):
     def state_modes(c):
         codes = {f"Gemma L{STATE_LAYER}": gemma_states[c][STATE_LAYER], **state_codes[c]}
         fig, axes = plt.subplots(len(codes), 3, figsize=(10, 2.4 * len(codes)))
@@ -414,7 +545,18 @@ def _(FIGURES, LATLON, STATES, STATE_LAYER, gemma_states, pcs, plot_utils, plt, 
 
 
 @app.cell
-def _(FIGURES, LATLON, STATE_LAYER, gemma_states, np, pcs, plot_utils, plt, state_codes, view_corpus):
+def _(
+    FIGURES,
+    LATLON,
+    STATE_LAYER,
+    gemma_states,
+    np,
+    pcs,
+    plot_utils,
+    plt,
+    state_codes,
+    view_corpus,
+):
     def loo_r2(E, Y, ranks):
         """Leave-one-out ridgeless R² of Y (n, 2) from the top-r PCs of E, averaged over the two coordinates."""
         P = pcs(E); n = len(Y); out = []
@@ -456,12 +598,23 @@ def _(mo):
 
 
 @app.cell
-def _(TAGS, TEMPLATES, cka, cka_null, cka_shuffle_null, code_rows, gemma_reps, layer_curves, np, pcs, rsa):
+def _(
+    TAGS,
+    TEMPLATES,
+    cka_null,
+    cka_shuffle_null,
+    code_rows,
+    gemma_reps,
+    layer_curves,
+    layer_table,
+    np,
+    pcs,
+):
     MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
     gemma_months = gemma_reps("months", [m.capitalize() for m in MONTHS], TEMPLATES["months"])
     month_codes = {c: code_rows(c, MONTHS) for c in TAGS}
-    month_rsa = {c: np.array([[rsa(E, gemma_months[l]) for E in month_codes[c].values()] for l in range(gemma_months.shape[0])]) for c in TAGS}
-    month_cka = {c: np.array([[cka(E, gemma_months[l]) for E in month_codes[c].values()] for l in range(gemma_months.shape[0])]) for c in TAGS}
+    _t = {c: layer_table(month_codes[c], gemma_months, f"months {c} {TEMPLATES['months']} L{gemma_months.shape[0]}") for c in TAGS}
+    month_rsa, month_cka = {c: t["rsa"] for c, t in _t.items()}, {c: t["cka"] for c, t in _t.items()}
     MONTH_LAYER = int(np.mean([v.mean(1) for v in month_rsa.values()], 0).argmax())
 
 
@@ -482,7 +635,15 @@ def _(TAGS, TEMPLATES, cka, cka_null, cka_shuffle_null, code_rows, gemma_reps, l
 
 
 @app.cell
-def _(FIGURES, MONTH_LAYER, gemma_months, month_codes, plot_utils, scores, view_corpus):
+def _(
+    FIGURES,
+    MONTH_LAYER,
+    gemma_months,
+    month_codes,
+    plot_utils,
+    scores,
+    view_corpus,
+):
     _c = view_corpus.value
     _G = gemma_months[MONTH_LAYER]
     _fig = plot_utils.plot_embedding_panels(_G, month_codes[_c], {"structure": "ring", "n": 12},
@@ -507,35 +668,58 @@ def _(mo):
 
 
 @app.cell
-def _(TAGS, binary_subtrees, np, vocab, wordnet_hierarchy):
-    from nltk.corpus import wordnet as wn
+def _(TAGS, binary_subtrees, cached, np, vocab, wordnet_hierarchy):
     ROOTS = {"organism": "organism.n.01", "artifact": "instrumentality.n.03", "event": "event.n.01"}
     N_TREES, DEPTH = 40, 3
     EXCLUDE = {"cricket", "queen", "nobody", "gallant", "widower", "beau", "coon", "buff",
                "opener", "shear", "crunch", "dealings", "scourge", "gig", "transit", "gourd", "binder", "trapping"}
-
-
-    def is_noun_lemma(w):
-        return w.isalpha() and w.islower() and any(l.name() == w and l.synset().pos() == "n" for l in wn.lemmas(w))
-
-
-    wn_words = {c: [w for w in vocab[c] if is_noun_lemma(w)] for c in TAGS}          # their vocabulary: WordNet noun lemmas in the corpus
     _others = [set(vocab[c]) for c in list(TAGS)[1:]]
-    _shared = [w for w in vocab["wikipedia"] if all(w in s for s in _others) and w not in EXCLUDE]
-    _children, _word = wordnet_hierarchy(_shared)
-    trees = {r: [[[_word[s] for s in level] for level in t] for t in binary_subtrees(_children.get, wn.synset(name), DEPTH, N_TREES, seed=0)]
-             for r, name in ROOTS.items()}
+    shared_words = [w for w in vocab["wikipedia"] if all(w in s for s in _others) and w not in EXCLUDE]   # every corpus has them, by frequency
+
+
+    def wordnet_lists():
+        """Each corpus's WordNet noun lemmas (their vocabulary) and the sampled trees, as word arrays; nltk runs only here."""
+        from nltk.corpus import wordnet as wn
+
+        def is_noun_lemma(w):
+            return w.isalpha() and w.islower() and any(l.name() == w and l.synset().pos() == "n" for l in wn.lemmas(w))
+
+        children, word = wordnet_hierarchy(shared_words)
+        out = {f"wn_{c}": np.array([w for w in vocab[c] if is_noun_lemma(w)]) for c in TAGS}
+        for r, name in ROOTS.items():
+            out[f"tree_{r}"] = np.array([[word[s] for level in t for s in level]
+                                         for t in binary_subtrees(children.get, wn.synset(name), DEPTH, N_TREES, seed=0)])
+        return out
+
+
+    _z = cached("wordnet", f"{ROOTS} {N_TREES} {DEPTH} " + " ".join(f"{c}:{len(vocab[c])}" for c in TAGS) + " " + " ".join(shared_words), wordnet_lists)
+    wn_words = {c: _z[f"wn_{c}"].tolist() for c in TAGS}
+    trees = {r: [[row[:1], row[1:3], row[3:7], row[7:15]] for row in _z[f"tree_{r}"].tolist()] for r in ROOTS}     # levels of a depth-3 tree
     tree_words = sorted({w for ts in trees.values() for t in ts for level in t for w in level})
     for _c in TAGS:
         print(f"{_c:10s} {len(wn_words[_c]):,} WordNet noun lemmas in its vocabulary")
     for _r, _ts in trees.items():
         print(f"{_r:10s} {len(_ts)} trees; e.g. " + " / ".join(", ".join(l) for l in _ts[0]))
-    hierarchy = (_children, _word)
-    return DEPTH, ROOTS, hierarchy, is_noun_lemma, tree_words, trees, wn, wn_words
+    return shared_words, tree_words, trees, wn_words
 
 
 @app.cell
-def _(TAGS, TEMPLATES, block_code, embedding, gemma_reps, index, np, rsa, tree_words, trees, whitened, wn_words):
+def _(
+    TAGS,
+    TEMPLATES,
+    block_code,
+    cached,
+    cka,
+    embedding,
+    gemma_reps,
+    index,
+    np,
+    rsa,
+    tree_words,
+    trees,
+    whitened,
+    wn_words,
+):
     D_N = 2048
 
 
@@ -572,16 +756,26 @@ def _(TAGS, TEMPLATES, block_code, embedding, gemma_reps, index, np, rsa, tree_w
     tree_code_sets = {(r, c): [tree_codes(c, t) for t in ts] for r, ts in trees.items() for c in TAGS}     # (root, corpus) -> per tree
 
 
-    def tree_scores(metric, layer):
-        """(root, corpus) -> (codes,) mean metric over the root's trees between each code and Gemma at ``layer``."""
-        return {(r, c): np.array([np.mean([metric(codes[k], gemma_tree_code(t, layer)) for t, codes in zip(trees[r], tree_code_sets[r, c])])
-                                  for k in CODE_NAMES]) for r in trees for c in TAGS}
+    def tree_scores(metric, layer, r, c):
+        """(codes,) mean metric over the root's trees between each code and Gemma at ``layer``."""
+        return np.array([np.mean([metric(codes[k], gemma_tree_code(t, layer)) for t, codes in zip(trees[r], tree_code_sets[r, c])]) for k in CODE_NAMES])
 
 
-    tree_rsa = {rc: np.array([v[rc] for v in [tree_scores(rsa, l) for l in range(_G.shape[0])]]) for rc in tree_code_sets}   # (layers, codes)
+    _t = {(r, c): cached(f"trees_{r}_{c}", f"{r} {c} L{_G.shape[0]} " + " ".join(w for t in trees[r] for w in tree_nodes(t)),
+                         lambda r=r, c=c: {m.__name__: np.array([tree_scores(m, l, r, c) for l in range(_G.shape[0])]) for m in (rsa, cka)})
+          for r in trees for c in TAGS}                                                            # (layers, codes) per root and corpus
+    tree_rsa, tree_cka = {rc: t["rsa"] for rc, t in _t.items()}, {rc: t["cka"] for rc, t in _t.items()}
     TREE_LAYER = int(np.mean([v.mean(1) for v in tree_rsa.values()], 0).argmax())
     print(f"Gemma layer {TREE_LAYER}")
-    return CODE_NAMES, TREE_LAYER, gemma_tree_code, tree_code_sets, tree_codes, tree_nodes, tree_rsa, tree_scores
+    return (
+        CODE_NAMES,
+        TREE_LAYER,
+        gemma_tree_code,
+        tree_cka,
+        tree_code_sets,
+        tree_codes,
+        tree_rsa,
+    )
 
 
 @app.cell
@@ -593,7 +787,19 @@ def _(mo, trees):
 
 
 @app.cell
-def _(FIGURES, ListedColormap, TREE_LAYER, gemma_tree_code, plot_utils, scores, tree_codes, trees, view_corpus, view_root, view_tree):
+def _(
+    FIGURES,
+    ListedColormap,
+    TREE_LAYER,
+    gemma_tree_code,
+    plot_utils,
+    scores,
+    tree_codes,
+    trees,
+    view_corpus,
+    view_root,
+    view_tree,
+):
     LEAF_COLORS = ["#1f4e9c"] * 2 + ["#7fb2e5"] * 2 + ["#b22222"] * 2 + ["#f4a582"] * 2
 
 
@@ -612,8 +818,21 @@ def _(FIGURES, ListedColormap, TREE_LAYER, gemma_tree_code, plot_utils, scores, 
 
 
 @app.cell
-def _(CODE_NAMES, FIGURES, TAGS, TREE_LAYER, cka, cka_null, cka_shuffle_null, gemma_tree_code, np, plot_utils, plt, tree_rsa, tree_scores, trees):
-    tree_cka = {rc: np.array([v[rc] for v in [tree_scores(cka, l) for l in range(next(iter(tree_rsa.values())).shape[0])]]) for rc in tree_rsa}
+def _(
+    CODE_NAMES,
+    FIGURES,
+    TAGS,
+    TREE_LAYER,
+    cka_null,
+    cka_shuffle_null,
+    gemma_tree_code,
+    np,
+    plot_utils,
+    plt,
+    tree_cka,
+    tree_rsa,
+    trees,
+):
     for _r in trees:
         _floor = np.mean([[cka_null(gemma_tree_code(t, TREE_LAYER)), cka_shuffle_null(gemma_tree_code(t, TREE_LAYER))] for t in trees[_r]], 0)
         for _c in TAGS:
@@ -652,7 +871,20 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, TAGS, corpora, hierarchy, index, log_conditional, np, plot_utils, plt, wn_words):
+def _(
+    FIGURES,
+    TAGS,
+    cached,
+    corpora,
+    index,
+    np,
+    plot_utils,
+    plt,
+    shared_words,
+    torch,
+    wn_words,
+    wordnet_hierarchy,
+):
     def tree_distances(children, nodes):
         """Pairwise path lengths between nodes of the arborescence given as {parent: [children]}."""
         parent = {c: p for p, cs in children.items() for c in cs}
@@ -675,31 +907,31 @@ def _(FIGURES, TAGS, corpora, hierarchy, index, log_conditional, np, plot_utils,
 
     def distance_decay(c):
         """Mean M* and mean row-centred log-conditional over named-synset pairs at each tree distance."""
-        children, word = hierarchy
+        children, word = wordnet_hierarchy(shared_words)
         nodes = [s for s in word if word[s] in index[c]]
         D = tree_distances(children, nodes)
         C, _, _, _ = corpora[c, "1/d"]
         wn_ids = np.array([index[c][w] for w in wn_words[c]])
         pos = {w: i for i, w in enumerate(wn_words[c])}
-        rows = np.array([pos[word[s]] for s in nodes])
-        X = np.asarray(C[wn_ids][:, wn_ids], dtype=np.float64)           # their vocabulary block, 1/d weights
-        P = X / X.sum(); p = P.sum(1)
-        M = 2 * (P - np.outer(p, p)) / (P + np.outer(p, p))
-        L = log_conditional(X, X.sum(1)); L = L - L.mean(1, keepdims=True)
-        out = {}
-        for d in range(1, 7):
-            m = np.triu(D == d, 1)
-            out[d] = (M[np.ix_(rows, rows)][m].mean(), L[np.ix_(rows, rows)][m].mean(), int(m.sum()))
-        return out
+        rows = torch.as_tensor([pos[word[s]] for s in nodes], device="cuda")
+        X = torch.as_tensor(np.asarray(C[wn_ids][:, wn_ids], dtype=np.float32), device="cuda").double()   # their vocabulary block, 1/d weights
+        P = X / X.sum(); p = P.sum(1); pp = torch.outer(p, p)
+        M = (2 * (P - pp) / (P + pp))[rows][:, rows].cpu().numpy()
+        L = torch.log(X.clamp(min=1.0)) - torch.log(X.sum(1))[:, None]
+        L = (L - L.mean(1, keepdim=True))[rows][:, rows].cpu().numpy()
+        del X, P, pp; torch.cuda.empty_cache()
+        masks = [np.triu(D == d, 1) for d in range(1, 7)]
+        return {"table": np.array([[M[m].mean(), L[m].mean(), m.sum()] for m in masks])}       # (distance, [M*, log-cond, pairs])
 
 
-    decay = {c: distance_decay(c) for c in TAGS}
+    decay = {c: cached(f"decay_{c}", f"{c} {len(shared_words)} shared words, {len(wn_words[c])} lemmas", lambda c=c: distance_decay(c))["table"]
+             for c in TAGS}
     _fig, _axes = plt.subplots(1, 2, figsize=(8, 3.2))
     for _c in TAGS:
         _d = decay[_c]
-        _axes[0].plot(list(_d), [v[0] for v in _d.values()], marker="o", label=_c)
-        _axes[1].plot(list(_d), [v[1] for v in _d.values()], marker="o", label=_c)
-        print(f"{_c:10s} pairs per distance " + ", ".join(f"{d}: {v[2]:,}" for d, v in _d.items()))
+        _axes[0].plot(range(1, 7), _d[:, 0], marker="o", label=_c)
+        _axes[1].plot(range(1, 7), _d[:, 1], marker="o", label=_c)
+        print(f"{_c:10s} pairs per distance " + ", ".join(f"{d}: {int(n):,}" for d, n in zip(range(1, 7), _d[:, 2])))
     _axes[0].set_ylabel("mean M*"); _axes[1].set_ylabel("mean row-centred log P(j | i)")
     for _ax in _axes:
         _ax.set_xlabel("contracted WordNet distance"); _ax.axhline(0, color="0.7", lw=0.8)
@@ -710,10 +942,22 @@ def _(FIGURES, TAGS, corpora, hierarchy, index, log_conditional, np, plot_utils,
 
 
 @app.cell
-def _(CODE_NAMES, FIGURES, TAGS, TREE_LAYER, gemma_tree_code, np, plot_utils, plt, tree_code_sets, trees):
+def _(
+    CODE_NAMES,
+    FIGURES,
+    TAGS,
+    TREE_LAYER,
+    gemma_tree_code,
+    np,
+    plot_utils,
+    plt,
+    tree_code_sets,
+    trees,
+):
     def top_eigvecs(E):
+        """Eigenvectors of the item-centred Gram, largest first (the left singular vectors, from a 15 x 15 problem)."""
         E = np.asarray(E, float); E = E - E.mean(0)
-        return np.linalg.svd(E, full_matrices=False)[0]
+        return np.linalg.eigh(E @ E.T)[1][:, ::-1]
 
 
     def alignment(E, R, ks=range(1, 15)):
@@ -783,7 +1027,17 @@ def _(TEMPLATES, block_code, embedding, gemma_reps, index, np, wn_words):
 
 
 @app.cell
-def _(EXAMPLE, FIGURES, ListedColormap, TREE_LAYER, example_codes, gemma_example, plot_utils, scores, view_corpus):
+def _(
+    EXAMPLE,
+    FIGURES,
+    ListedColormap,
+    TREE_LAYER,
+    example_codes,
+    gemma_example,
+    plot_utils,
+    scores,
+    view_corpus,
+):
     def example_panel(c):
         spec = {"structure": "tree", "parents": [-1] + [(u - 1) // 2 for u in range(1, 15)], "view": "ultrametric"}
         codes = example_codes(c); G = gemma_example[TREE_LAYER]
@@ -798,7 +1052,18 @@ def _(EXAMPLE, FIGURES, ListedColormap, TREE_LAYER, example_codes, gemma_example
 
 
 @app.cell
-def _(FIGURES, TREE_LAYER, example_codes, example_words, gemma_example, pcs, plot_utils, plt, view_corpus, whitened):
+def _(
+    FIGURES,
+    TREE_LAYER,
+    example_codes,
+    example_words,
+    gemma_example,
+    pcs,
+    plot_utils,
+    plt,
+    view_corpus,
+    whitened,
+):
     def split_modes(c):
         """PCs 1-4 of each code over the 15 nodes in level order (their Figure 3): split modes take opposite signs on sibling subtrees."""
         codes = {f"Gemma L{TREE_LAYER}": gemma_example[TREE_LAYER], "Gemma L0 whitened": whitened(gemma_example[0]), **example_codes(c)}
@@ -835,7 +1100,7 @@ def _(mo):
 
 
 @app.cell
-def _(CACHE, TAGS, TEMPLATES, gemma_reps, index, np, read_analogies, vocab):
+def _(CACHE, TAGS, TEMPLATES, gemma_reps, index, read_analogies, vocab):
     V_KO = 10000
     _q = read_analogies(CACHE / "corpus/analogies/questions-words.txt")
     analogies = {c: {f: [tuple(w.lower() for w in t) for t in qs if all(index[c].get(w.lower(), V_KO) < V_KO for w in t)] for f, qs in _q.items()} for c in TAGS}
@@ -849,7 +1114,17 @@ def _(CACHE, TAGS, TEMPLATES, gemma_reps, index, np, read_analogies, vocab):
 
 
 @app.cell
-def _(TAGS, V_KO, analogies, analogy_accuracy, embedding, gemma_vocab, index, np, vocab):
+def _(
+    TAGS,
+    V_KO,
+    analogies,
+    analogy_accuracy,
+    cached,
+    embedding,
+    gemma_vocab,
+    np,
+    vocab,
+):
     RANKS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000]
     TARGETS = {"M": "m", "log M": "logm", "log-cond": "logcond"}
 
@@ -857,14 +1132,20 @@ def _(TAGS, V_KO, analogies, analogy_accuracy, embedding, gemma_vocab, index, np
     def accuracy_by_rank(c):
         """{target: (ranks, families)} top-1 Euclidean accuracy over the corpus's 10k words."""
         idx = {w: i for i, w in enumerate(vocab[c][:V_KO])}
-        return {name: np.array([[analogy_accuracy(embedding(c, "linear", V_KO, t, 1000)[:, :K], idx, qs, metric="euclidean")
-                                 for qs in analogies[c].values()] for K in RANKS]) for name, t in TARGETS.items()}
+        W = {name: embedding(c, "linear", V_KO, t, 1000) for name, t in TARGETS.items()}            # load each once
+        return {name: np.array([[analogy_accuracy(E[:, :K], idx, qs, metric="euclidean") for qs in analogies[c].values()] for K in RANKS])
+                for name, E in W.items()}
 
 
-    acc = {c: accuracy_by_rank(c) for c in TAGS}
+    def _key(c):
+        return f"analogies {c} V{V_KO} K{RANKS} " + " ".join(f"{f}:{len(qs)}" for f, qs in analogies[c].items())
+
+
+    acc = {c: cached(f"analogies_{c}", _key(c), lambda c=c: accuracy_by_rank(c)) for c in TAGS}
     _idx = {w: i for i, w in enumerate(vocab["wikipedia"][:V_KO])}
-    acc_gemma = np.array([[analogy_accuracy(gemma_vocab[l], _idx, qs, metric="euclidean") for qs in analogies["wikipedia"].values()]
-                          for l in range(gemma_vocab.shape[0])])                                     # (layers, families), Wikipedia's questions
+    acc_gemma = cached("analogies_gemma", _key("wikipedia") + f" L{gemma_vocab.shape[0]}",
+                       lambda: {"acc": np.array([[analogy_accuracy(gemma_vocab[l], _idx, qs, metric="euclidean") for qs in analogies["wikipedia"].values()]
+                                                 for l in range(gemma_vocab.shape[0])])})["acc"]       # (layers, families), Wikipedia's questions
     GEMMA_ANALOGY_LAYER = int(acc_gemma.mean(1).argmax())
     print(f"Gemma over the 10k Wikipedia words: best layer {GEMMA_ANALOGY_LAYER}, mean accuracy {acc_gemma[GEMMA_ANALOGY_LAYER].mean():.2f}")
     for _c in TAGS:
@@ -873,7 +1154,7 @@ def _(TAGS, V_KO, analogies, analogy_accuracy, embedding, gemma_vocab, index, np
 
 
 @app.cell
-def _(FIGURES, GEMMA_ANALOGY_LAYER, RANKS, TAGS, acc, acc_gemma, plot_utils, plt):
+def _(FIGURES, RANKS, TAGS, acc, acc_gemma, plot_utils, plt):
     def accuracy_figure():
         fig, axes = plt.subplots(1, len(TAGS) + 1, figsize=(4 * (len(TAGS) + 1), 3.3), sharey=True)
         for ax, c in zip(axes, TAGS):
@@ -894,7 +1175,18 @@ def _(FIGURES, GEMMA_ANALOGY_LAYER, RANKS, TAGS, acc, acc_gemma, plot_utils, plt
 
 
 @app.cell
-def _(FIGURES, GEMMA_ANALOGY_LAYER, RANKS, acc, acc_gemma, analogies, np, plot_utils, plt, view_corpus):
+def _(
+    FIGURES,
+    GEMMA_ANALOGY_LAYER,
+    RANKS,
+    acc,
+    acc_gemma,
+    analogies,
+    np,
+    plot_utils,
+    plt,
+    view_corpus,
+):
     def family_bars(c):
         fig, ax = plt.subplots(figsize=(12, 3.4))
         fams = list(analogies[c]); x = np.arange(len(fams)); w = 0.8 / (len(acc[c]) + 1)
@@ -913,7 +1205,21 @@ def _(FIGURES, GEMMA_ANALOGY_LAYER, RANKS, acc, acc_gemma, analogies, np, plot_u
 
 
 @app.cell
-def _(FIGURES, GEMMA_ANALOGY_LAYER, V_KO, analogies, analogy_words, block_code, embedding, gemma_vocab, index, np, plot_utils, scores, view_corpus, vocab):
+def _(
+    FIGURES,
+    GEMMA_ANALOGY_LAYER,
+    V_KO,
+    analogies,
+    analogy_words,
+    block_code,
+    embedding,
+    gemma_vocab,
+    np,
+    plot_utils,
+    scores,
+    view_corpus,
+    vocab,
+):
     def analogy_panel(c):
         widx = {w: i for i, w in enumerate(vocab["wikipedia"][:V_KO])}                  # Gemma reps cover Wikipedia's 10k words
         words = [w for w in analogy_words[c] if w in widx]
