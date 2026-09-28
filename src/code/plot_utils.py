@@ -656,14 +656,16 @@ def rdm_heatmap(ax, reps, title="RDM", cmap=None):
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
 
 
-def gram_heatmap(ax, reps, title="Gram", cmap=None):
+def gram_heatmap(ax, reps, title="Gram", cmap=None, percentile=None):
     """Gram matrix of the item-centered code (items x items), with symmetric color limits at the
     max |entry| so the sign structure reads on the diverging map. The same quantity for predicted
-    (``E E^T`` with ``E = U sqrt(S)``) and learned codes, so the panels compare directly."""
+    (``E E^T`` with ``E = U sqrt(S)``) and learned codes, so the panels compare directly.
+    ``percentile`` sets the limit at that percentile of |off-diagonal entries| instead, for large item
+    sets whose diagonal norms would otherwise wash out the blocks."""
     r = np.asarray(reps, float)
     r = r - r.mean(0)
     G = r @ r.T
-    lim = np.abs(G).max()
+    lim = np.abs(G).max() if percentile is None else np.percentile(np.abs(G[~np.eye(len(G), dtype=bool)]), percentile)
     ax.imshow(G, cmap=cmap or FIG.diverging_cmap, vmin=-lim, vmax=lim, aspect="equal")
     FIG.clean(ax); ax.set_anchor("N"); ax.set_title(title)
 
@@ -716,7 +718,7 @@ def merge_panels(paths, labels=None, ncols=2, width=21, label_size=26, header=No
 
 
 def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None, scores=None,
-                          coords=None, score_label="CKA", first_name="predicted", starred="first"):
+                          coords=None, score_label="CKA", first_name="predicted", starred="first", gram_percentile=None):
     """Two rows: predicted code beside each model's pre-decode representation (top, laid out per the
     structure's ``view``; see `_view`), and each code's Gram matrix (bottom) — ``E E^T`` for the
     predicted column, so all matrix panels show the same quantity. ``embeddings``: {name: reps}.
@@ -748,7 +750,7 @@ def plot_embedding_panels(E_pred, embeddings, spec=None, cmap=None, colors=None,
         gtitle = r"$E^{*}E^{*\top}$" if (j == 0) == (starred == "first") else r"$EE^{\top}$"
         if scores is not None and name in scores:
             gtitle += f"   {score_label} {scores[name]:.2f}"
-        gram_heatmap(axb, r, title=gtitle)
+        gram_heatmap(axb, r, title=gtitle, percentile=gram_percentile)
     if headers:                                          # column names for the simplex sub-grids
         fig.canvas.draw()
         for j, name in headers:

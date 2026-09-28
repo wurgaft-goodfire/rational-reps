@@ -80,8 +80,8 @@ def _(mo):
     ## Predicted codes and agreement
 
     Per run: the features beside the codes factored from the model's logits and, for CIFAR-10, from the human
-    votes per image. CKA over every image; RSA over a subsample with the same number of images per class,
-    against a floor from shuffling images. The subsample is sorted by class, so the Grams show the class blocks.
+    votes per image. CKA over every image, against a floor from shuffling images; RSA over a class-balanced subsample as a
+    second number. The panels draw that subsample sorted by class, so the Grams show the class blocks.
     """)
     return
 
@@ -116,8 +116,8 @@ def _(cka, np, predicted_geometry, rsa, runs, votes):
         run = runs[key]; H = run["features"]
         sub = subsample(run["labels"], PER_CLASS[key[0]], seed)
         rng = np.random.default_rng(seed)
-        out = {name: {"CKA": cka(H, E), "RSA": rsa(H[sub], E[sub]),
-                      "RSA floor": float(np.mean([rsa(H[sub], E[sub][rng.permutation(len(sub))]) for _ in range(5)]))}
+        out = {name: {"CKA": cka(H, E), "CKA floor": float(np.mean([cka(H, E[rng.permutation(len(E))]) for _ in range(5)])),
+                      "RSA (subsample)": rsa(H[sub], E[sub])}
                for name, E in codes_k.items()}
         return out, sub
 
@@ -133,12 +133,13 @@ def _(cka, np, predicted_geometry, rsa, runs, votes):
 @app.cell
 def _(FIGURES, PER_CLASS, codes, plot_utils, runs, scores):
     def run_panel(key):
-        """Features beside the predicted codes on the class-sorted subsample, coloured by class; Grams below with RSA."""
+        """Features beside the predicted codes on the class-sorted subsample, coloured by class; Grams below with CKA over all images."""
         run, (sc, sub) = runs[key], scores[key]
         cols = {name: E[sub] for name, E in codes[key].items()}
         fig = plot_utils.plot_embedding_panels(run["features"][sub], cols, None, cmap="magma" if run["C"] > 20 else None,
-                                               colors=run["labels"][sub], scores={n: sc[n]["RSA"] for n in cols},
-                                               score_label="RSA", first_name=f"{key[1]} features", starred="rest")
+                                               colors=run["labels"][sub], scores={n: sc[n]["CKA"] for n in cols},
+                                               score_label="CKA", first_name=f"{key[1]} features", starred="rest",
+                                               gram_percentile=99 if run["C"] > 20 else None)   # 1000 classes: blocks, not norms
         fig.suptitle(f"{key[0]}: {len(sub):,} images, {PER_CLASS[key[0]]} per class, sorted and coloured by class", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"vision_{key[0]}_{key[1]}.png")
 
