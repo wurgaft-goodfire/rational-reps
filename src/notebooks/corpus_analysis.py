@@ -103,9 +103,8 @@ def _(mo):
     ## Llama-3.1-8B representations
 
     The residual at the word's last token, at every layer (layer 0 is the input embedding), averaged over
-    six prefixes that name the category: "She said the color red", "She said the number 15", "She said the
-    month January". The same prefixes without the category ("She said red") are the dashed comparison.
-    Cached per domain and prompt set.
+    six neutral prefixes: "red", "The word red", "She said red", "I think of red", "Consider red", "It was
+    red". Cached per domain and prompt set.
     """)
     return
 
@@ -117,12 +116,8 @@ def llm_config(CACHE, DOMAINS):
     LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
     LLM_DIR = CACHE / "corpus" / "llm" / LLM_NAME; LLM_DIR.mkdir(parents=True, exist_ok=True)
     CASE = {"months": str.capitalize}                                              # the corpus token as written in text
-    CATEGORY = {"months": "month", "colors": "color", "numbers": "number"}
-    PREFIXES = ["The {cat}", "She said the {cat}", "I think of the {cat}", "Consider the {cat}", "It was the {cat}",
-                "They chose the {cat}"]
-    NEUTRAL = ["", "The word", "She said", "I think of", "Consider", "It was"]
-    READS = {"context": lambda name: [(p.format(cat=CATEGORY[name]), "") for p in PREFIXES],   # read at the word's last token
-             "word": lambda name: [(p, "") for p in NEUTRAL]}
+    PREFIXES = ["", "The word", "She said", "I think of", "Consider", "It was"]   # the word follows; read at its last token
+    READS = {"word": lambda name: [(p, "") for p in PREFIXES]}
 
 
     def llm_form(name, word):
@@ -178,15 +173,15 @@ def _(mo):
     ## Agreement by layer
 
     RSA (Spearman correlation of the Euclidean distance matrices) between each corpus's block code and
-    Llama's representation of the same words, per layer. Solid: prefixes naming the category; dashed: the
-    same prefixes without it. The panels use the category prefixes at the layer with the best mean over corpora.
+    Llama's representation of the same words, per layer. Each panel below opens at the layer with the
+    best mean over corpora; its selector picks any other.
     """)
     return
 
 
 @app.cell
 def llm_scores(DOMAINS, READS, corpora, llm, np, predicted, rsa):
-    READ = "context"                                                                    # the read the panels use
+    READ = "word"                                                                    # the read the panels use
     LAYERS = np.arange(llm["months"][READ].shape[0])
     codes = {(n, c): predicted(n, c)[0] for n in DOMAINS for c in corpora}                  # corpus block codes
     scores = {(n, c, r): np.array([rsa(codes[n, c], llm[n][r][l]) for l in LAYERS])
@@ -211,6 +206,7 @@ def rsa_figure(
     DOMAINS,
     FIGURES,
     LAYERS,
+    READ,
     best_layer,
     corpora,
     plot_utils,
@@ -223,27 +219,18 @@ def rsa_figure(
         fig, axes = plt.subplots(1, len(DOMAINS), figsize=(4 * len(DOMAINS), 3.2), sharey=True)
         for ax, name in zip(axes, DOMAINS):
             for c in corpora:
-                line, = ax.plot(LAYERS, scores[name, c, "context"], label=c)
-                ax.plot(LAYERS, scores[name, c, "word"], ls="--", lw=1, color=line.get_color())
+                ax.plot(LAYERS, scores[name, c, READ], label=c)
             ax.axvline(best_layer(name), color="0.8", lw=0.8)
             ax.axhline(0, color="0.7", lw=0.8)
             ax.set_title(name); ax.set_xlabel("layer"); ax.set_ylim(-0.3, 1)
         axes[0].set_ylabel("RSA(corpus block code, Llama)"); axes[0].legend(frameon=False, fontsize=8)
-        fig.suptitle(f"{weighting} window; solid: category named, dashed: neutral prefix; layer 0 = input embedding", y=1.02)
+        fig.suptitle(f"{weighting} window; layer 0 = input embedding", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"corpus_llm_rsa_{tag_w}.png")
 
 
     rsa_by_layer()
 
     return
-
-
-@app.cell
-def layer_dropdown(LAYERS, mo):
-    view_layer = mo.ui.dropdown(options=["best"] + [str(l) for l in LAYERS], value="best", label="Llama layer in the panels")
-    view_layer
-
-    return (view_layer,)
 
 
 @app.cell
@@ -315,8 +302,16 @@ def _(block_heatmaps):
 
 
 @app.cell
-def _(domain_panel, view_layer):
-    domain_panel("months", view_layer.value)
+def _(LAYERS, mo):
+    layer_months = mo.ui.dropdown(options=["best"] + [str(l) for l in LAYERS], value="best", label="Llama layer (months)")
+    layer_months
+
+    return (layer_months,)
+
+
+@app.cell
+def _(domain_panel, layer_months):
+    domain_panel("months", layer_months.value)
     return
 
 
@@ -337,8 +332,16 @@ def _(block_heatmaps):
 
 
 @app.cell
-def _(domain_panel, view_layer):
-    domain_panel("colors", view_layer.value)
+def _(LAYERS, mo):
+    layer_colors = mo.ui.dropdown(options=["best"] + [str(l) for l in LAYERS], value="best", label="Llama layer (colors)")
+    layer_colors
+
+    return (layer_colors,)
+
+
+@app.cell
+def _(domain_panel, layer_colors):
+    domain_panel("colors", layer_colors.value)
     return
 
 
@@ -359,8 +362,16 @@ def _(block_heatmaps):
 
 
 @app.cell
-def _(domain_panel, view_layer):
-    domain_panel("numbers", view_layer.value)
+def _(LAYERS, mo):
+    layer_numbers = mo.ui.dropdown(options=["best"] + [str(l) for l in LAYERS], value="best", label="Llama layer (numbers)")
+    layer_numbers
+
+    return (layer_numbers,)
+
+
+@app.cell
+def _(domain_panel, layer_numbers):
+    domain_panel("numbers", layer_numbers.value)
     return
 
 
@@ -416,16 +427,17 @@ def view3d(
 
 
 @app.cell
-def _(DOMAINS, corpora, mo):
+def _(DOMAINS, LAYERS, corpora, mo):
     _pcs = {f"PC{i}": i - 1 for i in range(1, 7)}
     view_domain = mo.ui.dropdown(options=list(DOMAINS), value="months", label="domain")
     view_corpus = mo.ui.dropdown(options=list(corpora), value=next(iter(corpora)), label="corpus")
+    view_layer = mo.ui.dropdown(options=["best"] + [str(l) for l in LAYERS], value="best", label="Llama layer")
     view_x = mo.ui.dropdown(options=_pcs, value="PC1", label="x")
     view_y = mo.ui.dropdown(options=_pcs, value="PC2", label="y")
     view_z = mo.ui.dropdown(options=_pcs, value="PC3", label="z")
-    mo.hstack([view_domain, view_corpus, view_x, view_y, view_z], justify="start")
+    mo.hstack([view_domain, view_corpus, view_layer, view_x, view_y, view_z], justify="start")
 
-    return view_corpus, view_domain, view_x, view_y, view_z
+    return view_corpus, view_domain, view_layer, view_x, view_y, view_z
 
 
 @app.cell
