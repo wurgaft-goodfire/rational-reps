@@ -36,8 +36,8 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.corpus import (binary_subtrees, coarse_to_fine, collapse_phrases, concept_rows, load_corpus,
-                                 log_conditional, orthogonality, wordnet_hierarchy)
+    from src.code.corpus import (analogy_accuracy, binary_subtrees, coarse_to_fine, collapse_phrases, concept_rows,
+                                 load_corpus, log_conditional, orthogonality, read_analogies, wordnet_hierarchy)
     from src.code.geometry import predicted_geometry
     from src.code import plot_utils
     from src.code.analysis_utils import rsa
@@ -52,6 +52,7 @@ def _(mo):
         AutoTokenizer,
         CACHE,
         FIGURES,
+        analogy_accuracy,
         binary_subtrees,
         coarse_to_fine,
         collapse_phrases,
@@ -63,6 +64,7 @@ def _(mo):
         plot_utils,
         plt,
         predicted_geometry,
+        read_analogies,
         rsa,
         torch,
         word_means,
@@ -519,30 +521,31 @@ def _(binary_subtrees, corpora, wordnet_hierarchy):
 
 
 @app.cell
-def _(AutoModelForCausalLM, AutoTokenizer, LLM_DIR, LLM_PATH, np, torch, tree_words, word_means):
+def _(AutoModelForCausalLM, AutoTokenizer, LLM_DIR, LLM_PATH, np, torch, word_means):
     import hashlib as _hashlib
 
-    NEUTRAL = ["", "The word", "She said", "I think of", "Consider", "It was"]        # no category for generic nouns
+    NEUTRAL = ["", "The word", "She said", "I think of", "Consider", "It was"]        # no category for generic words
 
 
-    def tree_cache(root):
-        words = tree_words[root]
-        return LLM_DIR / f"tree_{root}_{_hashlib.md5(' '.join(words + NEUTRAL).encode()).hexdigest()[:8]}.npz", words
+    def neutral_reps(name, words):
+        """{word: (layers, d)}: Llama's residual at each word's last token, averaged over the NEUTRAL prefixes;
+        cached as ``{name}_{md5}.npz``."""
+        path = LLM_DIR / f"{name}_{_hashlib.md5(' '.join(words + NEUTRAL).encode()).hexdigest()[:8]}.npz"
+        if not path.exists():
+            tok = AutoTokenizer.from_pretrained(LLM_PATH)
+            model = AutoModelForCausalLM.from_pretrained(LLM_PATH, dtype=torch.bfloat16, device_map="cuda").eval()
+            templates = [([tok.bos_token_id] + tok.encode(p, add_special_tokens=False), []) for p in NEUTRAL]
+            np.savez(path, words=np.array(words),
+                     residual=word_means(model, {w: tok.encode(" " + w, add_special_tokens=False) for w in words}, templates))
+            del model; torch.cuda.empty_cache()
+            print(f"{name}: {len(words)} words cached")
+        return dict(zip(words, np.moveaxis(np.load(path)["residual"], 1, 0)))
+    return (neutral_reps,)
 
 
-    _missing = [r for r in tree_words if not tree_cache(r)[0].exists()]
-    if _missing:
-        _tok = AutoTokenizer.from_pretrained(LLM_PATH)
-        _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, dtype=torch.bfloat16, device_map="cuda").eval()
-        _t = [([_tok.bos_token_id] + _tok.encode(p, add_special_tokens=False), []) for p in NEUTRAL]
-        for _r in _missing:
-            _path, _words = tree_cache(_r)
-            np.savez(_path, words=np.array(_words),
-                     residual=word_means(_model, {w: _tok.encode(" " + w, add_special_tokens=False) for w in _words}, _t))
-            print(f"{_r}: {len(_words)} tree words cached")
-        del _model; torch.cuda.empty_cache()
-    tree_llm = {r: dict(zip(tree_cache(r)[1], np.moveaxis(np.load(tree_cache(r)[0])["residual"], 1, 0)))
-                for r in tree_words}                                                   # root -> word -> (layers, d)
+@app.cell
+def _(neutral_reps, tree_words):
+    tree_llm = {r: neutral_reps(f"tree_{r}", tree_words[r]) for r in tree_words}       # root -> word -> (layers, d)
     return (tree_llm,)
 
 
@@ -637,6 +640,117 @@ def _(FIGURES, ListedColormap, TREE_LAYER, corpora, mo, plot_utils, rsa, tag_w, 
 
     mo.vstack([mo.md("  \n".join(f"level {l}: " + ", ".join(level) for l, level in enumerate(trees[view_root.value][int(view_tree.value)]))),
                tree_panel(view_root.value, int(view_tree.value))])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Analogies: the Google set
+
+    Korchinski et al.'s test as a corpus vs Llama comparison: the 14 families of Mikolov's questions-words set,
+    kept to the questions whose four words every corpus has. Corpus code = block code of those words at rank K
+    (the leading K columns of the balanced factor); Llama = the same words after the neutral prefixes, per
+    layer. Score = top-1 3CosAdd accuracy per family (nearest analogy word by cosine to b − a + c, excluding
+    a, b, c), and RSA between the block code and Llama over the same words.
+    """)
+    return
+
+
+@app.cell
+def _(CACHE, corpora, read_analogies):
+    _q = read_analogies(CACHE / "corpus/analogies/questions-words.txt")
+    _shared = set.intersection(*[set(v[1].tolist()) for v in corpora.values()])
+    analogy_form = {w.lower(): w for qs in _q.values() for t in qs for w in t}       # lowercase -> the file's form, for Llama
+    analogies = {f: [tuple(w.lower() for w in t) for t in qs if all(w.lower() in _shared for w in t)] for f, qs in _q.items()}
+    analogy_words = sorted({w for qs in analogies.values() for t in qs for w in t})
+    for _f, _qs in analogies.items():
+        print(f"{_f:28s} {len(_qs):5d} of {len(_q[_f]):5d} questions")
+    print(len(analogy_words), "analogy words")
+    return analogies, analogy_form, analogy_words
+
+
+@app.cell
+def _(analogy_form, analogy_words, corpora, index, log_conditional, neutral_reps, np, predicted_geometry):
+    analogy_index = {w: i for i, w in enumerate(analogy_words)}
+
+
+    def analogy_code(corpus):
+        """Full-rank balanced factor of the analogy words' block; rank K = its first K columns."""
+        C, _, _, r = corpora[corpus]
+        ids = [index[corpus][w] for w in analogy_words]
+        return predicted_geometry(log_conditional(C[np.ix_(ids, ids)], r[ids]))
+
+
+    analogy_codes = {c: analogy_code(c) for c in corpora}
+    _reps = neutral_reps("analogies", [analogy_form[w] for w in analogy_words])
+    analogy_llm = np.stack([_reps[analogy_form[w]] for w in analogy_words], 1)         # (layers, words, d)
+    return analogy_codes, analogy_index, analogy_llm
+
+
+@app.cell
+def _(analogies, analogy_accuracy, analogy_codes, analogy_index, analogy_llm, corpora, np, rsa):
+    RANKS = [2, 4, 8, 16, 32, 64, 128, 256, 512]
+    acc_corpus = {c: np.array([[analogy_accuracy(E[:, :K], analogy_index, qs) for qs in analogies.values()] for K in RANKS])
+                  for c, E in analogy_codes.items()}                                              # corpus -> (ranks, families)
+    acc_llm = np.array([[analogy_accuracy(analogy_llm[l], analogy_index, qs) for qs in analogies.values()]
+                        for l in range(analogy_llm.shape[0])])                                     # (layers, families)
+    analogy_rsa = np.array([[rsa(E, analogy_llm[l]) for E in analogy_codes.values()] for l in range(analogy_llm.shape[0])])
+    ANALOGY_LAYER = int(acc_llm.mean(1).argmax())
+    BEST_RANK = {c: RANKS[int(a.mean(1).argmax())] for c, a in acc_corpus.items()}
+    print(f"Llama best layer {ANALOGY_LAYER} (mean accuracy {acc_llm[ANALOGY_LAYER].mean():.2f}); best ranks {BEST_RANK}")
+    print(f"{'family':28s} {'Llama':>6s}  " + "  ".join(f"{c:>10s}" for c in corpora) + "   (corpus at its best rank)")
+    for _j, _f in enumerate(analogies):
+        print(f"{_f:28s} {acc_llm[ANALOGY_LAYER, _j]:6.2f}  " + "  ".join(f"{acc_corpus[c][RANKS.index(BEST_RANK[c]), _j]:10.2f}" for c in corpora))
+    print(f"{'mean':28s} {acc_llm[ANALOGY_LAYER].mean():6.2f}  " + "  ".join(f"{acc_corpus[c][RANKS.index(BEST_RANK[c])].mean():10.2f}" for c in corpora))
+    print("RSA(block code, Llama) at the best layer: " + ", ".join(f"{c} {v:.2f}" for c, v in zip(corpora, analogy_rsa[ANALOGY_LAYER])))
+    return ANALOGY_LAYER, BEST_RANK, RANKS, acc_corpus, acc_llm, analogy_rsa
+
+
+@app.cell
+def _(ANALOGY_LAYER, FIGURES, RANKS, acc_corpus, acc_llm, analogy_rsa, corpora, plot_utils, plt, tag_w):
+    def analogy_figure():
+        fig, axes = plt.subplots(1, 3, figsize=(12.5, 3.3))
+        for c, a in acc_corpus.items():
+            axes[0].plot(RANKS, a.mean(1), marker="o", ms=3, label=c)
+            axes[0].fill_between(RANKS, a.mean(1) - a.std(1), a.mean(1) + a.std(1), alpha=0.12)
+        axes[0].axhline(acc_llm[ANALOGY_LAYER].mean(), color="0.3", ls="--", lw=0.8, label=f"Llama L{ANALOGY_LAYER}")
+        axes[0].set_xscale("log", base=2); axes[0].set_xlabel("rank K of the block code"); axes[0].set_ylabel("3CosAdd accuracy")
+        axes[0].set_title("corpus codes"); axes[0].legend(frameon=False, fontsize=8, loc="lower right")
+        layers = range(acc_llm.shape[0])
+        axes[1].plot(layers, acc_llm.mean(1), color="0.3")
+        axes[1].fill_between(layers, acc_llm.mean(1) - acc_llm.std(1), acc_llm.mean(1) + acc_llm.std(1), color="0.3", alpha=0.12)
+        axes[1].set_xlabel("layer"); axes[1].set_title("Llama-3.1-8B")
+        for j, c in enumerate(corpora):
+            axes[2].plot(layers, analogy_rsa[:, j], label=c)
+        axes[2].axhline(0, color="0.7", lw=0.8); axes[2].set_xlabel("layer"); axes[2].set_ylabel("RSA(block code, Llama)")
+        axes[2].set_title("code vs Llama, all analogy words")
+        for ax in axes[:2]:
+            ax.set_ylim(0, 1)
+        fig.suptitle(f"Google analogies, mean over 14 families (band: sd across families); {tag_w} window", y=1.03)
+        return plot_utils.save_figure(fig, FIGURES / f"analogies_{tag_w}.png")
+
+
+    analogy_figure()
+    return
+
+
+@app.cell
+def _(ANALOGY_LAYER, BEST_RANK, FIGURES, RANKS, acc_corpus, acc_llm, analogies, corpora, np, plot_utils, plt, tag_w):
+    def analogy_families():
+        """Accuracy per family: Llama at its best layer beside each corpus at its best rank."""
+        fig, ax = plt.subplots(figsize=(12, 3.4))
+        x = np.arange(len(analogies)); w = 0.8 / (len(corpora) + 1)
+        ax.bar(x, acc_llm[ANALOGY_LAYER], w, color="0.3", label=f"Llama L{ANALOGY_LAYER}")
+        for j, c in enumerate(corpora, 1):
+            ax.bar(x + j * w, acc_corpus[c][RANKS.index(BEST_RANK[c])], w, label=f"{c} K={BEST_RANK[c]}")
+        ax.set_xticks(x + 0.4 - w / 2); ax.set_xticklabels(list(analogies), rotation=35, ha="right", fontsize=8)
+        ax.set_ylabel("3CosAdd accuracy"); ax.set_ylim(0, 1)
+        ax.legend(frameon=False, fontsize=8, ncol=4, loc="lower center", bbox_to_anchor=(0.5, 1.0))
+        return plot_utils.save_figure(fig, FIGURES / f"analogy_families_{tag_w}.png")
+
+
+    analogy_families()
     return
 
 

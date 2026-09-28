@@ -221,3 +221,43 @@ def test_concept_rows_match_the_window_counter_around_each_concept_occurrence():
     counts, _ = window_counts(TEXTS, ["cat", "dog"], window=3)
     expected = np.array([[counts[c].get(w, 0) for w in words] for c in ("cat", "dog")])
     assert R.shape == (2, len(words)) and np.array_equal(R, expected)
+
+
+def test_read_analogies_groups_questions_by_family_keeping_the_case(tmp_path):
+    from src.code.corpus import read_analogies
+    p = tmp_path / "q.txt"
+    p.write_text(": capital-common-countries\nAthens Greece Baghdad Iraq\n: gram8-plural\nbanana bananas bird birds\ncar cars cat cats\n")
+    q = read_analogies(p)
+    assert q == {"capital-common-countries": [("Athens", "Greece", "Baghdad", "Iraq")],
+                 "gram8-plural": [("banana", "bananas", "bird", "birds"), ("car", "cars", "cat", "cats")]}
+
+
+def _cube_analogies():
+    """16 words = every sign pattern of 4 attributes; a:b::c:d flips the same attribute in both pairs."""
+    import itertools
+    words = ["".join("+-"[b] for b in bits) for bits in itertools.product((0, 1), repeat=4)]
+    E = np.array([[1.0 if ch == "+" else -1.0 for ch in w] for w in words])
+    flip = lambda w, k: w[:k] + "+-"[w[k] == "+"] + w[k + 1:]
+    questions = [(a, flip(a, k), c, flip(c, k)) for k in range(4) for a in words for c in words if a != c and a[k] == c[k]]
+    return words, E, questions
+
+
+def test_analogy_accuracy_is_exact_on_the_attribute_cube_and_chance_when_rows_are_shuffled():
+    """Cosine 3CosAdd (nearest word to b - a + c, excluding a, b, c) recovers every parallelogram of a +-1
+    attribute code; shuffling the code's rows leaves accuracy near chance (1 of 13 candidates)."""
+    from src.code.corpus import analogy_accuracy
+    words, E, questions = _cube_analogies()
+    index = {w: i for i, w in enumerate(words)}
+    assert analogy_accuracy(E, index, questions) == 1.0
+    shuffled = analogy_accuracy(E[np.random.default_rng(0).permutation(len(words))], index, questions)
+    assert shuffled < 0.2, shuffled
+
+
+def test_analogy_accuracy_excludes_the_query_words_from_the_candidates():
+    """With a duplicated row (E_b = E_a) the target b - a + c is c itself; c is excluded, so d is found only when
+    it is the next nearest, and never when queries may answer."""
+    from src.code.corpus import analogy_accuracy
+    E = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.1, 1.0]])
+    index = {"a": 0, "b": 1, "c": 2, "d": 3}
+    assert analogy_accuracy(E, index, [("a", "b", "c", "d")]) == 1.0
+    assert analogy_accuracy(E, index, [("a", "b", "c", "d")], exclude_queries=False) == 0.0

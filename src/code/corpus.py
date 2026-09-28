@@ -301,6 +301,30 @@ def wordnet_hierarchy(vocab):
     return children, word
 
 
+def read_analogies(path):
+    """Mikolov's questions-words file as {family: [(a, b, c, d), ...]}, words in the file's own case."""
+    out, family = {}, None
+    for line in Path(path).read_text().splitlines():
+        if line.startswith(":"):
+            family = line[1:].strip(); out[family] = []
+        elif line.strip():
+            out[family].append(tuple(line.split()))
+    return out
+
+
+def analogy_accuracy(E, index, questions, exclude_queries=True):
+    """Top-1 3CosAdd accuracy of the code ``E`` (rows indexed by ``index`` {word: row}) on ``questions``
+    [(a, b, c, d)]: the fraction whose nearest row by cosine to E_b - E_a + E_c, among all rows but a, b, c, is d."""
+    U = np.asarray(E, dtype=np.float64)
+    U = U / np.linalg.norm(U, axis=1, keepdims=True)
+    q = np.array([[index[w] for w in question] for question in questions])
+    target = U[q[:, 1]] - U[q[:, 0]] + U[q[:, 2]]
+    sims = target @ U.T
+    if exclude_queries:
+        np.put_along_axis(sims, q[:, :3], -np.inf, axis=1)
+    return float(np.mean(sims.argmax(1) == q[:, 3]))
+
+
 def parquet_texts(paths, column="text", batch=4096):
     """The ``column`` strings of parquet files, streamed file by file in row batches."""
     import pyarrow.parquet as pq
