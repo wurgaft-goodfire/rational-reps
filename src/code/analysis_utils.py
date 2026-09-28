@@ -207,6 +207,17 @@ def rsa(X, Y):
     return float((rx * ry).sum() / denom) if denom > 0 else 0.0
 
 
+def pair_auc(X, positive):
+    """Are the item pairs flagged in the boolean (n, n) ``positive`` closer in ``X`` than the rest? The
+    probability that a random flagged pair's distance is below a random unflagged pair's (ties count half):
+    0.5 = no relation, 1 = every flagged pair is closer than every unflagged one."""
+    iu = np.triu_indices(len(X), 1)
+    d, pos = _sqdist(np.asarray(X, dtype=np.float64))[iu], np.asarray(positive, dtype=bool)[iu]
+    ranks = _rankdata(d) + 1                                  # Mann-Whitney wants 1-based average ranks
+    n_neg = (~pos).sum()
+    return float((ranks[~pos].sum() - n_neg * (n_neg + 1) / 2) / (pos.sum() * n_neg))
+
+
 def rigid_map(X, ref):
     """The orthogonal map ``R`` (rotation or reflection; a partial isometry when the widths differ)
     minimizing ``|X R - ref|`` over the whole space: a gauge, not a fit. Align first, then take the

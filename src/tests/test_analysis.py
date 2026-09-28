@@ -122,3 +122,16 @@ def test_rigid_align_matches_a_rotated_copy_where_truncate_then_rotate_cannot():
     Hn = H[:, :3]                                            # narrower hidden code: a partial isometry
     Xn = rigid_align(Hn, E)
     assert Xn.shape == E.shape
+
+
+def test_pair_auc_is_one_for_within_cluster_pairs_half_for_random_flags_zero_for_between():
+    """Two tight clusters: flagging the within-cluster pairs gives AUC 1 (every flagged pair is closer
+    than every unflagged one), flagging the between-cluster pairs gives 0, random flags about 0.5."""
+    import numpy as np
+    from src.code.analysis_utils import pair_auc
+    rng = np.random.default_rng(0)
+    X = np.vstack([rng.normal(size=(20, 3)) * 0.01, rng.normal(size=(20, 3)) * 0.01 + 10])
+    same = np.equal.outer(np.arange(40) // 20, np.arange(40) // 20)
+    assert pair_auc(X, same) == 1.0 and pair_auc(X, ~same) == 0.0
+    flags = rng.random((40, 40)) < 0.5; flags = np.triu(flags, 1); flags = flags | flags.T
+    assert abs(pair_auc(X, flags) - 0.5) < 0.1
