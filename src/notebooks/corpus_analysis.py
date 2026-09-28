@@ -239,6 +239,14 @@ def rsa_figure(
 
 
 @app.cell
+def layer_dropdown(LAYERS, mo):
+    view_layer = mo.ui.dropdown(options=["best"] + [str(l) for l in LAYERS], value="best", label="Llama layer in the panels")
+    view_layer
+
+    return (view_layer,)
+
+
+@app.cell
 def panel_functions(
     DOMAINS,
     FIGURES,
@@ -273,9 +281,10 @@ def panel_functions(
         return plot_utils.save_figure(fig, FIGURES / f"blocks_{name}_{tag_w}.png")
 
 
-    def domain_panel(name):
-        """Llama's best layer on the left, each corpus's predicted code beside it, Grams below with RSA."""
-        L = best_layer(name)
+    def domain_panel(name, layer="best"):
+        """Llama's layer (the best over corpora, or a chosen one) on the left, each corpus's predicted code
+        beside it, Grams below with RSA."""
+        L = best_layer(name) if layer == "best" else int(layer)
         concepts = DOMAINS[name]["words"]
         hexes = item_colors(name, concepts)
         fig = plot_utils.plot_embedding_panels(llm[name][READ][L], {c: codes[name, c] for c in corpora}, DOMAINS[name]["spec"],
@@ -306,8 +315,8 @@ def _(block_heatmaps):
 
 
 @app.cell
-def _(domain_panel):
-    domain_panel("months")
+def _(domain_panel, view_layer):
+    domain_panel("months", view_layer.value)
     return
 
 
@@ -328,8 +337,8 @@ def _(block_heatmaps):
 
 
 @app.cell
-def _(domain_panel):
-    domain_panel("colors")
+def _(domain_panel, view_layer):
+    domain_panel("colors", view_layer.value)
     return
 
 
@@ -350,8 +359,8 @@ def _(block_heatmaps):
 
 
 @app.cell
-def _(domain_panel):
-    domain_panel("numbers")
+def _(domain_panel, view_layer):
+    domain_panel("numbers", view_layer.value)
     return
 
 
@@ -384,9 +393,9 @@ def view3d(
     from plotly.colors import cyclical
 
 
-    def code_3d(name, corpus, pcs=(0, 1, 2)):
-        """Three chosen PCs (0-based) of Llama's best layer and of a corpus's block code; hover shows the word."""
-        L = best_layer(name)
+    def code_3d(name, corpus, pcs=(0, 1, 2), layer="best"):
+        """Three chosen PCs (0-based) of a Llama layer and of a corpus's block code; hover shows the word."""
+        L = best_layer(name) if layer == "best" else int(layer)
         concepts = DOMAINS[name]["words"]
         hexes = item_colors(name, concepts)
         fig = make_subplots(rows=1, cols=2, specs=[[{"type": "scene"}, {"type": "scene"}]],
@@ -420,19 +429,8 @@ def _(DOMAINS, corpora, mo):
 
 
 @app.cell
-def _(code_3d, view_corpus, view_domain, view_x, view_y, view_z):
-    code_3d(view_domain.value, view_corpus.value, pcs=(view_x.value, view_y.value, view_z.value))
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Blocks and codes
-
-    Each row of the block is a concept's conditional over the other concepts; the counts are symmetric,
-    the row totals are not. The diagonal is a concept near another copy of itself.
-    """)
+def _(code_3d, view_corpus, view_domain, view_layer, view_x, view_y, view_z):
+    code_3d(view_domain.value, view_corpus.value, pcs=(view_x.value, view_y.value, view_z.value), layer=view_layer.value)
     return
 
 
@@ -461,18 +459,6 @@ def _(DOMAINS, HEX, corpora, index, log_conditional, np, predicted_geometry):
 
 
     return ListedColormap, block, item_colors, predicted
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Interactive 3-D view
-
-    Pick the corpus, the domain and any three of the first six PCs. Block code on the left, Llama's best
-    layer on the right, rotatable; hover for the word. Points are coloured in list order (calendar order,
-    hue order, magnitude).
-    """)
-    return
 
 
 if __name__ == "__main__":
