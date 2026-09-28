@@ -181,7 +181,7 @@ def _(FIGURES, PER_CLASS, codes, plot_utils, runs, scores):
         fig = plot_utils.plot_embedding_panels(run["features"][sub], cols, None, cmap="magma" if run["C"] > 20 else None,
                                                colors=run["labels"][sub], scores={n: sc[n]["CKA"] for n in cols},
                                                score_label="CKA", first_name=f"{key[1]} features", starred="rest",
-                                               gram_percentile=99 if run["C"] > 20 else None)   # 1000 classes: blocks, not norms
+                                               gram_percentile=99 if len(sub) > 500 else None)   # many items: blocks, not norms
         fig.suptitle(f"{key[0]}: {len(sub):,} images, {PER_CLASS[key[0]]} per class, sorted and coloured by class", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"vision_{key[0]}_{key[1]}.png")
 
