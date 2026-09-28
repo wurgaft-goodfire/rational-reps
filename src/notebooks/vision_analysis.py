@@ -17,10 +17,10 @@ def _(mo):
     # Class geometry of vision classifiers from soft labels
 
     A classifier's pre-readout class means times its readout are its class log-conditional, so the
-    theory predicts the class-mean geometry from any table of $P(y \mid x)$ over classes. Three
-    tables per dataset: the human relabelling (ImageNet-ReaL votes, CIFAR-10H annotator votes),
-    the model's own mean softmax per class, and the one-hot labels, whose factor is the equiangular
-    frame of neural collapse. Each is factored as $E^\star = $ `factor_logcond`$(\log P)$ with an empty
+    theory predicts the class-mean geometry from any table of $P(y \mid x)$ over classes. Two
+    tables per dataset: the human relabelling (ImageNet-ReaL votes, CIFAR-10H annotator votes) and
+    the model's own mean softmax per class. One-hot labels would give the equiangular frame of neural
+    collapse, whose distances are all equal. Each is factored as $E^\star = $ `factor_logcond`$(\log P)$ with an empty
     cell counted as one vote, and compared with the model's class means by RSA.
     """)
     return
@@ -43,7 +43,19 @@ def _(mo):
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
     VISION = CACHE / "vision"
     FIGURES = CACHE / "figures"; FIGURES.mkdir(parents=True, exist_ok=True)
-    return CACHE, FIGURES, VISION, class_means, json, np, pair_auc, plot_utils, plt, predicted_geometry, real_table, rsa, soft_table
+    return (
+        FIGURES,
+        VISION,
+        class_means,
+        json,
+        np,
+        pair_auc,
+        plot_utils,
+        predicted_geometry,
+        real_table,
+        rsa,
+        soft_table,
+    )
 
 
 @app.cell
@@ -85,8 +97,8 @@ def _(mo):
     mo.md(r"""
     ## Predicted codes and agreement
 
-    For each run: the model's class means beside the codes factored from the human table, the model's own
-    softmax table and the one-hot table. RSA over class pairs, with the floor from shuffling classes. The
+    For each run: the model's class means beside the codes factored from the human table and the model's own
+    softmax table. RSA over class pairs, with the floor from shuffling classes. The
     human table is sparse, so a second test asks whether the class pairs humans ever confuse are closer
     in the model than the rest (area under the curve, 0.5 = no relation).
     """)
@@ -102,13 +114,12 @@ def _(np, pair_auc, predicted_geometry, rsa, runs, tables):
 
 
     def codes_for(key):
-        """Codes from three vote tables on the same footing: human votes, the model's mean softmax scaled to
-        votes (one per image of the class), and one vote per image on the diagonal."""
+        """Codes from two vote tables on the same footing: human votes, and the model's mean softmax scaled to
+        votes (one per image of the class)."""
         run, T = runs[key], tables[key]
         n = np.bincount(run["labels"], minlength=run["C"])[:, None].astype(float)
         return {"human": predicted_geometry(log_table(T)),
-                "model softmax": predicted_geometry(log_table(run["softmax"] * n)),
-                "one-hot": predicted_geometry(log_table(np.eye(run["C"]) * n))}
+                "model softmax": predicted_geometry(log_table(run["softmax"] * n))}
 
 
     def scores_for(key, codes, seed=0):
@@ -137,7 +148,7 @@ def _(FIGURES, codes, plot_utils, runs, scores):
         fig = plot_utils.plot_embedding_panels(run["means"], codes[key], None, cmap="magma" if run["C"] > 20 else None,
                                                scores={n: scores[key][n] for n in codes[key]}, score_label="RSA",
                                                first_name=f"{key[1]} class means", starred="rest")
-        fig.suptitle(f"{key[0]}: class means beside the codes predicted from three label tables", y=1.02)
+        fig.suptitle(f"{key[0]}: class means beside the codes predicted from the two label tables", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"vision_{key[0]}_{key[1]}.png")
 
 
