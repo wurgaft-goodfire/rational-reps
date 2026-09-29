@@ -628,9 +628,10 @@ def tree_adjacency(parents):
     return A
 
 
-def labeled_tree_positions(parents, labels, alpha):
-    """Node positions of a labeled tree, (n, n + n_labels): the edge into node c is a private unit
-    step e_c plus sqrt(alpha) times its label's shared step; a node sums the steps on its root path."""
+def labeled_tree_positions(parents, labels, alpha, label_vectors=None):
+    """Node positions of a labeled tree, (n, n + m): the edge into node c is a private unit step e_c
+    plus sqrt(alpha) times its label's shared step (row of ``label_vectors``, (n_labels, m); default
+    one orthogonal unit step per label); a node sums the steps on its root path."""
     n = len(parents); A = np.zeros((n, n))
     for x in range(n):
         v = x
@@ -639,19 +640,20 @@ def labeled_tree_positions(parents, labels, alpha):
     labels = np.asarray(labels); M = np.zeros((n, labels.max() + 1))
     edges = [c for c in range(n) if parents[c] >= 0]
     M[edges, labels[edges]] = 1.0
-    return np.c_[A, np.sqrt(alpha) * A @ M]
+    U = np.eye(M.shape[1]) if label_vectors is None else np.asarray(label_vectors, dtype=float)
+    return np.c_[A, np.sqrt(alpha) * A @ M @ U]
 
 
-def labeled_tree(n=2, k=3, parents=None, labels=None, alpha=1.0, gamma=1.0):
+def labeled_tree(n=2, k=3, parents=None, labels=None, alpha=1.0, gamma=1.0, label_vectors=None):
     """Labeled-tree log-conditional over all nodes, log p(y|x) = -gamma/2 ||p(x) - p(y)||^2 + const,
     p = `labeled_tree_positions`. ``labels[c]`` is the label of the edge into node c (root entry
-    ignored); default = birth order among siblings. The code is polar: equal edge lengths,
-    same-label cosine alpha / (1 + alpha), different labels orthogonal."""
+    ignored); default = birth order among siblings. With the default orthogonal label steps the code
+    is polar: equal edge lengths, same-label cosine alpha / (1 + alpha), different labels orthogonal."""
     from scipy.special import logsumexp
     parents = tree_parents(n, k, parents)
     if labels is None:
         labels = [0] + [parents[1:c].count(parents[c]) for c in range(1, len(parents))]
-    P = labeled_tree_positions(parents, labels, alpha)
+    P = labeled_tree_positions(parents, labels, alpha, label_vectors)
     lo = -gamma / 2 * ((P[:, None] - P[None]) ** 2).sum(-1)
     return lo - logsumexp(lo, axis=1, keepdims=True)
 

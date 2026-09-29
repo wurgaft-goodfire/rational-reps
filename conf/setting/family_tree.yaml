@@ -1,0 +1,17 @@
+# @package _global_
+# Ego's family as a labeled tree of relation links from ego: up (to a parent), sibling, down (to a child).
+# Nodes: 0 ego, 1 sibling, 2 mother, 3-4 her parents, 5 aunt and 7 uncle (her siblings) with cousins 6 and 8,
+# 9 father, 10-11 his parents, 12 aunt and 14 uncle with cousins 13 and 15. When x is mentioned, the companion
+# y is drawn with log p(y|x) = -gamma/2 [d_kin(x, y) + alpha (gen(x) - gen(y))^2], gen = #up - #down links:
+# close kin and people of one generation are mentioned together. Up links share a direction, down links point
+# the opposite way (cosine -alpha/(1+alpha)), sibling links carry no shared step. gamma keeps the logit range
+# gamma/2 (6 + 4 alpha) near 4 nats. Train full width from the CLI (rank 15): embed_dim / hidden_size = 64.
+setting: graph-cooccurrence
+structure: labeled_tree
+structure_kwargs:
+  parents: [-1, 0, 0, 2, 2, 2, 5, 2, 7, 0, 9, 9, 9, 12, 9, 14]
+  labels: [-1, 1, 0, 0, 0, 1, 2, 1, 2, 0, 0, 0, 1, 2, 1, 2]    # 0 up, 1 sibling, 2 down
+  label_vectors: [[1.0], [0.0], [-1.0]]                        # generation: up +1, sibling 0, down -1
+  alpha: 1.0
+  gamma: 0.8
+sample_mode: pointwise

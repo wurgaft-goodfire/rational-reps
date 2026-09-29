@@ -45,6 +45,19 @@ def test_explicit_labels_set_the_shared_directions():
     assert np.allclose(C, [[1, 0.5, 0], [0.5, 1, 0], [0, 0, 1]])
 
 
+@pytest.mark.parametrize("alpha", [0.5, 1.0])
+def test_signed_label_vectors_point_up_and_down_links_opposite_ways(alpha):
+    # label vectors up = +u, sibling = 0, down = -u: a path ego -up-> parent -sibling-> aunt -down-> cousin, and
+    # ego -up-> other parent. Up links share a direction, the down link points the opposite way, the sibling
+    # link carries only its private step.
+    parents, labels = [-1, 0, 1, 2, 0], [-1, 0, 1, 2, 0]
+    P = labeled_tree_positions(parents, labels, alpha, label_vectors=[[1.0], [0.0], [-1.0]])
+    V = edge_vectors(P, parents)                                              # edges into nodes 1, 2, 3, 4
+    c = alpha / (1 + alpha)
+    assert np.allclose(np.linalg.norm(V, axis=1) ** 2, [1 + alpha, 1, 1 + alpha, 1 + alpha])
+    assert np.allclose(edge_cosines(P, parents), [[1, 0, -c, c], [0, 1, 0, 0], [-c, 0, 1, -c], [c, 0, -c, 1]])
+
+
 def test_labeled_tree_is_a_registered_structure():
     L = graph_conditional({"structure": "labeled_tree", "n": 2, "k": 3, "alpha": 1.0, "gamma": 1.0})
     assert L.shape == (13, 13) and np.allclose(np.exp(L).sum(1), 1.0)
