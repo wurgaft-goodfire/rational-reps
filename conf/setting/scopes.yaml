@@ -1,5 +1,5 @@
 # @package _global_
-# Scope-stack programs (src/code/scopes.py): `for` / `def` / `if` / `with` blocks bind a fresh name and stay open
+# Scope-stack programs (src/code/scopes.py): `for` / `def` / `if` blocks bind a fresh name and stay open
 # until `end`; every open scope adds its effect to the next-token scores (its name is used, `for` raises break /
 # continue, `def` return / yield, `if` pass; deeper makes `end` likelier). The Bayes next-token state is the stack,
 # and its code is one step per open scope: entering a block adds the same vector at any depth, same-kind steps

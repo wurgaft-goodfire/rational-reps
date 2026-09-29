@@ -1,4 +1,4 @@
-"""Scope-stack programs: a pushdown process over code-like tokens. A block (`for` / `def` / `if` / `with`) is
+"""Scope-stack programs: a pushdown process over code-like tokens. A block (`for` / `def` / `if`) is
 opened by its kind token and a fresh name, and stays open until `end`. The next-token scores are additive over
 the open scopes, log p(token | stack) = base + sum_s [b 1(token = name_s) + kind effect + depth effect] + const,
 so the Bayes next-token state is the stack itself and its code is one step per open scope."""
@@ -8,9 +8,9 @@ from torch.utils.data import Dataset
 
 from .data import KernelDataset
 
-KINDS = ["for", "def", "if", "with"]
+KINDS = ["for", "def", "if"]
 KEYS = ["break", "continue", "return", "yield", "pass"]
-KIND_EFFECTS = {"for": {"break": 3.0, "continue": 3.0}, "def": {"return": 3.0, "yield": 1.5}, "if": {"pass": 1.5}, "with": {}}
+KIND_EFFECTS = {"for": {"break": 3.0, "continue": 3.0}, "def": {"return": 3.0, "yield": 1.5}, "if": {"pass": 1.5}}
 DEPTH_EFFECTS = {"end": 1.0, **{k: -0.7 for k in KINDS}}          # deeper: closing likelier, opening rarer
 BASE = {"name": -3.0, "key": -2.0, "pass": -1.0, "end": -4.0}
 FRESH, TAKEN = 0.0, -6.0                                          # the name after a kind: avoid open names

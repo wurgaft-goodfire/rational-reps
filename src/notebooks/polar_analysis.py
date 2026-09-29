@@ -300,7 +300,7 @@ def _(mo):
     mo.md(r"""
     # Scope-stack programs
 
-    Streams of code-like tokens: `for` / `def` / `if` / `with` open a block that binds a fresh name, `end` closes
+    Streams of code-like tokens: `for` / `def` / `if` open a block that binds a fresh name, `end` closes
     it, and every open scope adds its effect to the next-token scores: its name is used, `for` raises break /
     continue, `def` return / yield, `if` pass. Width-64 transformer, next-token prediction, AdamW; the predicted
     code is the factored exact next-token rows.
@@ -356,9 +356,8 @@ def _(mo):
     (the state after its bound name), links the minimum spanning tree of their distances, each link's kind the nearest
     kind prototype (mean block-entry step); drawn like indented code, depth down and blocks in opening order, links
     colored by decoded kind (dashed gray: wrong); titles give this program's scores and the mean over all test
-    programs with at least two blocks. Middle: block-entry steps (code after the bound name minus code
-    before the kind token; 200 drawn) in 3-D, from the mean `with` step (the kind with no keyword effect) along the `for`,
-    `def` and `if` effects (orthogonalized in that order), thick = per-kind mean. Bottom: cosine
+    programs with at least two blocks. Middle: block-entry steps (code after the bound name minus code before
+    the kind token; 300 drawn) on the plane of the three kind means, centered on their average; thick = per-kind mean. Bottom: cosine
     between the mean block-entry steps, one per (kind, name), sorted by kind then name.
     """)
     return
@@ -378,7 +377,7 @@ def _(
 ):
     _ds = scope_run["dataset"]
     _inp = np.asarray(scope_run["inputs"])
-    _KIND_COLORS = [FIG.colors["blue"], FIG.colors["orange"], FIG.colors["green"], "0.35"]
+    _KIND_COLORS = [FIG.colors["blue"], FIG.colors["orange"], FIG.colors["green"]]
     _T = scope_codes["predicted"].shape[1]
     _trees = [_ds.blocks(_s) for _s in _inp]
     _depth = lambda tree, i: 0 if tree[i][1] < 0 else 1 + _depth(tree, tree[i][1])
@@ -415,21 +414,18 @@ def _(
                 for b in _ok if len(_trees[b]) > 2]
         _mu, _ml = np.mean(_all, 0)
         _ax.set_title(f"{_m}\nthis program: links {_u:.0%}, kinds {_l:.0%}\n{len(_all)} programs: links {_mu:.0%}, kinds {_ml:.0%}", fontsize=10)
-        _F = _protos[:3] - _protos[3]                                         # for, def, if relative to with (no effect)
-        _Q = np.linalg.qr(_F.T)[0].T                                          # axes: for, def and if orthogonalized in turn
-        _Q *= np.sign(np.diag(_F @ _Q.T))[:, None]
-        _scale = np.linalg.norm(_F, axis=1).max()
-        _axes[1, _j].remove()
-        _ax = _fig.add_subplot(_axes[0, 0].get_gridspec()[1, _j], projection="3d")
-        _W = (_V - _protos[3]) @ _Q.T / _scale
-        for _i in np.random.default_rng(0).choice(len(_V), 200, replace=False):
-            _ax.quiver(0, 0, 0, *_W[_i], color=_KIND_COLORS[_k[_i]], lw=0.6, alpha=0.3, arrow_length_ratio=0.08)
+        _Mc = _protos - _protos.mean(0)                                       # three kind means span a plane
+        _B = np.linalg.svd(_Mc, full_matrices=False)[2][:2]
+        _scale = np.linalg.norm(_Mc, axis=1).max()
+        _ax = _axes[1, _j]
+        for _i in np.random.default_rng(0).choice(len(_V), 300, replace=False):
+            _a, _c2 = (_V[_i] - _protos.mean(0)) @ _B.T / _scale
+            _ax.annotate("", (_a, _c2), (0, 0), arrowprops=dict(arrowstyle="-|>", color=_KIND_COLORS[_k[_i]], lw=0.6, alpha=0.3))
         for _l2 in range(len(_ds.kinds)):
-            _ax.quiver(0, 0, 0, *(_W[_k == _l2].mean(0)), color=_KIND_COLORS[_l2], lw=3, arrow_length_ratio=0.12)
-        _ax.set_xlim(-0.3, 1.1); _ax.set_ylim(-0.3, 1.1); _ax.set_zlim(-0.3, 1.1)
-        _ax.set_xlabel("for"); _ax.set_ylabel("def"); _ax.set_zlabel("if")
-        _ax.set_xticklabels([]); _ax.set_yticklabels([]); _ax.set_zticklabels([])
-        _ax.view_init(elev=22, azim=40)
+            _a, _c2 = _Mc[_l2] @ _B.T / _scale
+            _ax.annotate("", (_a, _c2), (0, 0), arrowprops=dict(arrowstyle="-|>", color=_KIND_COLORS[_l2], lw=3, mutation_scale=16))
+        _ax.axhline(0, color="0.85", lw=0.6, zorder=0); _ax.axvline(0, color="0.85", lw=0.6, zorder=0)
+        _ax.set_xlim(-1.5, 1.5); _ax.set_ylim(-1.5, 1.5); _ax.set_aspect("equal"); _ax.set_xticks([]); _ax.set_yticks([])
         _steps = {}
         for _kk, _n, _, _v in _ent:
             _steps.setdefault((_kk, _n), []).append(_v)
@@ -439,7 +435,7 @@ def _(
         _ax.imshow(_M @ _M.T, cmap=FIG.diverging_cmap, vmin=-1, vmax=1)
         _ticks = np.arange(len(_ds.kinds)) * len(_ds.names) + len(_ds.names) / 2 - 0.5
         _ax.set_xticks(_ticks, _ds.kinds); _ax.set_yticks(_ticks, _ds.kinds if _j == 0 else [])
-    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in _KIND_COLORS], _ds.kinds, loc="upper center", ncol=4,
+    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in _KIND_COLORS], _ds.kinds, loc="upper center", ncol=3,
                 frameon=False, bbox_to_anchor=(0.5, 0.995))
     save_figure(_fig, figure_path(scope_run["config"], "scope_tree_codes"))
     return

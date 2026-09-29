@@ -1,4 +1,4 @@
-"""Scope-stack programs: blocks (for / def / if / with) bind a fresh name and stay open until `end`, and every
+"""Scope-stack programs: blocks (for / def / if) bind a fresh name and stay open until `end`, and every
 open scope adds its effect to the next-token scores, so the Bayes next-token state is the stack and its code
 is a sum of one step per open scope: a translation code, the same step at any depth."""
 import numpy as np
