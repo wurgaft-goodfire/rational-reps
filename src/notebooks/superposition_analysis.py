@@ -379,10 +379,10 @@ def _(mo):
     mo.md(r"""
     ## Figure 3 — unequal frequencies: a dedicated head and a shared plane
     Sixteen features of equal strength $\alpha = 1.35$, one active at a time, at Zipf input frequencies
-    $\pi_i \propto 1/i$, $d = 5$. Left: the three most frequent features keep one direction each (seed 0).
-    Middle: the next three share the remaining plane, whitened vectors $E(E^\top E)^{-1/2}$ of the $+e_i$
-    states, squared length the leverage; the $-e_i$ states are antipodal. Right: leverage over three seeds,
-    with the note's linear-instability band ($\pi_j / \pi_i > \rho_c$ for a kept $i$ and a dropped $j$) shaded.
+    $\pi_i \propto 1/i$, $d = 5$. From left: the three most frequent features keep one direction each (seed 0); the
+    next three share the remaining plane (whitened $+e_i$ vectors, squared length the leverage; the $-e_i$ states are
+    antipodal); leverage over three seeds against the weak-logit truncation and the band's dimension count; the pairs
+    the note calls unstable ($\pi_j / \pi_i > \rho_c$, outlined, ratios printed) against the trained overlap.
     """)
     return
 
@@ -425,8 +425,8 @@ def _(
     _on = [_i for _i in range(len(_head), _m) if _levs[:, _i].mean() > 0.02]
     _FC = {_i: plt.cm.viridis(_k / max(1, len(_band) - 1) * 0.85) for _k, _i in enumerate(_band)}
 
-    _fig = plt.figure(figsize=(15, 5), layout="constrained")
-    _axh = _fig.add_subplot(1, 3, 1, projection="3d")
+    _fig = plt.figure(figsize=(20, 5), layout="constrained")
+    _axh = _fig.add_subplot(1, 4, 1, projection="3d")
     _B = basis3(_W[_head], _W, True)                                                         # the head along the axes
     for _i in _head:
         _v = _W[_i] @ _B.T
@@ -442,7 +442,7 @@ def _(
     _axh.set_proj_type("ortho"); _axh.view_init(elev=24, azim=35); _axh.set_axis_off()
     _axh.set_title(f"head: features {_head[0] + 1}–{_head[-1] + 1}, one direction each", fontsize=12)
 
-    _axp = _fig.add_subplot(1, 3, 2)
+    _axp = _fig.add_subplot(1, 4, 2)
     _th = np.linspace(0, 2 * np.pi, 200)
     _axp.plot(np.cos(_th), np.sin(_th), color="0.85", lw=1.0, zorder=0)                        # leverage 1
     for _i in _on:
@@ -453,17 +453,42 @@ def _(
     plot_utils.FIG.clean(_axp)
     _axp.set_title(f"the plane beside the head: features {_on[0] + 1}–{_on[-1] + 1} share it", fontsize=12)
 
-    _axb = _fig.add_subplot(1, 3, 3)
+    # leverage: trained bars against the weak-logit truncation (features 1..d kept whole) and the band's dimension count
+    _axb = _fig.add_subplot(1, 4, 3)
     _n = 10
+    _x = np.arange(1, _n + 1)
     _axb.axvspan(min(_band) + 0.5, max(_band) + 1.5, color=COL["orange"], alpha=0.12, lw=0)
-    _axb.text((min(_band) + max(_band)) / 2 + 1, 1.08, rf"theory: unstable band ($\rho_c$ = {_rho:.2f})", ha="center", fontsize=10, color=COL["orange"])
-    _axb.bar(np.arange(1, _n + 1), _levs[:, :_n].mean(0), color=[_FC.get(_i, "0.25") for _i in range(_n)], width=0.7)
+    _axb.bar(_x, _levs[:, :_n].mean(0), color=[_FC.get(_i, "0.25") for _i in range(_n)], width=0.7, label="trained (3 seeds)")
     for _l in _levs:
-        _axb.scatter(np.arange(1, _n + 1), _l[:_n], color="black", s=10, zorder=3)
-    _axb.set_xticks(np.arange(1, _n + 1)); _axb.set_ylim(0, 1.15)
+        _axb.scatter(_x, _l[:_n], color="black", s=10, zorder=3)
+    _axb.hlines((np.arange(_n) < _d).astype(float), _x - 0.42, _x + 0.42, color="0.45", ls="--", lw=1.6,
+                label=f"theory, weak logits: keep 1–{_d}")
+    _sum = _levs[:, _band].sum(1).mean()
+    _axb.text((min(_band) + max(_band)) / 2 + 1, 1.2, f"theory: band {min(_band) + 1}–{max(_band) + 1} shares $d$ − {len(_head)} = {_d - len(_head)} dims\ntrained $\\Sigma d_i$ = {_sum:.2f}",
+              ha="center", va="top", fontsize=10, color=COL["orange"])
+    _axb.set_xticks(_x); _axb.set_ylim(0, 1.25)
     _axb.set_xlabel(r"feature $i$ (by frequency, $\pi_i \propto 1/i$)"); _axb.set_ylabel(r"leverage $d_i$")
+    _axb.legend(loc="center right", frameon=False, fontsize=9)
     plot_utils.FIG.style_axes(_axb)
-    _axb.set_title("trained leverage, 3 seeds", fontsize=12)
+    _axb.set_title("which features keep a dimension", fontsize=12)
+
+    # pairs: kept i <= d against dropped j > d; the theory outlines the pairs with pi_j / pi_i > rho_c, the colour is the
+    # trained overlap |<w_i, w_j>| of the whitened vectors (the leverage projector, gauge-free, seed mean)
+    _axq = _fig.add_subplot(1, 4, 4)
+    _cols = np.arange(_d, _n)
+    _over = np.mean([np.abs(leverage(_r["representation"][_plus])[1]) for _r in _runs], 0)[:_d][:, _cols]
+    _im = _axq.imshow(_over, cmap="Greys", vmin=0, vmax=max(0.5, _over.max()))
+    for _i in range(_d):
+        for _k, _j in enumerate(_cols):
+            _unstable = _pi[_j] / _pi[_i] > _rho
+            if _unstable:
+                _axq.add_patch(plt.Rectangle((_k - 0.5, _i - 0.5), 1, 1, fill=False, ec=COL["orange"], lw=2.4))
+            _axq.text(_k, _i, f"{_pi[_j] / _pi[_i]:.2f}", ha="center", va="center", fontsize=8,
+                      color="white" if _over[_i, _k] > 0.25 else ("0.1" if _unstable else "0.6"))
+    _axq.set_xticks(range(len(_cols)), [str(_j + 1) for _j in _cols]); _axq.set_yticks(range(_d), [str(_i + 1) for _i in range(_d)])
+    _axq.set_xlabel("dropped feature $j$"); _axq.set_ylabel("kept feature $i$")
+    _fig.colorbar(_im, ax=_axq, shrink=0.8, label=r"trained overlap $|\langle w_i, w_j\rangle|$")
+    _axq.set_title(rf"which pairs share: theory outlines $\pi_j/\pi_i > \rho_c$ = {_rho:.2f}", fontsize=12)
     _fig.suptitle(rf"$m$ = {_m}, $d$ = {_d}, $\alpha$ = {_alpha0}")
     _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3_frequency"))
     _out
