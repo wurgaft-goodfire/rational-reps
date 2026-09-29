@@ -28,8 +28,8 @@ def _(mo):
     return (
         FIG,
         align_representations,
-        class_means,
         cka,
+        class_means,
         edge_cosines,
         edge_vectors,
         factor_logcond,
@@ -54,25 +54,36 @@ def _(mo):
     Ego's family as links up to a parent, to a sibling and down to a child. When a person is mentioned, the
     companion is drawn with $\log p(y \mid x) = -\tfrac{\gamma}{2}\left[d_{\mathrm{kin}}(x, y) + \alpha\,
     (g(x) - g(y))^2\right]$, $g$ the generation (up minus down links), $\alpha = 1$. Static models read a person
-    and output the companion; the stream transformer reads a sequence of co-mentions. Full width, SGD.
+    and output the companion; the in-context transformer reads a sequence of co-mentions. Full width, SGD.
     """)
     return
 
 
 @app.cell
-def _(class_means, labeled_tree, load_run, np, predicted_geometry, tree_parents):
+def _(
+    class_means,
+    labeled_tree,
+    load_run,
+    np,
+    predicted_geometry,
+    tree_parents,
+):
     LR = {"linear": 0.5, "mlp": 0.1, "rnn": 0.5, "transformer": 0.1}          # SGD learning rate
     WIDTH = {"linear": "embed_dim", "mlp": "embed_dim", "rnn": "embed_dim", "transformer": "hidden_size"}
+    STATIC = ["linear", "mlp", "rnn", "transformer"]
+    IN_CONTEXT = "in-context transformer"                                     # reads a sequence of co-mentions
+    PEOPLE = ["me", "sibling", "mom", "grandma M", "grandpa M", "aunt M", "cousin M1", "uncle M", "cousin M2",
+              "dad", "grandma D", "grandpa D", "aunt D", "cousin D1", "uncle D", "cousin D2"]   # M mom's side, D dad's
 
     def family_overrides(model):
-        arch = model.split(" ")[0]
+        arch = "transformer" if model == IN_CONTEXT else model
         return ([f"runner={arch}", "setting=family_tree", "training_kwargs.optimizer=sgd",
                  "training_kwargs.train_steps=60000", f"training_kwargs.learning_rate={LR[arch]}",
-                 f"model_kwargs.model_config.{WIDTH[arch]}=64"] + (["sample_mode=sequence"] if model.endswith("(stream)") else []))
+                 f"model_kwargs.model_config.{WIDTH[arch]}=64"] + (["sample_mode=sequence"] if model == IN_CONTEXT else []))
 
     def node_code(run, n):
-        """One vector per person: the representation (static), or its mean over the stream positions where the
-        person is the current token."""
+        """One vector per person: the representation (static), or its mean over the positions of a sequence where
+        the person is the current token."""
         R = run["representation"]
         if R.ndim == 2:
             return R
@@ -80,8 +91,7 @@ def _(class_means, labeled_tree, load_run, np, predicted_geometry, tree_parents)
         keep = tokens < n                                                     # drop the start token
         return class_means(R[keep], tokens[keep], n)[0]
 
-    FAMILY_MODELS = ["linear", "mlp", "rnn", "transformer", "transformer (stream)"]
-    family_runs = {m: load_run(family_overrides(m)) for m in FAMILY_MODELS}
+    family_runs = {m: load_run(family_overrides(m)) for m in STATIC + [IN_CONTEXT]}
     _kw = dict(family_runs["linear"]["config"].cfg.structure_kwargs)
     PARENTS = tree_parents(parents=_kw["parents"])
     LINKS = np.array(_kw["labels"][1:])                                       # 0 up, 1 sibling, 2 down; one per edge
@@ -90,11 +100,21 @@ def _(class_means, labeled_tree, load_run, np, predicted_geometry, tree_parents)
     for _m, _r in family_runs.items():                # full rank: every model reads as many directions as the code has
         assert _r["representation"].shape[-1] >= _rank, f"{_m}: width {_r['representation'].shape[-1]} < rank {_rank}"
         family[_m] = node_code(_r, len(PARENTS))
-    return LINKS, PARENTS, family, family_runs
+    return IN_CONTEXT, LINKS, PARENTS, PEOPLE, STATIC, family, family_runs
 
 
 @app.cell
-def _(LINKS, PARENTS, cka, edge_cosines, edge_vectors, family, family_runs, np, rsa):
+def _(
+    LINKS,
+    PARENTS,
+    cka,
+    edge_cosines,
+    edge_vectors,
+    family,
+    family_runs,
+    np,
+    rsa,
+):
     _pairs = {"up-up": (0, 0), "down-down": (2, 2), "up-down": (0, 2), "sib-sib": (1, 1), "sib-up": (1, 0)}
     print(f"{'model':22s} {'KL':>8s} {'RSA':>6s} {'CKA':>6s} " + " ".join(f"{k:>9s}" for k in _pairs) + f" {'|link| cv':>9s}")
     for _m, _E in family.items():
@@ -113,53 +133,124 @@ def _(LINKS, PARENTS, cka, edge_cosines, edge_vectors, family, family_runs, np, 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 1 — link cosines
+    ## Figure 1 — link directions (static models)
 
-    Cosine between every pair of link vectors (the code of the farther person minus the nearer one), links
-    grouped into up, sibling and down; the predicted code and each trained model, the stream transformer's code
-    one mean per person.
+    Top: every link vector (the farther person's code minus the nearer one's) as an arrow from the origin, on the
+    generation axis (mean up link minus mean down link) and the sibling axis (mean sibling link, orthogonal to it);
+    each link is projected on axes fit to the other fourteen. Thick arrows are the per-type means, lengths in units of
+    the mean link length. Bottom: cosine between every pair of link vectors, grouped into up, sibling and down.
     """)
     return
 
 
 @app.cell
-def _(FIG, LINKS, PARENTS, edge_cosines, family, family_runs, figure_path, np, plt, save_figure):
-    _order = np.argsort(LINKS, kind="stable")
-    _fig, _axes = plt.subplots(1, len(family), figsize=(2.6 * len(family), 3.0))
-    for _ax, (_m, _E) in zip(_axes, family.items()):
-        _ax.imshow(edge_cosines(_E, PARENTS)[_order][:, _order], cmap=FIG.diverging_cmap, vmin=-1, vmax=1)
-        _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_title(_m)
-    save_figure(_fig, figure_path(family_runs["linear"]["config"], "link_cosines"))
-    return
+def _(
+    FIG,
+    LINKS,
+    PARENTS,
+    STATIC,
+    edge_cosines,
+    edge_vectors,
+    family,
+    family_runs,
+    figure_path,
+    np,
+    plt,
+    save_figure,
+):
+    LINK_COLORS = [FIG.colors["blue"], FIG.colors["orange"], FIG.colors["green"]]
+    LINK_TYPES = ["up (to a parent)", "sibling", "down (to a child)"]
+
+    def link_directions(ax, E):
+        """King-style direction plot: each link projected on generation / sibling axes fit without it."""
+        V = edge_vectors(E, PARENTS)
+        V = V / np.linalg.norm(V, axis=1).mean()
+        XY = np.zeros((len(V), 2))
+        for i in range(len(V)):
+            rest = np.arange(len(V)) != i
+            x = V[rest & (LINKS == 0)].mean(0) - V[rest & (LINKS == 2)].mean(0); x /= np.linalg.norm(x)
+            y = V[rest & (LINKS == 1)].mean(0); y -= (y @ x) * x; y /= np.linalg.norm(y)
+            XY[i] = V[i] @ x, V[i] @ y
+        for (a, b), l in zip(XY, LINKS):
+            ax.annotate("", (a, b), (0, 0), arrowprops=dict(arrowstyle="-|>", color=LINK_COLORS[l], lw=0.9, alpha=0.45))
+        for l in range(3):
+            a, b = XY[LINKS == l].mean(0)
+            ax.annotate("", (a, b), (0, 0), arrowprops=dict(arrowstyle="-|>", color=LINK_COLORS[l], lw=3, mutation_scale=16))
+        ax.axhline(0, color="0.85", lw=0.6, zorder=0); ax.axvline(0, color="0.85", lw=0.6, zorder=0)
+        ax.set_xlim(-1.2, 1.2); ax.set_ylim(-1.2, 1.2); ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
+
+    def link_gram(ax, E, ylabels=True):
+        order = np.argsort(LINKS, kind="stable")
+        ax.imshow(edge_cosines(E, PARENTS)[order][:, order], cmap=FIG.diverging_cmap, vmin=-1, vmax=1)
+        edges = np.cumsum(np.bincount(LINKS))
+        ax.set_xticks(edges - np.bincount(LINKS) / 2 - 0.5, ["up", "sib", "down"])
+        ax.set_yticks(edges - np.bincount(LINKS) / 2 - 0.5, ["up", "sib", "down"] if ylabels else [])
+
+    _names = ["predicted"] + STATIC
+    _fig, _axes = plt.subplots(2, len(_names), figsize=(2.9 * len(_names), 6.2), gridspec_kw=dict(hspace=0.15))
+    for _j, _m in enumerate(_names):
+        link_directions(_axes[0, _j], family[_m]); _axes[0, _j].set_title(_m)
+        link_gram(_axes[1, _j], family[_m], ylabels=_j == 0)
+    _axes[0, 0].set_ylabel("sibling axis"); _axes[0, 0].set_xlabel("generation axis")
+    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in LINK_COLORS], LINK_TYPES, loc="upper center", ncol=3,
+                frameon=False, bbox_to_anchor=(0.5, 1.02))
+    save_figure(_fig, figure_path(family_runs["linear"]["config"], "link_directions"))
+    return LINK_COLORS, LINK_TYPES, link_gram
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 2 — links along the generation axis
+    ## Figure 2 — one sequence parsed by the in-context transformer
 
-    Held-out links (odd edges) projected onto the axis from the mean down link to the mean up link of the even
-    edges (x) and the top principal direction of the even edges orthogonal to it (y); blue up, orange sibling,
-    green down, lengths in units of the mean link length.
+    Top: the transformer's representation at every mention in one test sequence (small points), on the top two
+    principal directions of that sequence's representations; labels at each person's mean, and the family links among
+    the people mentioned drawn between them, colored by type. Bottom: link cosines of its per-person codes (means over
+    all test sequences), as in Figure 1.
     """)
     return
 
 
 @app.cell
-def _(FIG, LINKS, PARENTS, edge_vectors, family, family_runs, figure_path, np, plt, save_figure):
-    _colors = [FIG.colors["blue"], FIG.colors["orange"], FIG.colors["green"]]
-    _fig, _axes = plt.subplots(1, len(family), figsize=(2.6 * len(family), 3.0))
-    for _ax, (_m, _E) in zip(_axes, family.items()):
-        _V = edge_vectors(_E, PARENTS)
-        _fit = np.arange(len(_V)) % 2 == 0
-        _x = _V[_fit & (LINKS == 0)].mean(0) - _V[_fit & (LINKS == 2)].mean(0); _x /= np.linalg.norm(_x)
-        _y = np.linalg.svd(_V[_fit] - np.outer(_V[_fit] @ _x, _x), full_matrices=False)[2][0]
-        _XY = np.c_[_V[~_fit] @ _x, _V[~_fit] @ _y] / np.linalg.norm(_V, axis=1).mean()
-        for (_a, _b), _l in zip(_XY, LINKS[~_fit]):
-            _ax.plot([0, _a], [0, _b], color=_colors[_l], lw=1.4, alpha=0.8)
-        _ax.set_xlim(-1.05, 1.05); _ax.set_ylim(-1.05, 1.05); _ax.set_aspect("equal")
-        _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_title(_m)
-    save_figure(_fig, figure_path(family_runs["linear"]["config"], "generation_axis"))
+def _(
+    IN_CONTEXT,
+    LINKS,
+    LINK_COLORS,
+    LINK_TYPES,
+    PARENTS,
+    PEOPLE,
+    family,
+    family_runs,
+    figure_path,
+    link_gram,
+    np,
+    plt,
+    save_figure,
+):
+    _run = family_runs[IN_CONTEXT]
+    _n = len(PARENTS)
+    _tok = np.asarray(_run["inputs"])
+    _R = _run["representation"]
+    _b = int(np.argmax([len(set(_s[_s < _n])) for _s in _tok]))              # the sequence mentioning the most people
+    _keep = _tok[_b] < _n
+    _X, _t = _R[_b][_keep], _tok[_b][_keep]
+    _Xc = _X - _X.mean(0)
+    _XY = _Xc @ np.linalg.svd(_Xc, full_matrices=False)[2][:2].T
+    _fig, (_ax, _axg) = plt.subplots(2, 1, figsize=(5.2, 9.4), gridspec_kw=dict(height_ratios=[1.35, 1], hspace=0.2))
+    _mean = {p: _XY[_t == p].mean(0) for p in set(_t.tolist())}
+    for _c, _p in enumerate(PARENTS):
+        if _p >= 0 and _c in _mean and _p in _mean:
+            _ax.plot(*zip(_mean[_p], _mean[_c]), color=LINK_COLORS[LINKS[_c - 1]], lw=2.2, zorder=1)
+    _ax.scatter(*_XY.T, s=8, color="0.6", alpha=0.5, zorder=2)
+    for _p, _xy in _mean.items():
+        _ax.scatter(*_xy, s=40, color="k", zorder=3)
+        _ax.annotate(PEOPLE[_p], _xy, textcoords="offset points", xytext=(4, 4), fontsize=9)
+    _ax.set_xticks([]); _ax.set_yticks([]); _ax.set_title(f"one sequence, {len(_t)} mentions", fontsize=12)
+    _ax.set_xlabel(" · ".join(PEOPLE[i] for i in _t[:10]) + " · …", fontsize=8)
+    link_gram(_axg, family[IN_CONTEXT])
+    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in LINK_COLORS], LINK_TYPES, loc="upper center", ncol=3,
+                frameon=False, bbox_to_anchor=(0.5, 0.97), fontsize=8)
+    save_figure(_fig, figure_path(_run["config"], "in_context_parse"))
     return
 
 
@@ -177,7 +268,15 @@ def _(mo):
 
 
 @app.cell
-def _(align_representations, cka, factor_logcond, load_run, np, predicted_inference_geometry, rsa):
+def _(
+    align_representations,
+    cka,
+    factor_logcond,
+    load_run,
+    np,
+    predicted_inference_geometry,
+    rsa,
+):
     scope_run = load_run(["runner=transformer", "setting=scopes", "training_kwargs.context_length=64",
                           "training_kwargs.optimizer=adamw_torch", "training_kwargs.train_steps=15000", "training_kwargs.batch_size=1024",
                           "training_kwargs.learning_rate=0.001", "model_kwargs.model_config.hidden_size=64",
