@@ -139,6 +139,21 @@ class ScopeDataset(Dataset):
         seq = self._pool[torch.randint(len(self._pool), (B,), generator=self.rng, device=self.device)]
         return {"input_ids": seq, "labels": seq.clone()}
 
+    def block_entries(self, input_ids, H):
+        """``(kind, name, depth, step)`` for every block opened in the streams: the code after the bound name
+        minus the code before the kind token. ``H`` (B, T, d) is aligned with ``optimal_predictions`` (position
+        t is the state after token t)."""
+        toks = np.asarray(input_ids.cpu() if hasattr(input_ids, "cpu") else input_ids)
+        out = []
+        for b in range(len(toks)):
+            depth = 0
+            for t in range(1, min(toks.shape[1] - 1, H.shape[1] - 1)):
+                tok = self.vocab[toks[b, t]]
+                if tok in self.kinds:
+                    out.append((tok, self.vocab[toks[b, t + 1]], depth, H[b, t + 1] - H[b, t - 1]))
+                depth += (tok in self.kinds) - (tok == "end" and depth > 0)
+        return out
+
     def optimal_predictions(self, input_ids):
         """Exact next-token distributions aligned with ``logits[:, :-1]``: (B, T) -> (B, T-1, V)."""
         st = self._init_state(len(input_ids))

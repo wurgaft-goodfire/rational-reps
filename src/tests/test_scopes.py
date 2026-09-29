@@ -29,18 +29,7 @@ def _code(ds, batch):
 
 
 def _entries(ds, batch, H):
-    """(kind, name, depth, code step) for every block opened in the batch: code after the bound name minus
-    code before the kind token."""
-    toks = batch["input_ids"].cpu().numpy()
-    out = []
-    for b in range(len(toks)):
-        depth = 0
-        for t in range(1, toks.shape[1] - 2):
-            tok = ds.vocab[toks[b, t]]
-            if tok in ds.kinds and t + 1 < H.shape[1]:
-                out.append((tok, ds.vocab[toks[b, t + 1]], depth, H[b, t + 1] - H[b, t - 1]))
-            depth += (tok in ds.kinds) - (tok == "end" and depth > 0)
-    return out
+    return ds.block_entries(batch["input_ids"], H)
 
 
 def test_rows_are_distributions_over_the_program_tokens():
