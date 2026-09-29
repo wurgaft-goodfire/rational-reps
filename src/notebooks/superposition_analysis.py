@@ -16,18 +16,17 @@ def _(mo):
     mo.md(r"""
     # Feature geometry of a rank-limited softmax
 
-    Trained networks (blue), the additive and additive-plus-pairs reference models (green,
-    purple), and the theory of `notes/superposition.tex` (black dashed): water filling →
-    pressure-driven orientation on the Fantope → completion by decoder and pairs at the
-    predicted frame, stored as a run of its own (`runner=theory`, representation
-    $z E^\star + \phi(z) E_2 + e_0$ and readout $D$). Every model is read from its saved
-    representation $h(z)$ and readout $D$ and measured by the first-order vectors $E_i$ of the
-    least-squares fit $h(z) \approx \bar h + \sum_i E_i z_i$; correlated cells use the predictive
-    modes $z\,C^{-1/2}$. Leverage, the spectrum and the leverage projector are gauge-invariant;
-    the Grams are in each model's own gauge (the loss is flat along $E \to EA$, $D \to DA^{-\top}$,
-    and AdamW does not balance the two). Five runs per cell, task and training seeds coupled.
-    Each figure has its own setting selectors; results and open items in
-    `notes/superposition_results.md`.
+    Two parts. **Part I** checks the closed forms of `notes/superposition_new.tex` on the signed
+    feature cube: features $z_i \in \{-1, 0, 1\}$, one yes/no token pair per feature, logits
+    $\pm\alpha_i z_i$, one softmax over the $2m$ tokens. Each case is a trained linear network
+    (three seeds) beside the note's closed form (the rank-$d$ optimum of the same objective, exponential-family PCA,
+    `runner=optimum`, is left to an appendix). These small networks are trained by gradient descent from small
+    init, which keeps $E^\top E - D^\top D$ conserved, so their saved representation and readout are balanced and
+    are drawn as saved, in one frame. **Part II** is the Bernoulli feature cube of the sweep: the trained linear network beside the optimum,
+    read from the first-order vectors $E_i$ of the least-squares fit
+    $h(z) \approx \bar h + \sum_i E_i \tilde z_i$ on the standardized features
+    $\tilde z_i = (z_i - \bar z_i)/\mathrm{std}(z_i)$; correlated cells standardize the predictive
+    modes $z\,C^{-1/2}$. Five runs per cell, task and training seeds coupled.
     """)
     return
 
@@ -42,7 +41,8 @@ def _(mo):
     from hydra.core.override_parser.overrides_parser import OverridesParser
     from omegaconf import OmegaConf
     from src.code.analysis_utils import feature_vectors, has_run, leverage, load_run, rigid_map
-    from src.code.geometry import factor_logcond, modes, pair_features
+    from src.code.cases import SEEDS as CASE_SEEDS, case_overrides
+    from src.code.geometry import excess_ce, factor_logcond, modes
     from src.code.train import resolve_config
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -65,21 +65,20 @@ def _(mo):
 
     CONFIG = resolve_config(cell_overrides("linear", "0.3", "0.5", "0.0", D_GRID[0], SEEDS[0]))   # the figure cache lives under the reference cell
     COL = plot_utils.FIG.colors
-    RUNNERS = {"linear": ("trained", COL["blue"]), "paired_features": ("pairs model", COL["purple"]),
-               "additive_features": ("additive model", COL["green"])}
-    CLASSES = list(RUNNERS) + ["theory"]                 # every model class a cell can hold
+    CLASSES = ["linear", "paired_features", "additive_features", "optimum"]   # every model class a cell can hold
     return (
         B_KEY,
+        CASE_SEEDS,
         CLASSES,
         COL,
         CONFIG,
         D_GRID,
         GRID,
-        P_KEY,
-        RUNNERS,
         R_KEY,
         SEEDS,
+        case_overrides,
         cell_overrides,
+        excess_ce,
         factor_logcond,
         feature_vectors,
         has_run,
@@ -87,7 +86,6 @@ def _(mo):
         load_run,
         modes,
         np,
-        pair_features,
         plot_utils,
         plt,
         rigid_map,
@@ -99,10 +97,10 @@ def _(
     CLASSES,
     SEEDS,
     cell_overrides,
-    factor_logcond,
     feature_vectors,
     has_run,
     load_run,
+    mo,
     modes,
     np,
     rigid_map,
@@ -112,7 +110,7 @@ def _(
 
     def sweep_rows(p, b, r, d, classes):
         """One cell, per seed: the cell's coordinates X (features, or predictive modes), the
-        ladder alpha, and for every model class present (the theory included) its saved
+        raw features Z (the target's coordinates), ladder alpha, and for every model class present (the optimum included) its saved
         representation and readout ('model') and the first-order vectors E_i of the least-squares
         fit h(z) ~ h_bar + sum_i E_i x_i ('E')."""
         _rows = []
@@ -121,11 +119,11 @@ def _(
             _ds = _runs["linear"]["dataset"]
             _, _X = modes(_ds.info["alpha"], _ds.features, float(r))
             _model = {_c: (_runs[_c]["representation"], _runs[_c]["readout"]) for _c in classes}
-            _rows.append(dict(X=_X, alpha=_ds.info["alpha"], model=_model,
+            _rows.append(dict(X=_X, Z=np.asarray(_ds.features, float), alpha=_ds.info["alpha"], model=_model,
                               E={_c: feature_vectors(_H, _X)[0] for _c, (_H, _D) in _model.items()}))
         return _rows
 
-    HEAD = 3                                          # figure 4: the first three features by alpha are the head ...
+    HEAD = 3                                          # the first three features by alpha are the head ...
     CUT = 0.2                                         # ... the rest with leverage >= 1/5 are the superposed band; below is not drawn
 
     def whiten(V):
@@ -138,269 +136,256 @@ def _(
         Procrustes over all rows), average. Seed-specific wobble cancels; what every seed agrees on stays."""
         return np.mean([whiten(_M) @ rigid_map(whiten(_M), ref) for _M in mats], 0)
 
-    def projector(V):
-        """Whitened Gram of the rows of V: V (V'V)^+ V', the leverage projector. Gauge-free (V -> V A leaves
-        it fixed); its diagonal is the leverage, its entries the inner products of the whitened vectors."""
-        _V = np.asarray(V, float)
-        return _V @ np.linalg.pinv(_V.T @ _V) @ _V.T
-
-    def balanced_factors(H, D, d):
-        """A model's (code, readout) in the balanced gauge: `factor_logcond` of its logit table H D' (row-
-        centred, SVD scale split evenly) at rank d. The code is scaled per state, E'E / N = diag(sigma_k /
-        sqrt N) as in figure 4, so its sizes compare to alpha; the readout's rows are centred over outcomes
-        by construction. Returns (E (N, d), D (m, d)). The gauge GD from small init learns."""
-        _, _E, _D, _ = factor_logcond(np.asarray(H, float) @ np.asarray(D, float).T)
-        return len(H) ** 0.25 * _E[:, :d], _D[:d].T
 
     def load_cell(p, b, r, d):
         """One loaded cell, cached in SW: every model class whose seeds are all saved; None
-        until the trained linear network and the theory are."""
+        until the trained linear network and the optimum are."""
         if (p, b, r, d) not in SW:
             _have = [_c for _c in CLASSES if all(has_run(cell_overrides(_c, p, b, r, d, _s)) for _s in SEEDS)]
-            SW[(p, b, r, d)] = sweep_rows(p, b, r, d, _have) if {"linear", "theory"} <= set(_have) else None
+            SW[(p, b, r, d)] = sweep_rows(p, b, r, d, _have) if {"linear", "optimum"} <= set(_have) else None
         return SW[(p, b, r, d)]
 
-    return CUT, HEAD, aligned_mean, balanced_factors, load_cell, whiten
-
-
-@app.cell
-def _(B_KEY, D_GRID, GRID, P_KEY, R_KEY, load_cell, mo):
-    def setting_ui():
-        """Selectors for one figure: sparsity p, ladder slope beta, correlation rho."""
-        return mo.ui.dictionary({
-            "p": mo.ui.dropdown(options=GRID[P_KEY], value="0.3", label="sparsity p"),
-            "beta": mo.ui.dropdown(options=GRID[B_KEY], value="0.5", label="ladder slope β"),
-            "rho": mo.ui.dropdown(options=GRID[R_KEY], value="0.0", label="correlation ρ"),
-        })
-
-    def rows_for(sel):
-        """The sweep rows of a selected setting: dict(rows {d: rows} or None, title, p, b, rho,
-        model classes present in every d)."""
-        _p, _b, _r = sel["p"], sel["beta"], sel["rho"]
-        _rows = {_d: load_cell(_p, _b, _r, _d) for _d in D_GRID}
-        if any(_v is None for _v in _rows.values()):
-            _rows = None
-        _runs = set.intersection(*[set(_rows[_d][0]["model"]) - {"theory"} for _d in D_GRID]) if _rows else set()
-        return dict(rows=_rows, title=rf"$p$ = {_p}, $\beta$ = {_b}, $\rho$ = {_r}",
-                    p=float(_p), b=float(_b), rho=float(_r), runners=_runs)
-
     NOT_YET = mo.md("this setting is not trained yet")
-
-    def selector_row(sel):
-        return mo.hstack([sel["p"], sel["beta"], sel["rho"]], justify="start", gap=2)
-
-    return NOT_YET, rows_for, selector_row, setting_ui
+    return CUT, HEAD, NOT_YET, aligned_mean, load_cell, whiten
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 1 — allocation
-    Leverage $d_i$ of the first-order vectors (diagonal of the hat matrix $E (E^\top E)^{+} E^\top$,
-    gauge-invariant): per-seed trained dots, reference means $\pm$ se, and the predicted
-    allocation (water filling plus the soft tail).
+    ## Part I — the canonical cases
+
+    Signed features, one yes/no token pair each, the trained network beside the note's closed form. Cases from
+    `src/code/cases.py`; train them with `python -m src.code.train <overrides>` for every line of
+    `case_overrides` (linear and optimum runners, seeds 0–2).
     """)
     return
 
 
-@app.cell(hide_code=True)
-def _(setting_ui):
-    SEL_F1 = setting_ui()
-    return (SEL_F1,)
-
-
 @app.cell
 def _(
-    COL,
-    CONFIG,
-    D_GRID,
-    NOT_YET,
-    RUNNERS,
-    SEL_F1,
-    leverage,
-    mo,
+    CASE_SEEDS,
+    case_overrides,
+    excess_ce,
+    factor_logcond,
+    load_run,
     np,
-    plot_utils,
-    plt,
-    rows_for,
-    selector_row,
+    rigid_map,
 ):
-    _sel = rows_for(SEL_F1.value)
-    mo.stop(_sel["rows"] is None, NOT_YET)
-    _lev = lambda _row, _c: leverage(_row["E"][_c])[0][:24]
-    _fig, _axes = plt.subplots(1, 3, figsize=(15, 4.2), sharey=True)
-    for _ax, _d in zip(_axes, D_GRID):
-        _x = np.arange(24)
-        for _row in _sel["rows"][_d]:
-            _ax.plot(_x, _lev(_row, "linear"), "o", ms=4, alpha=0.45, color=COL["blue"], label="trained" if _row is _sel["rows"][_d][0] else None)
-        for _run, (_lbl, _col) in RUNNERS.items():
-            if _run not in _sel["runners"]:
-                continue
-            _rm = np.array([_lev(_row, _run) for _row in _sel["rows"][_d]])
-            _mu, _se = _rm.mean(0), _rm.std(0) / np.sqrt(len(_rm))
-            if _run != "linear":
-                _ax.plot(_x, _mu, "-", lw=1.8, color=_col, label=_lbl)
-                _ax.fill_between(_x, _mu - _se, _mu + _se, color=_col, alpha=0.25, lw=0)
-        _pr = np.array([_lev(_row, "theory") for _row in _sel["rows"][_d]])
-        _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
-        _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
-        _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
-        _ax.set_title(f"d = {_d}")
-        _ax.set_xlabel("feature $i$" if _sel["rho"] == 0.0 else "mode $k$")
-        plot_utils.FIG.style_axes(_ax)
-    _axes[0].set_ylabel(r"leverage $d_i$")
-    _axes[0].legend(frameon=False, fontsize=9)
-    _fig.suptitle(_sel["title"], y=1.02)
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig1_allocation"))
-    mo.vstack([selector_row(SEL_F1), _out])
-    return
+    def case_runs(name, d):
+        """One canonical case at rank d: the task (raw features Z, the ladder alpha, the log target L,
+        and the patterns and mixing A when mixed) and, per model class, the saved representation E (n, d)
+        and readout D (2m, d) of every seed in the run's own gauge, each rotated onto seed 0's E by orthogonal
+        Procrustes; 'svd' is the rank-d SVD truncation of the target table, the weak-logit closed form."""
+        _runs = {_c: [load_run(case_overrides(name, _c, d, _s)) for _s in CASE_SEEDS] for _c in ("linear", "optimum")}
+        _ds = _runs["linear"][0]["dataset"]
+        _task = dict(Z=np.asarray(_ds.features, float), alpha=np.asarray(_ds.info["alpha"], float),
+                     L=np.log(_ds.P.cpu().numpy().astype(float)), patterns=_ds.info.get("patterns"), A=_ds.info.get("A"))
+        _P = np.exp(_task["L"])
+        _task["excess_ce"] = {_c: [excess_ce(_r["representation"] @ _r["readout"].T, _task["L"], _P) for _r in _rs] for _c, _rs in _runs.items()}
+        _ref = _runs["linear"][0]["representation"]                                        # every frame rotated onto seed 0's
+        _vectors = {}
+        for _c, _rs in _runs.items():
+            _vectors[_c] = []
+            for _r in _rs:
+                _E, _D = _r["representation"], _r["readout"]
+                _R = rigid_map(_E, _ref)
+                _vectors[_c].append((_E @ _R, _D @ _R))
+        # the weak-logit closed form: the rank-d SVD truncation of the target table, scale split evenly
+        _, _Et, _Dt, _ = factor_logcond(_task["L"])
+        _Et, _Dt = _Et[:, :d], _Dt[:d].T
+        _R = rigid_map(_Et, _ref)
+        _vectors["svd"] = [(_Et @ _R, _Dt @ _R)]
+        return _task, _vectors
+
+
+    def nearest_token_cosine(D):
+        """The largest cosine between two distinct token directions of a decoder D (2m, d): the
+        angular gap of the closest pair. A regular 2m-gon gives cos(pi / m)."""
+        _n = np.linalg.norm(D, axis=1)
+        _C = D @ D.T / np.outer(_n, _n)
+        np.fill_diagonal(_C, -1.0)
+        return _C.max()
+
+    return case_runs, nearest_token_cosine
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 2 — feature sizes
-    $\|E_i\|^2$ of the first-order vectors, every model (theory included) in the balanced gauge of its
-    per-state logit table: row-centred $h(z)D^\top$, SVD scale split evenly at rank $d$, $E^\top E/N =
-    \mathrm{diag}(\sigma_k/\sqrt N)$. The gauge GD from small init learns; the head's excess over
-    $\alpha_i$ is the amplification of the notes, a property of this gauge (the map's diagonal is
-    $\bar\alpha$ exactly).
+    ## Figure 1 — weak logits: from cube to rectangle
+    Three signed attributes at weak strength, strongest first: royal (+royal, −commoner), female (+female,
+    −male), adult (+adult, −child), 0 unstated; all 27 states, the eight corners the words king, queen,
+    prince, princess, man, woman, boy, girl. Columns: the trained network and the weak-logit closed form, the
+    rank-$d$ SVD truncation of the target table. At $d = 3$ the representation is the box of the three
+    attributes; at $d = 2$ the weak-logit solution is the SVD truncation, which keeps the two strongest and
+    drops adult: king lands on prince, queen on princess, man on boy, woman on girl. The outline joins the eight corners; the three edges at the front
+    corner are coloured and named by the attribute they change; at $d = 2$ the two adult tokens' readouts are
+    drawn from the origin, where they have collapsed.
     """)
     return
 
 
-@app.cell(hide_code=True)
-def _(setting_ui):
-    SEL_F2 = setting_ui()
-    return (SEL_F2,)
-
-
 @app.cell
-def _(
-    CONFIG,
-    D_GRID,
-    NOT_YET,
-    RUNNERS,
-    SEL_F2,
-    balanced_factors,
-    feature_vectors,
-    mo,
-    np,
-    plot_utils,
-    plt,
-    rows_for,
-    selector_row,
-):
-    _sel = rows_for(SEL_F2.value)
-    mo.stop(_sel["rows"] is None, NOT_YET)
-    _fig, _axes = plt.subplots(1, 3, figsize=(15, 4.2), sharey=True)
-    for _ax, _d in zip(_axes, D_GRID):
-        _sizes = lambda _row, _c: (feature_vectors(balanced_factors(*_row["model"][_c], int(_d))[0], _row["X"])[0] ** 2).sum(1)[:24]
-        _x = np.arange(24)
-        for _run, (_lbl, _col) in RUNNERS.items():
-            if _run not in _sel["runners"]:
-                continue
-            _rm = np.array([_sizes(_row, _run) for _row in _sel["rows"][_d]])
-            _mu, _se = _rm.mean(0), _rm.std(0) / np.sqrt(len(_rm))
-            _ax.plot(_x, _mu, "o-" if _run == "linear" else "-", ms=4, lw=1.2 if _run == "linear" else 1.8, color=_col, label=_lbl)
-            _ax.fill_between(_x, _mu - _se, _mu + _se, color=_col, alpha=0.25, lw=0)
-        _pr = np.array([_sizes(_row, "theory") for _row in _sel["rows"][_d]])
-        _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
-        _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
-        _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
-        _ax.set_title(f"d = {_d}")
-        _ax.set_xlabel("feature $i$" if _sel["rho"] == 0.0 else "mode $k$")
-        plot_utils.FIG.style_axes(_ax)
-    _axes[0].set_ylabel(r"$\|E_i\|^2$")
-    _axes[0].legend(frameon=False, fontsize=9)
-    _fig.suptitle(_sel["title"], y=1.02)
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig2_sizes"))
-    mo.vstack([selector_row(SEL_F2), _out])
+def _(COL, CONFIG, case_runs, np, plot_utils, plt):
+    _task3, _v3 = case_runs("weak", 3)
+    _task2, _v2 = case_runs("weak", 2)
+    _Z = _task3["Z"]
+    _ATTR = [("Royal", COL["blue"]), ("Female", COL["orange"]), ("Adult", COL["green"])]     # strongest first
+    _WORDS = {(1, -1, 1): "king", (1, 1, 1): "queen", (1, -1, -1): "prince", (1, 1, -1): "princess",
+              (-1, -1, 1): "man", (-1, 1, 1): "woman", (-1, -1, -1): "boy", (-1, 1, -1): "girl"}
+    _corners = np.flatnonzero((np.abs(_Z) == 1).all(1))
+    _outline = [(_a, _b, int(np.flatnonzero(_Z[_a] != _Z[_b])[0])) for _a in _corners for _b in _corners
+                if _a < _b and np.abs(_Z[_a] - _Z[_b]).sum() == 2]                        # the cube's 12 edges, by attribute
+    _face = np.flatnonzero((np.abs(_Z[:, :2]) == 1).all(1) & (_Z[:, 2] == 0))
+    _rect = [(_a, _b, int(np.flatnonzero(_Z[_a] != _Z[_b])[0])) for _a in _face for _b in _face
+             if _a < _b and np.abs(_Z[_a] - _Z[_b]).sum() == 2]                           # the rectangle's 4 edges
+
+    from mpl_toolkits.mplot3d.proj3d import proj_transform as _proj_transform
+    _fig = plt.figure(figsize=(13, 12), layout="constrained")
+    for _col, (_lbl, _c) in enumerate([("trained", "linear"), ("theory: SVD truncation", "svd")]):
+        _E3, _D3 = _v3[_c][0]
+        _E2, _D2 = _v2[_c][0]
+        # d = 3: the box, white frame
+        _ax = _fig.add_subplot(2, 2, _col + 1, projection="3d")
+        _elev, _azim = 16, -49                                                                  # nearly face-on: front square, back square behind
+        _view = np.array([np.cos(np.radians(_elev)) * np.cos(np.radians(_azim)), np.cos(np.radians(_elev)) * np.sin(np.radians(_azim)), np.sin(np.radians(_elev))])
+        _depth = _E3 @ _view                                                                  # toward the viewer
+        _span = _depth.max() - _depth.min()
+        _labels = []                                                                          # (position, text, colour, size), placed once the view is set
+        _near = lambda _p: (_depth.max() - _p @ _view) / _span                                 # 1 at the viewer's side, 0 at the back
+        _front = _corners[np.argmax([_near(_E3[_c]) for _c in _corners])]                       # the corner nearest the viewer
+        _centre = _E3.mean(0)
+        for _a, _b, _k in _outline:
+            _f = _near((_E3[_a] + _E3[_b]) / 2)
+            if _front in (_a, _b):
+                _ax.plot(*zip(_E3[_a], _E3[_b]), color=_ATTR[_k][1], lw=2.6)
+                _far = _b if _a == _front else _a
+                _labels.append(("edge", (_E3[_front], _E3[_far]), _ATTR[_k][0], _ATTR[_k][1], 11))
+            else:
+                _ax.plot(*zip(_E3[_a], _E3[_b]), color=str(0.75 - 0.6 * _f), lw=0.6 + 0.7 * _f)     # back edges lighter and thinner
+        for _n, _z in enumerate(_Z):
+            _is_corner = (np.abs(_z) == 1).all()
+            _on_edge = (np.abs(_z) == 1).sum() == 2
+            _f = _near(_E3[_n])
+            _ax.scatter(*_E3[_n], color="0.25" if _is_corner else "0.72" if _on_edge else "0.86", s=48 if _is_corner else 14 if _on_edge else 9, depthshade=False, zorder=3)
+            if _is_corner:
+                _labels.append(("vertex", _E3[_n], _WORDS[tuple(int(_x) for _x in _z)], "0.15", 10))
+        _lim = 1.2 * np.abs(_E3).max()
+        _ax.set_xlim(-_lim, _lim); _ax.set_ylim(-_lim, _lim); _ax.set_zlim(-_lim, _lim)
+        _ax.set_proj_type("ortho"); _ax.view_init(elev=_elev, azim=_azim); _ax.set_box_aspect((1, 1, 1), zoom=1.25)
+        _M = _ax.get_proj()
+        _P2 = lambda _p: np.array(_proj_transform(*_p, _M)[:2])                                  # a 3-D point in the axes' projected plane
+        _c2 = _P2(_centre)
+        for _kind, _where, _txt, _colr, _fs in _labels:                                        # anchors in projected coordinates, offsets in points
+            if _kind == "vertex":
+                _xy = _P2(_where)
+                _dir = _xy - _c2
+            else:
+                _p0, _p1 = _P2(_where[0]), _P2(_where[1])
+                _xy = _p0 + 0.45 * (_p1 - _p0)
+                _dir = np.array([-(_p1 - _p0)[1], (_p1 - _p0)[0]])                              # perpendicular to the edge ...
+                _dir *= np.sign(_dir @ (_xy - _c2)) or 1.0                                        # ... on the side away from the box
+            _dir = _dir / (np.linalg.norm(_dir) + 1e-12)
+            _ax.annotate(_txt, xy=_xy, xytext=12 * _dir, textcoords="offset points", color=_colr, fontsize=_fs,
+                         fontweight="medium" if _fs > 10 else None,
+                         ha="left" if _dir[0] > 0.3 else "right" if _dir[0] < -0.3 else "center",
+                         va="bottom" if _dir[1] > 0.3 else "top" if _dir[1] < -0.3 else "center",
+                         bbox=dict(boxstyle="round,pad=0.08", fc="white", ec="none", alpha=0.8))
+        _ax.set_axis_off()
+        _ax.set_title(f"d = 3 — {_lbl}", fontsize=13)
+        # d = 2: the rectangle, the three adult layers stacked
+        _ax = _fig.add_subplot(2, 2, _col + 3)
+        _front2 = _face[np.argmin(_E2[_face].sum(1))]                                         # the lower-left corner
+        _centre2 = _E2.mean(0)
+        for _a, _b, _k in _rect:
+            if _front2 in (_a, _b):
+                _ax.plot(*zip(_E2[_a], _E2[_b]), color=_ATTR[_k][1], lw=2.4, zorder=1)
+                _far = _b if _a == _front2 else _a
+                _at = _E2[_front2] + 0.3 * (_E2[_far] - _E2[_front2])
+                _side = _at - _centre2
+                _ax.annotate(_ATTR[_k][0], _at + 0.04 * np.abs(_E2).max() * np.sign(_side) * (np.abs(_side) > 1e-9), fontsize=12, color=_ATTR[_k][1], fontweight="medium",
+                             ha="left" if _side[0] > 1e-9 else "right" if _side[0] < -1e-9 else "center",
+                             va="bottom" if _side[1] > 1e-9 else "top" if _side[1] < -1e-9 else "center")
+            else:
+                _ax.plot(*zip(_E2[_a], _E2[_b]), color="0.2", lw=0.8, zorder=1)
+        _is_corner2 = (np.abs(_Z[:, :2]) == 1).all(1)
+        _ax.scatter(*_E2[~_is_corner2].T, color="0.72", s=18, zorder=3)
+        _ax.scatter(*_E2[_is_corner2].T, color="0.25", s=70, zorder=4)
+        for _k in (2, 5):                                                                     # the dropped attribute's two tokens, from the origin
+            _ax.annotate("", xy=_D2[_k], xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=1.8, color=COL["green"], shrinkA=0, shrinkB=0), zorder=5)
+        _ax.annotate("Adult", _D2[2] + 0.06 * np.abs(_E2).max() * np.array([1.0, 0.6]), ha="left", va="bottom", fontsize=12, color=COL["green"], fontweight="medium")
+        for _a, _b in [((1, -1), "king · prince"), ((1, 1), "queen · princess"), ((-1, -1), "man · boy"), ((-1, 1), "woman · girl")]:
+            _n = int(np.flatnonzero((_Z[:, 0] == _a[0]) & (_Z[:, 1] == _a[1]) & (_Z[:, 2] == 0))[0])
+            _ax.annotate(_b, _E2[_n] + 0.05 * np.abs(_E2).max() * np.sign(_E2[_n]), ha="left" if _E2[_n][0] > 0 else "right",
+                         va="bottom" if _E2[_n][1] > 0 else "top", fontsize=11, color="0.15")
+        _lim = 1.3 * np.abs(_E2).max()
+        _ax.set_xlim(-_lim, _lim); _ax.set_ylim(-_lim, _lim); _ax.set_aspect("equal")
+        plot_utils.FIG.clean(_ax)
+        _ax.set_title(f"d = 2 — {_lbl}", fontsize=13)
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig1_cube_to_rectangle"))
+    _out
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 3 — feature Grams
-    Gram of the shared frame: the first-order vectors whitened, $E(E^\top E)^{-1/2}$, every seed rotated
-    rigidly onto the first predicted frame, averaged, then $WW^\top$ over the top 16 features. Averaging the
-    frames before the Gram cancels seed-specific wobble, so this is the geometry every seed shares (the mean
-    of per-seed Grams would keep each seed's own overlaps). Gauge-free; the diagonal is the leverage of the
-    mean vectors.
+    ## Figure 2 — sharp singletons: the regular $2m$-gon
+    Eight features of equal strength $\alpha = 12$, one active at a time, $d = 2$. With one token to
+    win per state, the sharp limit is a point packing: the sixteen token directions spread evenly on the
+    circle, the closest pair at $\cos(\pi/8) = 0.924$, and which token sits at which vertex is free, since
+    the only thing that distinguishes a feature's other token from an unrelated one is a logit of $-\alpha$
+    among the losers. Left: one trained seed, each readout $D_{i\pm}$ an arrow from the origin, small dots the
+    state representations. Right: the packing.
     """)
     return
 
 
-@app.cell(hide_code=True)
-def _(setting_ui):
-    SEL_F3 = setting_ui()
-    return (SEL_F3,)
-
-
 @app.cell
-def _(
-    CONFIG,
-    D_GRID,
-    NOT_YET,
-    RUNNERS,
-    SEL_F3,
-    aligned_mean,
-    mo,
-    np,
-    plot_utils,
-    plt,
-    rows_for,
-    selector_row,
-    whiten,
-):
-    _sel = rows_for(SEL_F3.value)
-    mo.stop(_sel["rows"] is None, NOT_YET)
-    _K = 16
-    _gram = lambda _rows, _c, _ref: (lambda _W: _W @ _W.T)(aligned_mean([_row["E"][_c] for _row in _rows], _ref))[:_K, :_K]
-    _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
-    _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
-    _grid = {}
-    for _c, _d in enumerate(D_GRID):
-        _ref = whiten(_sel["rows"][_d][0]["E"]["theory"])                       # every frame is aligned to the first predicted one
-        _panels = [(_gram(_sel["rows"][_d], "linear", _ref), "trained (5-seed mean)"),
-                   (_gram(_sel["rows"][_d], "theory", _ref), "theory (5-draw mean)")]
-        _panels += [(_gram(_sel["rows"][_d], _run, _ref), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
-        _grid[_d] = _panels
-    _v = max(np.abs(_Gm - np.diag(np.diag(_Gm))).max() for _panels in _grid.values() for _Gm, _lbl in _panels)
-    for _c, (_d, _panels) in enumerate(_grid.items()):                                              # one scale for every panel, trained and theory: the
-        for _r, (_Gm, _lbl) in enumerate(_panels):                                 # largest off-diagonal entry; the diagonal saturates
-            _ax = _axes[_r, _c]
-            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-_v, vmax=_v)
-            _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
-            _ax.set_xticks([]); _ax.set_yticks([])
-    _fig.colorbar(_im, ax=_axes.ravel().tolist(), shrink=0.5, pad=0.02)
-    _fig.suptitle(_sel["title"])
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3_grams"))
-    mo.vstack([selector_row(SEL_F3), _out])
+def _(COL, CONFIG, case_runs, nearest_token_cosine, np, plot_utils, plt):
+    _task, _v = case_runs("sharp", 2)
+    _m = len(_task["alpha"])
+    _fig, _axes = plt.subplots(1, 2, figsize=(12, 6), layout="constrained")
+    _mu_all = np.mean([nearest_token_cosine(_D) for _, _D in _v["linear"]])                  # the 3-seed mean, for the title
+    _E0, _D0 = _v["linear"][0]                                                                 # one seed drawn: each seed is its own 16-gon with its own pairing
+    _r = np.linalg.norm(_D0, axis=1).mean()
+    _phi = np.arctan2(_D0[0, 1], _D0[0, 0])
+    _th = _phi + np.pi * np.arange(2 * _m) / _m
+    _poly = _r * np.c_[np.cos(_th), np.sin(_th)]
+    _v = dict(_v, theory=[(_poly, _poly)])                                                     # the point packing: 2m tokens on the regular 2m-gon, any pairing
+    for _ax, (_lbl, _c, _colr) in zip(_axes, [("trained (seed 0)", "linear", COL["blue"]), ("theory: 16 tokens packed on the circle", "theory", "0.45")]):
+        _ax.plot(*np.vstack([_poly, _poly[:1]]).T, color="0.85", lw=1.0, zorder=0)
+        _E, _D = _v[_c][0]
+        for _k in range(2 * _m):                                                               # each token's readout, from the origin
+            _ax.annotate("", xy=_D[_k], xytext=(0, 0), arrowprops=dict(arrowstyle="-|>", lw=1.4, color=_colr, shrinkA=0, shrinkB=0), zorder=2)
+        if _c == "linear":
+            _ax.scatter(*_E.T, color="0.3", s=9, zorder=4)
+            for _i in range(_m):
+                _ax.annotate(f"{_i + 1}+", _D[_i] * 1.16, ha="center", va="center", fontsize=10, color="0.35")
+                _ax.annotate(f"{_i + 1}−", _D[_m + _i] * 1.16, ha="center", va="center", fontsize=10, color="0.35")
+        _lim = 1.3 * _r
+        _ax.set_xlim(-_lim, _lim); _ax.set_ylim(-_lim, _lim); _ax.set_aspect("equal")
+        plot_utils.FIG.clean(_ax)
+        _ax.set_title(f"{_lbl}: closest tokens at cos {nearest_token_cosine(_D):.3f}" + (f" (3 seeds {_mu_all:.3f})" if _c == "linear" else ""), fontsize=12)
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig2_polygon"))
+    _out
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 4 — the frame, feature by feature
-    Whitened first-order vectors $E(E^\top E)^{-1/2}$ (squared length the leverage), in three dimensions:
-    the top three principal directions of the theory group's span (completed from the whole frame when
-    the group has fewer than three vectors). Predicted beside the trained linear network; the trained frame is
-    carried onto the predicted one by orthogonal Procrustes in the full $d$-dimensional space first, then
-    projected, as in the inference figures; every seed's frame is aligned to the first seed's predicted frame
-    before averaging.
-    Rows are three groups, each in its own frame so the later ones are not squashed against the head's
-    axes: the top three by leverage (Gram-Schmidt frame with the head along $z$) and the rest with
-    $d_i > 0.2$ (the features that share dimensions, in their own PCA frame). Features below are not drawn. Colour: $\alpha_i$ on a log scale.
+    ## Part II — the general case
+
+    The Bernoulli feature cube of the sweep: $m = 64$ features active with probability $p$ on the
+    ladder $\alpha_i = 8\,(i+1)^{-\beta}$, one token per feature, $d \in \{3, 6, 12\}$.
     """)
     return
 
 
 @app.cell
 def _(CUT, HEAD, np, plot_utils, plt):
-    # the frame drawing, shared by figures 4 and 7
+    # the frame drawing of figure 3
     from matplotlib.patches import FancyArrowPatch
     from mpl_toolkits.mplot3d.proj3d import proj_transform
 
@@ -454,220 +439,15 @@ def _(CUT, HEAD, np, plot_utils, plt):
     return ALPHA_CMAP, band, basis3, frame_panel
 
 
-@app.cell(hide_code=True)
-def _(setting_ui):
-    SEL_F4 = setting_ui()
-    return (SEL_F4,)
-
-
-@app.cell
-def _(
-    ALPHA_CMAP,
-    CONFIG,
-    CUT,
-    D_GRID,
-    HEAD,
-    NOT_YET,
-    SEL_F4,
-    aligned_mean,
-    band,
-    basis3,
-    frame_panel,
-    mo,
-    np,
-    plot_utils,
-    plt,
-    rows_for,
-    selector_row,
-    whiten,
-):
-    _sel = rows_for(SEL_F4.value)
-    mo.stop(_sel["rows"] is None, NOT_YET)
-
-    # two groups, each drawn in its own frame: the head (first HEAD features by alpha, a near-orthogonal
-    # tripod) and the superposed band (the rest with leverage >= 1/5: where the frame's overlaps live)
-    _GROUPS = [(f"Top {HEAD} $d_i$", lambda _lev: np.arange(HEAD), True),
-               (f"Rest with $d_i > {CUT}$", band, False)]
-
-    _alpha = np.asarray(_sel["rows"][D_GRID[0]][0]["alpha"], float)                # the ladder: colour by alpha_i
-    _norm = plt.matplotlib.colors.LogNorm(_alpha.min(), _alpha.max())               # the ladder is a power law: log spreads it
-    _fig = plt.figure(figsize=(15.5, 2.7 * len(_GROUPS)), layout="constrained")
-    *_sfs, _sf_bar = _fig.subfigures(1, 4, wspace=0.12, width_ratios=[1, 1, 1, 0.12])       # gaps between d, none within
-    for _c, (_d, _sf) in enumerate(zip(D_GRID, _sfs)):
-        _sf.suptitle(f"d = {_d}", fontsize=15)
-        _gs = _sf.add_gridspec(len(_GROUPS), 2, wspace=0, hspace=0, left=0, right=1, top=0.9, bottom=0)
-        _rows = _sel["rows"][_d]
-        _ref = whiten(_rows[0]["E"]["theory"])                                      # the frame every seed is aligned to
-        _Wp = aligned_mean([_row["E"]["theory"] for _row in _rows], _ref)
-        _Wt = aligned_mean([_row["E"]["linear"] for _row in _rows], _ref)
-        _lev = (_Wp ** 2).sum(1)
-        for _r, (_name, _pick, _tripod) in enumerate(_GROUPS):
-            _idx = _pick(_lev)
-            _B = basis3(_Wp[_idx], _Wp, _tripod) if len(_idx) else None
-            for _j, (_W, _lbl) in enumerate([(_Wp, "predicted"), (_Wt, "linear")]):
-                _ax = _sf.add_subplot(_gs[_r, _j], projection="3d")
-                _ax.set_title(_lbl, fontsize=11)
-                if _B is not None:
-                    frame_panel(_ax, _W, _idx, _B, _lbl, _alpha, _norm)
-                if _c == 0 and _j == 0:
-                    _ax.text2D(-0.12, 0.5, _name, transform=_ax.transAxes, rotation=90, va="center", ha="center", fontsize=12)
-    _fig.suptitle(_sel["title"])
-    _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.25, 0.25, 0.5]), label=r"$\alpha_i$")
-    _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_frame"))
-    mo.vstack([selector_row(SEL_F4), _out])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Figure 5 — features and pairs together
-    Gram of the shared frame of the regression vectors of the saved representation on $[1, z - \bar z, \phi(z)]$
-    (whitened, seeds aligned to the first predicted frame, averaged; gauge-free): the top 16 features
-    and the 15 pairs among the top 6, colour scale set by the pair blocks (the feature block
-    saturates).
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(setting_ui):
-    SEL_F6 = setting_ui()
-    return (SEL_F6,)
-
-
-@app.cell
-def _(
-    CONFIG,
-    D_GRID,
-    NOT_YET,
-    SEL_F6,
-    aligned_mean,
-    mo,
-    np,
-    pair_features,
-    plot_utils,
-    plt,
-    rows_for,
-    selector_row,
-    whiten,
-):
-    _sel = rows_for(SEL_F6.value)
-    mo.stop(_sel["rows"] is None, NOT_YET)
-    import itertools as _it
-    _K, _TOP = 16, 6
-    _pairs_all = list(_it.combinations(range(18), 2))
-    _pairsel = [_pairs_all.index(p) for p in _it.combinations(range(_TOP), 2)]   # 15 pairs among the top 6
-
-    def _ext_vectors(_H, _X):
-        """Regression vectors of the representation on [1, x, phi(x)], the intercept dropped: (64 + pairs, d)."""
-        _A = np.column_stack([np.ones(len(_X)), _X - _X.mean(0), pair_features(_X, 18)])
-        return np.linalg.lstsq(_A, _H, rcond=None)[0][1:]
-
-    def _ext_gram(_rows, _c, _ref):
-        """Gram of the shared frame of those vectors (whitened, aligned to _ref, averaged): top-K features
-        and the selected pairs."""
-        _W = aligned_mean([_ext_vectors(_row["model"][_c][0], _row["X"]) for _row in _rows], _ref)
-        _idx = np.r_[np.arange(_K), 64 + np.asarray(_pairsel)]
-        return (_W @ _W.T)[np.ix_(_idx, _idx)]
-
-    _has_pairs = "paired_features" in _sel["runners"]
-    _fig, _axes = plt.subplots(3 if _has_pairs else 2, 3, figsize=(13.2, 12.4 if _has_pairs else 8.4), squeeze=False, layout="constrained")
-    for _c, _d in enumerate(D_GRID):
-        _rows = _sel["rows"][_d]
-        _ref = whiten(_ext_vectors(_rows[0]["model"]["theory"][0], _rows[0]["X"]))
-        _panels = [(_ext_gram(_rows, "linear", _ref), "trained (5-seed mean)"), (_ext_gram(_rows, "theory", _ref), "theory (5-draw mean)")]
-        if _has_pairs:
-            _panels.append((_ext_gram(_rows, "paired_features", _ref), "pairs model (5-seed mean)"))
-        _v = max(np.abs(_Gm[_K:, :]).max() for _Gm, _lbl in _panels)   # scale to the pair blocks; the feature block saturates
-        for _r, (_Gm, _lbl) in enumerate(_panels):
-            _ax = _axes[_r, _c]
-            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-_v, vmax=_v)
-            _ax.axhline(_K - 0.5, color="0.3", lw=0.8); _ax.axvline(_K - 0.5, color="0.3", lw=0.8)
-            _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
-            _ax.set_xticks([]); _ax.set_yticks([])
-        _fig.colorbar(_im, ax=_axes[:, _c].tolist(), shrink=0.5, pad=0.02)        # one bar per column: its own pair scale
-    _fig.suptitle(_sel["title"])
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig5_extended_grams"))
-    mo.vstack([selector_row(SEL_F6), _out])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Figure 6 — readout Grams
-    Gram of the shared readout frame over outcomes: the balanced readout (`factor_logcond` of the logit
-    table at rank $d$; row-centring the logits removes the softmax shift, a common offset of every saved
-    readout row that would soak up leverage), whitened, every seed rotated onto the first predicted one,
-    averaged, then the Gram, top 16; gauge-free.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(setting_ui):
-    SEL_F5 = setting_ui()
-    return (SEL_F5,)
-
-
-@app.cell
-def _(
-    CONFIG,
-    D_GRID,
-    NOT_YET,
-    RUNNERS,
-    SEL_F5,
-    aligned_mean,
-    balanced_factors,
-    mo,
-    np,
-    plot_utils,
-    plt,
-    rows_for,
-    selector_row,
-    whiten,
-):
-    _sel = rows_for(SEL_F5.value)
-    mo.stop(_sel["rows"] is None, NOT_YET)
-    _K = 16
-    # the balanced readout from the logit table: row-centring the logits removes the softmax shift (one
-    # vector added to every saved readout row, 0.8 of a row's norm when trained) that would soak up leverage
-    _dec = lambda _row, _c, _d: balanced_factors(*_row["model"][_c], int(_d))[1]
-    _gram = lambda _rows, _c, _d, _ref: (lambda _W: _W @ _W.T)(aligned_mean([_dec(_row, _c, _d) for _row in _rows], _ref))[:_K, :_K]
-    _refs = [_run for _run in ("paired_features", "additive_features") if _run in _sel["runners"]]
-    _fig, _axes = plt.subplots(2 + len(_refs), 3, figsize=(13.2, 4.1 * (2 + len(_refs))), squeeze=False, layout="constrained")
-    _grid = {}
-    for _c, _d in enumerate(D_GRID):
-        _ref = whiten(_dec(_sel["rows"][_d][0], "theory", _d))
-        _panels = [(_gram(_sel["rows"][_d], "linear", _d, _ref), "trained (5-seed mean)"),
-                   (_gram(_sel["rows"][_d], "theory", _d, _ref), "theory (5-draw mean)")]
-        _panels += [(_gram(_sel["rows"][_d], _run, _d, _ref), f"{RUNNERS[_run][0]} (5-seed mean)") for _run in _refs]
-        _grid[_d] = _panels
-    _v = max(np.abs(_Gm - np.diag(np.diag(_Gm))).max() for _panels in _grid.values() for _Gm, _lbl in _panels)
-    for _c, (_d, _panels) in enumerate(_grid.items()):                                              # one scale for every panel, trained and theory: the
-        for _r, (_Gm, _lbl) in enumerate(_panels):                                 # largest off-diagonal entry; the diagonal saturates
-            _ax = _axes[_r, _c]
-            _im = _ax.imshow(_Gm, cmap="vlag", vmin=-_v, vmax=_v)
-            _ax.set_title(f"d = {_d} — {_lbl}", fontsize=11)
-            _ax.set_xticks([]); _ax.set_yticks([])
-    _fig.colorbar(_im, ax=_axes.ravel().tolist(), shrink=0.5, pad=0.02)
-    _fig.suptitle(_sel["title"])
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig6_decoder_grams"))
-    mo.vstack([selector_row(SEL_F5), _out])
-    return
-
-
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Figure 7 — the sparsity sweep
+    ## Figure 3 — the sparsity sweep
     Sparsity $p$ falls left to right; each mega-row is one $d$, largest first. Per cell, a predicted block and a trained
-    block: the superposed band ($d_i > 0.2$, the second row of figure 4) in its PCA frame (the head in its tripod frame joins
-    when the band has fewer than three vectors), the Gram of the shared frame
-    (top 16 features, one colour scale over every panel, set by the largest off-diagonal entry), and the
-    leverage $d_i$ of the first $3d$ features (seed mean).
+    block: the whitened first-order vectors $E(E^\top E)^{-1/2}$ (squared length the leverage $d_i$) of the superposed band
+    (the features past the top three with $d_i > 0.2$) in its PCA frame, coloured by $\alpha_i$ (the top three join when the band has
+    fewer than three vectors); the Gram of the shared frame (top 16 features, one colour scale over every panel, set by the
+    largest off-diagonal entry); and the leverage $d_i$ of the first $3d$ features (seed mean).
     """)
     return
 
@@ -707,9 +487,9 @@ def _(
     _cells = {(_d, _p): load_cell(_p, _b, _r, _d) for _d in D_GRID for _p in P_SWEEP}
     mo.stop(any(_rows is None for _rows in _cells.values()), NOT_YET)
     _K = 16
-    _SIDES = [("theory", "predicted"), ("linear", "trained")]
+    _SIDES = [("optimum", "predicted"), ("linear", "trained")]
 
-    _frames = {_key: {_c: aligned_mean([_row["E"][_c] for _row in _rows], whiten(_rows[0]["E"]["theory"])) for _c, _ in _SIDES}
+    _frames = {_key: {_c: aligned_mean([_row["E"][_c] for _row in _rows], whiten(_rows[0]["E"]["optimum"])) for _c, _ in _SIDES}
                for _key, _rows in _cells.items()}
     _grams = {(*_key, _c): _W[:_K] @ _W[:_K].T for _key, _fr in _frames.items() for _c, _W in _fr.items()}
     _v = max(np.abs(_Gm - np.diag(np.diag(_Gm))).max() for _Gm in _grams.values())      # one scale: the largest off-diagonal entry
@@ -727,7 +507,7 @@ def _(
             if _row == 0:
                 _sf.suptitle(f"$p$ = {_p}", fontsize=26)
             _gs = _sf.add_gridspec(3, 2, wspace=0.0, hspace=0.0, height_ratios=[0.8, 0.95, 0.85], left=0, right=1, top=0.94, bottom=0)
-            _Wp = _frames[_d, _p]["theory"]
+            _Wp = _frames[_d, _p]["optimum"]
             _lev = (_Wp ** 2).sum(1)
             _whole = len(band(_lev)) < 3                                                     # a band too small for its own frame: draw the head with it
             _idx = np.flatnonzero(_lev > CUT) if _whole else band(_lev)
@@ -751,86 +531,8 @@ def _(
     _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.52, 0.25, 0.09]), label=r"$\alpha_i$")
     _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
     _fig.colorbar(_im, cax=_sf_bar.add_axes([0.15, 0.41, 0.25, 0.09]))
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig7_sparsity"))
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3_sparsity"))
     mo.vstack([mo.hstack([SEL_F7["beta"], SEL_F7["rho"]], justify="start", gap=2), _out])
-    return
-
-
-@app.cell
-def _(mo):
-    mo.md(r"""
-    ## Figure 8 — allocation across the sweep
-    Figure 1 over the same grid as figure 7: leverage $d_i$ of the first $3d$ features, a mega-row per $d$
-    (largest first), sparsity $p$ falling left to right. Per-seed trained dots, reference means $\pm$ se, the
-    predicted allocation dashed.
-    """)
-    return
-
-
-@app.cell
-def _(B_KEY, GRID, R_KEY, mo):
-    SEL_F8 = mo.ui.dictionary({
-        "beta": mo.ui.dropdown(options=GRID[B_KEY], value="0.5", label="ladder slope β"),
-        "rho": mo.ui.dropdown(options=GRID[R_KEY], value="0.0", label="correlation ρ"),
-    })
-    return (SEL_F8,)
-
-
-@app.cell
-def _(
-    COL,
-    CONFIG,
-    D_GRID,
-    NOT_YET,
-    P_SWEEP,
-    RUNNERS,
-    SEL_F8,
-    leverage,
-    load_cell,
-    mo,
-    np,
-    plot_utils,
-    plt,
-):
-    _b, _r = SEL_F8.value["beta"], SEL_F8.value["rho"]
-    _cells = {(_d, _p): load_cell(_p, _b, _r, _d) for _d in D_GRID for _p in P_SWEEP}
-    mo.stop(any(_rows is None for _rows in _cells.values()), NOT_YET)
-    _runs = set.intersection(*[set(_rows[0]["model"]) - {"theory"} for _rows in _cells.values()])   # classes present everywhere
-    _lev = lambda _row, _c, _n: leverage(_row["E"][_c])[0][:_n]
-
-    _fig = plt.figure(figsize=(15.5, 4.2 * len(D_GRID)), layout="constrained")
-    for _row, (_d, _sf_row) in enumerate(zip(D_GRID[::-1], _fig.subfigures(len(D_GRID), 1, hspace=0.06))):   # a mega-row per d, largest first
-        _n = 3 * int(_d)                                                                     # the first 3d features, past every tail
-        _sf_d, _sf_blocks = _sf_row.subfigures(1, 2, wspace=0.0, width_ratios=[0.045, 1])
-        _sf_d.text(0.35, 0.5, f"$d$ = {_d}", rotation=90, va="center", ha="center", fontsize=26)
-        _axes = _sf_blocks.subplots(1, 3, sharey=True)
-        for _col, (_p, _ax) in enumerate(zip(P_SWEEP, _axes)):
-            _rows = _cells[_d, _p]
-            _x = np.arange(_n)
-            for _seed in _rows:
-                _ax.plot(_x, _lev(_seed, "linear", _n), "o", ms=4, alpha=0.45, color=COL["blue"], label="trained" if _seed is _rows[0] else None)
-            for _run, (_lbl, _colr) in RUNNERS.items():
-                if _run == "linear" or _run not in _runs:
-                    continue
-                _rm = np.array([_lev(_seed, _run, _n) for _seed in _rows])
-                _mu, _se = _rm.mean(0), _rm.std(0) / np.sqrt(len(_rm))
-                _ax.plot(_x, _mu, "-", lw=1.8, color=_colr, label=_lbl)
-                _ax.fill_between(_x, _mu - _se, _mu + _se, color=_colr, alpha=0.25, lw=0)
-            _pr = np.array([_lev(_seed, "theory", _n) for _seed in _rows])
-            _m, _s = _pr.mean(0), _pr.std(0) / np.sqrt(len(_pr))
-            _ax.plot(_x, _m, "--", lw=2.0, color="black", label="theory")
-            _ax.fill_between(_x, _m - _s, _m + _s, color="0.3", alpha=0.18, lw=0)
-            if _row == 0:
-                _ax.set_title(f"$p$ = {_p}", fontsize=26, pad=14)
-            _ax.set_xlabel("feature $i$" if float(_r) == 0.0 else "mode $k$")
-            _ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
-            plot_utils.FIG.style_axes(_ax)
-        _axes[0].set_ylabel(r"leverage $d_i$")
-        if _row == 0:
-            _axes[0].legend(frameon=False, fontsize=10)
-    _fig.suptitle(rf"$\beta$ = {_b}, $\rho$ = {_r}")
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig8_allocation_sweep"))
-    mo.vstack([mo.hstack([SEL_F8["beta"], SEL_F8["rho"]], justify="start", gap=2), _out])
     return
 
 

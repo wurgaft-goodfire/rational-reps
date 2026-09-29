@@ -1,0 +1,381 @@
+\paragraph{Setup.}
+We begin with a classic LRH setting: words are defined by features
+$z=(z_1,\ldots,z_m)$; for example, \emph{royal} and \emph{female}
+are features active for the word \emph{queen}. We allow signed
+features, $z_i\in\{-1,0,1\}$, with zero denoting absence. The network
+receives a word $z$ as input and predicts an associated signed
+feature value, $\hat p(i^\pm\mid z)$.
+
+The input distribution $p(z)$ determines which features co-occur
+and how often they are encountered. A state with $k=\|z\|_0$ active
+features is sparse when $k$ is small relative to $m$. For singleton
+states, we write
+\begin{equation}
+p(z=e_i)=p(z=-e_i)=\frac{\pi_i}{2},
+\qquad
+\sum_{i=1}^m\pi_i=1.
+\label{eq:frequency}
+\end{equation}
+We distinguish input frequency $\pi_i$ from predictive strength
+$\alpha_i$: frequency determines how often a prediction contributes
+to the loss, while strength determines how much an active feature
+changes the conditional output distribution.
+
+\subsection{Predicting resource-constrained representations.}
+
+With enough dimensions, a representation can reproduce the target
+logits. With fewer dimensions, it must discard directions or let
+features overlap. Related work studies the capacity of linear
+feature representations~\cite{garg} and their spectral
+geometry~\cite{spectral}. We study this tradeoff behind
+superposition~\cite{elhage} under the same softmax readout, first
+for one-dimensional features and then for conceptual spaces.
+
+Feature $i$ has outputs $i^+$ and $i^-$, with target and model logits
+\begin{equation}
+\ell^\star(i^\pm\mid z)=\pm\alpha_i z_i,
+\qquad
+\hat\ell(i^\pm\mid z)=E(z)^\top D_{i^\pm},
+\qquad
+E(z),D_{i^\pm}\in\R^d.
+\label{eq:model}
+\end{equation}
+One softmax over all $2m$ outputs gives the predictions. The encoder
+and decoder are untied; in particular, we do not require
+$D_{i^-}=-D_{i^+}$. For $d<m$, we fit
+\begin{equation}
+\min_{E,D}\ \E_z\,
+\CE[p_\star(\cdot\mid z),\hat p(\cdot\mid z)].
+\label{eq:objective}
+\end{equation}
+This is exponential-family PCA: low-rank logits are fitted by
+predictive loss rather than squared error~\cite{collins}.
+Truncating the target SVD need not solve it.
+
+We first consider weak and sharp predictions, then ask how
+unequal input frequencies affect the finite-strength solution.
+For the uniform sparsity comparison, we choose $k$ active
+coordinates uniformly, with independent fair signs.
+\begin{center}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+ & Weak logits & Strong logits\\
+\midrule
+Co-active & Reconstruct the logits & Preserve several outputs\\
+Singleton & Reconstruct the logits & Distinguish one alternative\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Weak logits: keep the strongest directions.}
+
+Take the dense case, $k=m$, and $\alpha_i=\varepsilon a_i$,
+with fixed $a_i>0$ and $\varepsilon\to0$. Predictions are near
+uniform, and cross-entropy becomes squared logit error to leading
+order. Write $L_0^\star=U\Sigma V^\top$ for the target-logit table
+divided by $\varepsilon$, with rows weighted by $\sqrt{P(z)}$.
+The limiting problem is
+\begin{equation}
+\boxed{
+\min_{\rank(\hat L_0)\le d}
+\|L_0^\star-\hat L_0\|_F^2
+\quad\Longrightarrow\quad
+\hat L_0=U_d\Sigma_dV_d^\top.
+}
+\label{eq:svd}
+\end{equation}
+The independent feature axes are already singular directions,
+with singular values $\sqrt2\,a_i$. If $a_1>\cdots>a_m$, the model
+keeps the strongest $d$ features and drops the rest:
+\begin{equation}
+\hat\ell(i^\pm\mid z)
+\approx
+\pm\alpha_i z_i\,\mathbf1\{i\le d\}.
+\label{eq:truncation}
+\end{equation}
+
+Does sparsity change this geometry? Under uniform $k$-active
+sampling, reducing $k$ rescales all singular values by the same
+factor $\sqrt{k/m}$, leaving the leading spectral allocation
+unchanged. Unequal singleton frequencies instead give singular
+values $\sqrt{2\pi_i}\,a_i$, so modes are ordered by
+$\pi_i a_i^2$. With a common strength $\alpha_i=\alpha$, the
+weak solution therefore retains the most frequent features.
+Equal mode strengths leave the retained subspace degenerate.
+Appendix~\ref{app:weak} derives these results.
+
+\subsection{Sharp predictions: preserve distinctions.}
+
+\subsubsection{Singleton predictions.}
+
+Now take $z\sim\Unif\{\pm e_i\}_{i=1}^m$ and equal strengths
+$\alpha\to\infty$, with $m$ fixed. One output dominates. Losing
+logits need not be reconstructed accurately if their probabilities
+remain negligible. In particular, the opposite value of the active
+feature no longer needs to be distinguished from other incorrect
+outputs at leading order.
+
+This connects the task to the categorical margin geometry studied
+in neural collapse~\cite{lu,jiang}. With encoder and decoder
+directions normalized, the large-scale one-hot objective gives
+the Softmax-code problem~\cite{jiang}:
+\begin{equation}
+\boxed{
+\max_{\{D_y:\,\|D_y\|=1\}}
+\ \min_y\
+\operatorname{dist}\!\left(
+D_y,\operatorname{conv}\{D_{y'}:y'\ne y\}
+\right).
+}
+\label{eq:packing}
+\end{equation}
+Here $y$ ranges over the $2m$ signed output labels. Each output
+must be separated from the convex hull of its competitors.
+In two dimensions, the solution is a regular polygon:
+\begin{equation}
+\theta_a=\frac{2\pi(a-1)}{2m},
+\qquad
+D_{y_a}=(\cos\theta_a,\sin\theta_a)^\top,
+\qquad a=1,\ldots,2m.
+\label{eq:circle}
+\end{equation}
+The signed labels may be assigned to these vertices without
+requiring the two values of a feature to be antipodal.
+
+This polygon also supplies a feasible solution to our
+rank-constrained predictive problem: scaling the corresponding
+vertex encodings proportionally to $\alpha$ drives predictive KL
+to zero (Appendix~\ref{app:code}). All $m$ features remain
+distinguishable in two dimensions, although the target logits
+have rank $m$. The regular spacing is the normalized max-margin
+solution; rank alone does not uniquely determine the angles.
+
+\subsubsection{Several active features.}
+
+When $k>1$ features are active, several outputs must survive
+together. Let
+\[
+S(z)=\{i^+:z_i=1\}\cup\{i^-:z_i=-1\}.
+\]
+For equal strengths and $|S(z)|=k$,
+\begin{equation}
+p_\star(y\mid z)
+\longrightarrow
+\frac1k\,\mathbf1\{y\in S(z)\}.
+\label{eq:sharp-support}
+\end{equation}
+A fixed decoder can represent this limit exactly when there is
+a direction $n_S$ satisfying
+\begin{equation}
+n_S^\top D_y=c_S \quad (y\in S),
+\qquad
+n_S^\top D_y<c_S \quad (y\notin S).
+\label{eq:face}
+\end{equation}
+Geometrically, the labels in $S$ must be exactly those lying on
+an exposed face of the decoder's convex hull~\cite{rauh}.
+Scaling $E(z)=\lambda n_{S(z)}$ then suppresses all other outputs.
+Singleton prediction requires selectable vertices; joint
+prediction requires selectable faces.
+
+There is a simple construction supporting every small
+conjunction. Assign distinct numbers $t_y$ to the $2m$ output
+labels and place their decoder vectors on the moment curve:
+\begin{equation}
+D_y=(t_y,t_y^2,\ldots,t_y^{2k})^\top.
+\label{eq:moment-decoder}
+\end{equation}
+Every subset of at most $k$ points forms a face of this cyclic
+polytope, the property called
+$k$-neighborliness~\cite{rauh,donoho-tanner}. To see the
+corresponding encoder, form
+\[
+q_S(t)=\prod_{y\in S}(t-t_y)^2.
+\]
+Its negative nonconstant coefficients give an encoding whose
+logit at $y$ is $c_0-q_S(t_y)$: all selected outputs tie, and
+all others lie below them.
+
+Thus, for fixed finite $m$, every nonempty signed support of size
+at most $k$ admits a sharp representation in $2k$ dimensions.
+Scaling these encodings proportionally to $\alpha$ makes
+predictive KL vanish; the empty state is represented by $E(0)=0$.
+The encoder can depend nonlinearly on the entire active set.
+An additive predictive task therefore need not have an additive
+compressed representation. Appendix~\ref{app:multi} gives the
+construction and proof.
+
+\subsection{Unequal frequencies: when does a dropped feature enter?}
+
+Return to singleton inputs, with common finite strength
+$\alpha_i=\alpha$ and frequencies
+$\pi_1>\cdots>\pi_m$. The weak solution retains features
+$1,\ldots,d$ and drops the rest. At finite $\alpha$, this
+coordinate-truncated solution remains a stationary model:
+retained features are predicted exactly, and omitted inputs
+receive uniform predictions. We ask when it becomes advantageous
+for an omitted feature to share a retained direction.
+
+Take $i\le d$ and $j>d$. Allow their encoder and decoder
+coefficients to change independently, so that the positive-state,
+positive-output logit block becomes
+\begin{equation}
+\alpha
+\begin{pmatrix}
+1 & v\\
+u & uv
+\end{pmatrix}.
+\label{eq:mixing-perturbation}
+\end{equation}
+The negative-state and negative-output entries follow by sign
+reversal for this perturbation. The block remains rank one.
+The off-diagonal terms introduce interference, while the
+$uv$ term begins to encode feature $j$.
+
+The second variation has a negative direction exactly when
+\begin{equation}
+\boxed{
+\frac{\pi_j}{\pi_i}>\rho_c(\alpha,m),
+\qquad
+\rho_c(\alpha,m)=
+\frac{\alpha^2(m-1+\cosh\alpha)}
+{m\sinh^2\alpha}.
+}
+\label{eq:frequency-threshold}
+\end{equation}
+This is an instability within an admissible untied perturbation,
+so whenever the inequality holds, the coordinate-truncated
+solution cannot be a local minimum of the full model.
+Appendix~\ref{app:mixed} derives the second variation.
+
+For small $\alpha$,
+\begin{equation}
+\rho_c(\alpha,m)
+=
+1-C_m\alpha^2+O(\alpha^4),
+\qquad
+C_m=\frac13-\frac1{2m}.
+\label{eq:threshold-expansion}
+\end{equation}
+Only features sufficiently close in frequency can initially
+share a direction. The first retained--omitted pair to become
+unstable is $(d,d+1)$.
+
+For Zipf frequencies $\pi_i\propto i^{-\beta}$, $\beta>0$, this
+first instability occurs when
+\begin{equation}
+\left(\frac{d}{d+1}\right)^\beta
+>
+\rho_c(\alpha,m).
+\label{eq:zipf-onset}
+\end{equation}
+More generally, a retained feature $i$ can participate in an
+unstable pair only if
+$i>(d+1)\rho_c^{1/\beta}$, and an omitted feature $j$ can
+participate only if $j<d\rho_c^{-1/\beta}$. These conditions
+identify a band around the spectral cutoff. For large $d$,
+its boundaries are approximately
+\begin{equation}
+h_{\rm lin}\approx d\,\rho_c^{1/\beta},
+\qquad
+t_{\rm lin}\approx d\,\rho_c^{-1/\beta},
+\label{eq:zipf-band}
+\end{equation}
+up to integer endpoints. Where a continuum approximation is
+appropriate, its small-$\alpha$ width is
+\[
+t_{\rm lin}-h_{\rm lin}
+\approx
+\frac{2C_m}{\beta}\,d\alpha^2.
+\]
+These are boundaries of the linear instability, not a general
+formula for the final nonlinear optimum. They suggest a
+dedicated head, a superposed body near the capacity boundary,
+and an omitted tail.
+
+A small linear model tests this prediction directly. Take
+$m=12$, $d=4$, $\pi_i\propto i^{-1}$, and $\alpha=1.15$.
+Then $\rho_c\approx0.6954$, while
+\[
+\frac{\pi_5}{\pi_4}=0.8>\rho_c,
+\qquad
+\frac{\pi_6}{\pi_4}=\frac23<\rho_c,
+\qquad
+\frac{\pi_5}{\pi_3}=0.6<\rho_c.
+\]
+Only the retained--omitted pair $(4,5)$ is unstable by this
+criterion. Optimizing the unrestricted rank-four logit
+factorization from random initialization recovers three
+dedicated feature directions, features $4$ and $5$ sharing the
+fourth, and negligible representation of features $6,\ldots,12$.
+The observed head/body/tail split therefore agrees with the
+local prediction, without prescribing those groups in the model.
+
+\subsection{What changes when features are correlated?}
+
+Correlation changes which predictive combinations are worth
+retaining. For mean-zero $z$ with covariance $\Sigma_z$, weak
+prediction keeps the leading left singular vectors of
+$\diag(a)\Sigma_z^{1/2}$ rather than necessarily individual
+feature axes. The preceding weak-regime selection therefore
+applies to predictive modes; their geometry can then be
+expressed in the original feature coordinates.
+
+A separate mixed-coordinate example makes this transformation
+explicit. Let $z=Az'$, with $A$ invertible and $z'$ uniform on
+signed singletons; outputs label the patterns $z'$. Write the
+linear latent encoding as $Hz'$ and the observed-coordinate
+encoding as $E(z)=Bz$. The encoder undoes the mixing:
+$B=HA^{-1}$. Consequently,
+\begin{equation}
+\boxed{
+B^\top B=A^{-\top}H^\top H A^{-1}.
+}
+\label{eq:correlated-gram}
+\end{equation}
+This identity uses the embedding geometry, without tying
+embeddings to decoder vectors.
+
+In the uncompressed isotropic reference $H^\top H=cI_m$,
+we have $\Sigma_z=AA^\top/m$, giving
+\begin{equation}
+\boxed{
+B^\top B=\frac{c}{m}\Sigma_z^{-1},
+\qquad
+\cos(B_i,B_j)=-\rho_{ij\,\cdot\,\mathrm{rest}}.
+}
+\label{eq:partial}
+\end{equation}
+Here $\rho_{ij\,\cdot\,\mathrm{rest}}$ is correlation after
+linearly controlling for the other coordinates. Positive
+partial correlation gives opposing encoder coefficients:
+separating contributions requires canceling shared variation.
+These are jointly fitted coefficients, not marginal activation
+contrasts. Under compression, $H^\top H$ contains the
+capacity-selected mode geometry instead of an isotropic metric.
+Equation~\eqref{eq:correlated-gram} still applies, but the simple
+partial-correlation identity need not hold
+(Appendix~\ref{app:corr}).
+
+\subsection{When a feature occupies a space}
+
+A feature need not occupy one direction: an angle requires a plane. A rank constraint can remove some of its predictive modes or force its space to overlap others. In the weak regime, SVD may discard a feature's weak axis while retaining its strong one.
+
+To study overlap among retained modes, collect feature $i$'s decoder directions into a block $D_i$, with internal coordinates $z_i$. Under $E(z)=\sum_jD_jz_j$, block $j$ contributes $D_i^\top D_jz_j$ to block $i$'s readout. Thus $D_i^\top D_j$ measures interference between spaces.
+
+Consider two planes in three dimensions. Activate one block at a time, sample its coordinates uniformly on the unit circle, and fix $D_i^\top D_i=\diag(\alpha_{i,1},\alpha_{i,2})$, with $\alpha_{i,1}\ge\alpha_{i,2}>0$. As strengths vanish at fixed ratios, CE measures average squared leakage into the inactive block. Subject to these self-signals,
+\begin{equation}
+\boxed{\min_{D_1,D_2}\|D_1^\top D_2\|_F^2=\alpha_{1,2}\alpha_{2,2}.}
+\label{eq:block-min}
+\end{equation}
+The planes must share a line. The cheapest arrangement shares their weak axes and separates their strong ones:
+\begin{equation}
+\begin{aligned}
+D_1&=[\sqrt{\alpha_{1,1}}e_1\quad\sqrt{\alpha_{1,2}}e_3],\\
+D_2&=[\sqrt{\alpha_{2,1}}e_2\quad\sqrt{\alpha_{2,2}}e_3].
+\end{aligned}
+\label{eq:block-solution}
+\end{equation}
+Both features remain two-dimensional: weak modes are shared, not deleted (Appendix~\ref{app:blocks}). When internal modes are also learned, retaining a mode gains predictive accuracy but may increase interference elsewhere. Selection within features and superposition between features therefore compete for the same dimensions.
+\label{main:end}

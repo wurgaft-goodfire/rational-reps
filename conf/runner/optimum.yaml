@@ -1,0 +1,17 @@
+# @package _global_
+# The rank-d optimum as a model class: exponential-family PCA of the task's target
+# (geometry.profiled_fit), its representation and readout stored as they come in a linear model,
+# so it is solved, saved and read exactly like a trained run.
+#   python -m src.code.train -m runner=optimum setting=superposition
+defaults:
+  - override /model: linear
+  - override /train: default
+  - _self_
+
+name: optimum
+output_dir: ${run_dir}/checkpoints
+sample_mode: pointwise
+
+solver:
+  gtol: 1.0e-7         # stop when the largest entry of the Riemannian gradient falls below gtol
+  max_iter: 600        # cap on L-BFGS steps over the decoder subspace

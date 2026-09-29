@@ -13,7 +13,7 @@ name: rnn
 output_dir: ${run_dir}/checkpoints
 sample_mode: pointwise
 training_kwargs:
-  weight_decay: 0.03
+  weight_decay: 0.1        # pins the E/D gauge at the balanced split (see runner/rnn.yaml)
   learning_rate: 0.005
   batch_size: 4096
 model_kwargs:

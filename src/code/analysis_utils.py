@@ -93,24 +93,48 @@ def readout_basis(D, tol=1e-4):
     return np.linalg.svd(Dc, full_matrices=False)[2][:np.linalg.matrix_rank(Dc, tol=tol)]
 
 
-def feature_vectors(H, Z):
-    """Least-squares additive fit H ~ Z V + 1 v0: the vector each feature writes into the
-    code. Returns (V (m, d), v0 (d,))."""
-    Z = np.asarray(Z, float)
-    X = np.column_stack([Z, np.ones(len(Z))])
-    V = np.linalg.lstsq(X, np.asarray(H, float), rcond=None)[0]
-    return V[:-1], V[-1]
+def walsh_design(X, order=1, n_top=None):
+    """Sample-orthogonalized Walsh design of binary features X (n, m) up to `order` (1 or 2): a
+    constant, the standardized features (z - z_bar) / std, and at order 2 the products of the
+    pairs among the first n_top features, residualized on both lower levels and standardized.
+    Returns (A (n, 1 + m [+ K]), blocks), blocks the column slices 'const', 'first', 'second'."""
+    X = np.asarray(X, float)
+    n, m = X.shape
+    first = (X - X.mean(0)) / X.std(0)
+    cols, blocks = [np.ones((n, 1)), first], {"const": slice(0, 1), "first": slice(1, 1 + m)}
+    if order == 2:
+        i, j = np.triu_indices(min(n_top or m, m), 1)
+        A = np.column_stack(cols)
+        phi = first[:, i] * first[:, j]
+        phi = phi - A @ np.linalg.lstsq(A, phi, rcond=None)[0]
+        cols.append(phi / phi.std(0))
+        blocks["second"] = slice(1 + m, 1 + m + len(i))
+    return np.column_stack(cols), blocks
 
 
-def logit_map(L, Z):
-    """Additive fit of the row-centred logits, L_c ~ Z R + 1 b^T: the gauge-invariant
-    feature -> output map. Returns (R (m, m), b (m,), r2)."""
+def walsh_vectors(H, X, order=1, n_top=None):
+    """Least-squares Walsh coefficients of a representation H (n, d) on `walsh_design`: the
+    vector each term writes into it. Returns (V (1 + m [+ K], d), blocks)."""
+    A, blocks = walsh_design(X, order, n_top)
+    return np.linalg.lstsq(A, np.asarray(H, float), rcond=None)[0], blocks
+
+
+def feature_vectors(H, X):
+    """First Walsh level of H (n, d): the vector each standardized feature writes into the
+    representation, and the constant. Returns (V (m, d), v0 (d,))."""
+    V, blocks = walsh_vectors(H, X)
+    return V[blocks["first"]], V[blocks["const"]][0]
+
+
+def logit_map(L, X):
+    """First Walsh level of the row-centred logits: the gauge-invariant standardized-feature ->
+    output map. Returns (R (m, m), b (m,), r2)."""
     L = np.asarray(L, float)
     L = L - L.mean(1, keepdims=True)
-    X = np.column_stack([np.asarray(Z, float), np.ones(len(L))])
-    C = np.linalg.lstsq(X, L, rcond=None)[0]
-    r2 = 1.0 - ((L - X @ C) ** 2).sum() / (L ** 2).sum()
-    return C[:-1], C[-1], float(r2)
+    A, blocks = walsh_design(X)
+    C = np.linalg.lstsq(A, L, rcond=None)[0]
+    r2 = 1.0 - ((L - A @ C) ** 2).sum() / (L ** 2).sum()
+    return C[blocks["first"]], C[blocks["const"]][0], float(r2)
 
 
 def leverage(W):

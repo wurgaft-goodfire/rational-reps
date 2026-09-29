@@ -636,7 +636,7 @@ def _tree_graph(n=2, k=2, parents=None, levels=None, **_):
 
 def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
                  spectrum="geometric", beta=1.5, rho=0.0, blocks=1,
-                 paired=False, all_bundles=False):
+                 paired=False, all_bundles=False, signed=False, k=None, mix=0.0):
     """Bipartite word -> feature structure: N words with i.i.d. Bernoulli(p) features
     Z in {0, 1}, outcomes the m feature tokens, Lc(x, i) = alpha_i Z_xi and
     L = log_softmax(Lc) (p = sparsity, scale = sharpness). ``spectrum`` sets the importance
@@ -646,22 +646,54 @@ def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
     (blocks=1 is equicorrelation). ``all_bundles`` makes the words every bundle in {0,1}^m
     once (N ignored). ``paired`` gives each feature a yes/no token pair, columns
     [1+, ..., m+, 1-, ..., m-], with Lc(x, i+) = alpha_i Z_xi and Lc(x, i-) = alpha_i (1 - Z_xi).
-    Returns (L (n_words, m or 2m), {"Z" (n_words, m), "alpha" (m,)})."""
+    ``signed`` makes the features ternary, Z in {-1, 0, 1} with fair signs, each with a token
+    pair Lc(x, i+-) = +-alpha_i Z_xi; ``k`` fixes the number of active features per word
+    (uniform supports; with ``all_bundles`` every signed k-support once, else every state of
+    {-1, 0, 1}^m); ``mix`` > 0 hands the model z = A z' with z' the signed patterns and A the
+    symmetric root of the AR(1) correlation matrix mix^|i-j| (neighbouring features correlated,
+    partial correlations mix between neighbours and 0 beyond), the logits staying on z'. Returns (L (n_words, m or 2m), {"Z" (n_words, m), "alpha" (m,)}), plus "patterns"
+    and "A" when mixed."""
+    from itertools import combinations, product
     from scipy.special import logsumexp
     alpha = scale * {"geometric": decay ** np.arange(m),
                      "power": (1.0 + np.arange(m)) ** -beta}[spectrum]
     rng = np.random.default_rng(seed)
-    if all_bundles:
+    if all_bundles and signed and k is not None:
+        Z = np.zeros((0, m))
+        for support in combinations(range(m), k):
+            rows = np.zeros((2 ** k, m))
+            rows[:, support] = np.array(list(product((-1.0, 1.0), repeat=k)))
+            Z = np.vstack([Z, rows])
+    elif all_bundles and signed:
+        Z = np.array(list(product((-1.0, 0.0, 1.0), repeat=m)))
+    elif all_bundles:
         Z = cube_codes(m)
-    elif rho == 0.0:
-        Z = (rng.random((N, m)) < p).astype(float)
-    else:                                          # one-factor Gaussian copula
-        from scipy.stats import norm
-        f = rng.normal(size=(N, blocks))[:, np.arange(m) * blocks // m]
-        g = np.sqrt(rho) * f + np.sqrt(1 - rho) * rng.normal(size=(N, m))
-        Z = (g > norm.ppf(1 - p)).astype(float)
-    Lc = np.c_[Z * alpha, (1 - Z) * alpha] if paired else Z * alpha
-    return Lc - logsumexp(Lc, axis=1, keepdims=True), {"Z": Z, "alpha": alpha, "bipartite": True}
+    elif k is not None:
+        Z = np.zeros((N, m))
+        for row in Z:
+            row[rng.choice(m, k, replace=False)] = rng.choice([-1.0, 1.0], k) if signed else 1.0
+    else:
+        if rho == 0.0:
+            Z = (rng.random((N, m)) < p).astype(float)
+        else:                                          # one-factor Gaussian copula
+            from scipy.stats import norm
+            f = rng.normal(size=(N, blocks))[:, np.arange(m) * blocks // m]
+            g = np.sqrt(rho) * f + np.sqrt(1 - rho) * rng.normal(size=(N, m))
+            Z = (g > norm.ppf(1 - p)).astype(float)
+        if signed:
+            Z = Z * rng.choice([-1.0, 1.0], size=Z.shape)
+    if signed:
+        Lc = np.c_[Z * alpha, -Z * alpha]
+    elif paired:
+        Lc = np.c_[Z * alpha, (1 - Z) * alpha]
+    else:
+        Lc = Z * alpha
+    info = {"Z": Z, "alpha": alpha, "bipartite": True}
+    if mix:
+        lam, V = np.linalg.eigh(mix ** np.abs(np.arange(m)[:, None] - np.arange(m)[None]))
+        A = (V * np.sqrt(lam)) @ V.T
+        info = {"Z": Z @ A.T, "patterns": Z, "A": A, "alpha": alpha, "bipartite": True}
+    return Lc - logsumexp(Lc, axis=1, keepdims=True), info
 
 
 def factors(factors, N=256, p=0.3, decay=0.9, scale=8.0, seed=0):

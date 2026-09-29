@@ -159,3 +159,51 @@ def test_blocks_give_within_block_correlation_only():
     iu = np.triu_indices(16, 1)
     assert C[iu][same[iu]].mean() > 0.3
     assert abs(C[iu][~same[iu]].mean()) < 0.06
+
+
+# ── signed features: {-1, 0, 1} with one yes/no token pair per feature (notes/superposition_new.tex) ──
+
+def test_signed_kernel_is_plus_minus_alpha_z_and_ties_absent_pairs():
+    # Lc(z, i+) = alpha_i z_i, Lc(z, i-) = -alpha_i z_i, one softmax over the 2m outputs; a feature
+    # at 0 leaves its pair tied; all_bundles enumerates {-1, 0, 1}^m once
+    m = 3
+    L, info = feature_cube(m=m, decay=0.8, scale=1.5, signed=True, all_bundles=True)
+    Z, alpha = info["Z"], info["alpha"]
+    assert L.shape == (3 ** m, 2 * m) and Z.shape == (3 ** m, m)
+    assert set(np.unique(Z)) == {-1.0, 0.0, 1.0} and len(np.unique(Z, axis=0)) == 3 ** m
+    Lc = np.c_[Z * alpha, -Z * alpha]
+    assert np.allclose(L - Lc, (L - Lc)[:, :1])                     # equal up to each row's normalizer
+    assert np.allclose(L[:, :m] - L[:, m:], 2 * alpha * Z)          # within-pair log-odds
+    absent = Z == 0
+    assert np.allclose(L[:, :m][absent], L[:, m:][absent])
+
+
+def test_signed_k_supports_have_exactly_k_active_features_with_fair_signs():
+    N, m, k = 6000, 8, 2
+    _, info = feature_cube(N=N, m=m, k=k, signed=True, seed=1)
+    Z = info["Z"]
+    assert Z.shape == (N, m) and np.all((Z != 0).sum(1) == k)
+    assert np.abs((Z != 0).mean(0) - k / m).max() < 0.03           # uniform supports
+    assert np.abs(Z.mean(0)).max() < 0.03                           # fair, independent signs
+    assert np.abs(np.corrcoef(Z.T)[np.triu_indices(m, 1)]).max() < 0.05
+
+
+def test_signed_all_bundles_with_k_enumerates_every_signed_support():
+    # k = 1 gives the 2m signed singletons; k = 2 the C(m, 2) 2^2 signed pairs
+    m = 4
+    for k, n in ((1, 2 * m), (2, 6 * 4)):
+        _, info = feature_cube(m=m, k=k, signed=True, all_bundles=True)
+        Z = info["Z"]
+        assert Z.shape == (n, m) and len(np.unique(Z, axis=0)) == n and np.all((Z != 0).sum(1) == k)
+
+
+def test_signed_mixing_hands_the_model_mixed_coordinates_of_singleton_patterns():
+    # z = A z' with z' the signed singletons and A the symmetric root of the AR(1) correlation
+    # matrix mix^|i-j|; the logits are defined on the patterns z', the model sees z
+    m, rho = 4, 0.5
+    L, info = feature_cube(m=m, k=1, signed=True, all_bundles=True, mix=rho, scale=2.0, decay=1.0)
+    Z, Zp, A, alpha = info["Z"], info["patterns"], info["A"], info["alpha"]
+    Sigma = rho ** np.abs(np.arange(m)[:, None] - np.arange(m)[None])
+    assert np.allclose(A @ A, Sigma) and np.allclose(Z, Zp @ A.T)
+    assert np.allclose(L[:, :m] - L[:, m:], 2 * alpha * Zp)
+    assert np.allclose(np.corrcoef(Z.T), Sigma)                      # the features the model sees are correlated
