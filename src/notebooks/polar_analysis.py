@@ -57,7 +57,7 @@ def _(mo):
     companion is drawn with $\log p(y \mid x) = -\tfrac{\gamma}{2}\left[d_{\mathrm{kin}}(x, y) + \alpha
     \lVert c(x) - c(y) \rVert^2\right]$, $c = $ (generation, sibling links) counted from ego, $\alpha = 1/2$ (a link, squared distance $1 + \alpha$, stays closer than two people sharing a parent and link type, $2$): close
     kin, one generation and one line (direct or collateral) are mentioned together. Static models read a person and
-    output the companion; the in-context transformer reads a sequence of co-mentions. Full width, SGD.
+    output the companion; the in-context transformer reads a sequence of co-mentions. Full width; static models SGD, the in-context transformer AdamW (15k steps, batch 1024).
     """)
     return
 
@@ -79,10 +79,12 @@ def _(
               "dad", "grandma D", "grandpa D", "aunt D", "cousin D1", "uncle D", "cousin D2"]   # M mom's side, D dad's
 
     def family_overrides(model):
-        arch = "transformer" if model == IN_CONTEXT else model
-        return ([f"runner={arch}", "setting=family_tree", "training_kwargs.optimizer=sgd",
-                 "training_kwargs.train_steps=20000", f"training_kwargs.learning_rate={LR[arch]}",
-                 f"model_kwargs.model_config.{WIDTH[arch]}=64"] + (["sample_mode=sequence"] if model == IN_CONTEXT else []))
+        if model == IN_CONTEXT:                                               # a stream model: AdamW, large batches
+            return ["runner=transformer", "setting=family_tree", "sample_mode=sequence", "training_kwargs.optimizer=adamw_torch",
+                    "training_kwargs.learning_rate=0.001", "training_kwargs.batch_size=1024", "training_kwargs.train_steps=15000",
+                    "model_kwargs.model_config.hidden_size=64"]
+        return [f"runner={model}", "setting=family_tree", "training_kwargs.optimizer=sgd", "training_kwargs.train_steps=20000",
+                f"training_kwargs.learning_rate={LR[model]}", f"model_kwargs.model_config.{WIDTH[model]}=64"]
 
     def node_code(run, n):
         """One vector per person: the representation (static), or its mean over the positions of a sequence where
@@ -239,7 +241,7 @@ def _(mo):
     Both panels on one plane of the transformer's raw representation: the generation axis (mean up link minus mean down
     link of its per-person codes) and the sibling axis orthogonal to it. Left: every link of its per-person codes (thick =
     per-type mean). Middle: its representation as one test sequence is read, an arrow from each mention to the next,
-    colored by how the two people are related (gray: not directly related); labels at each person's mean position. Right:
+    for mentions of directly related people, colored by the relation (gray dots: every mention); labels at each person's mean position. Right:
     link cosines of its per-person codes over all test sequences.
     """)
     return
@@ -291,10 +293,11 @@ def _(
     _axd.axhline(0, color="0.85", lw=0.6, zorder=0); _axd.axvline(0, color="0.85", lw=0.6, zorder=0)
     _axd.set_xlim(-1.2, 1.2); _axd.set_ylim(-1.2, 1.2); _axd.set_aspect("equal"); _axd.set_xticks([]); _axd.set_yticks([])
     _axd.set_xlabel("generation axis"); _axd.set_ylabel("sibling axis"); _axd.set_title("link directions (per-person codes)", fontsize=11)
-    for _s in range(len(_t) - 1):
+    for _s in range(len(_t) - 1):                                           # moves between directly related people
         _l = _rel.get((int(_t[_s]), int(_t[_s + 1])))
-        _axp.annotate("", _Z[_s + 1], _Z[_s], arrowprops=dict(arrowstyle="-|>", lw=2.2 if _l is not None else 0.8,
-                      color=LINK_COLORS[_l] if _l is not None else "0.75", zorder=2 if _l is not None else 1))
+        if _l is not None:
+            _axp.annotate("", _Z[_s + 1], _Z[_s], arrowprops=dict(arrowstyle="-|>", lw=2.2, color=LINK_COLORS[_l]))
+    _axp.scatter(*_Z.T, s=10, color="0.6", zorder=0)
     for _p in sorted(set(_t.tolist())):
         _axp.annotate(PEOPLE[_p], _Z[_t == _p].mean(0), textcoords="offset points", xytext=(5, -3), fontsize=7.5, color="0.3")
     _lo, _hi = _Z.min(0), _Z.max(0); _pad = 0.15 * (_hi - _lo).max()
@@ -303,8 +306,7 @@ def _(
     _axp.set_title(f"one sequence read mention by mention ({len(_t)} mentions)", fontsize=11)
     _axp.set_xlabel(" · ".join(PEOPLE[i] for i in _t[:9]) + " · …", fontsize=8)
     link_gram(_axg, family[IN_CONTEXT]); _axg.set_title("link cosines, all test sequences", fontsize=11)
-    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in LINK_COLORS] + [plt.Line2D([], [], color="0.75", lw=1)],
-                LINK_TYPES + ["unrelated"], loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 1.04))
+    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in LINK_COLORS], LINK_TYPES, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.04))
     save_figure(_fig, figure_path(_run["config"], "in_context_parse"))
     return
 
@@ -371,8 +373,8 @@ def _(mo):
     Both panels of a row on one plane of the raw representation: the plane of the three kind means. Left: block-entry
     steps (code after the bound name minus code before the kind token; 300 drawn), centered on their average; thick =
     per-kind mean. Middle: the representation as one test program is read (drawn at random among programs with six or
-    more blocks, three deep), an arrow from each state to the next where no bound name is pending: entering a block colored
-    by kind, closing one dashed, statements faint; labels at the module and each block. Titles give how often the tree is
+    more blocks, three deep), an arrow for each block entered (solid) and closed (dashed), colored by the block's kind;
+    statements, which leave the stack unchanged, are not drawn; labels at the module and each block. Titles give how often the tree is
     decoded from the code alone over all test programs. Right: cosine between the mean block-entry steps, one per (kind,
     name), sorted by kind then name.
     """)
@@ -430,14 +432,16 @@ def _(
         _ax.set_title(f"{_m}: block-entry directions", fontsize=10)
         _Z = (_H[_b] - _H[_b, 0]) @ _A.T / _unit                              # the program as it is read, same plane
         _ax = _axes[_i, 1]
+        _open = []                                                            # kinds of the open blocks
         for _s0, _s1 in zip(_settled[:-1], _settled[1:]):
             _seen = _toks[_s0 + 1:_s1 + 1]
-            if _seen[0] in _ds.kinds:
-                _st = dict(color=_KIND_COLORS[_ds.kinds.index(_seen[0])], lw=2.4)
-            elif _seen[0] == "end":
-                _st = dict(color="0.45", lw=1.2, ls="--")
-            else:
-                _st = dict(color="0.8", lw=0.6)
+            if _seen[0] in _ds.kinds:                                         # entering a block: solid, its kind
+                _open.append(_ds.kinds.index(_seen[0]))
+                _st = dict(color=_KIND_COLORS[_open[-1]], lw=2.4)
+            elif _seen[0] == "end" and _open:                                 # closing one: dashed, the kind it closes
+                _st = dict(color=_KIND_COLORS[_open.pop()], lw=1.6, ls="--")
+            else:                                                             # statements leave the stack unchanged
+                continue
             _ax.annotate("", _Z[_s1], _Z[_s0], arrowprops=dict(arrowstyle="-|>", **_st))
         for _p, _par, _kk, _nn in _tree:
             _ax.annotate("module" if _kk is None else f"{_kk} {_nn}", _Z[_p], textcoords="offset points", xytext=(5, -3), fontsize=8, color="0.3")
@@ -455,8 +459,8 @@ def _(
         _ticks = np.arange(len(_ds.kinds)) * len(_ds.names) + len(_ds.names) / 2 - 0.5
         _ax.set_xticks(_ticks, _ds.kinds); _ax.set_yticks(_ticks, _ds.kinds)
         _ax.set_title("cosine of mean steps per (kind, name)", fontsize=10)
-    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in _KIND_COLORS] + [plt.Line2D([], [], color="0.45", lw=1.2, ls="--"), plt.Line2D([], [], color="0.8", lw=1)],
-                [f"enter {k}" for k in _ds.kinds] + ["end", "statement"], loc="upper center", ncol=5, frameon=False, bbox_to_anchor=(0.5, 0.97))
+    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in _KIND_COLORS] + [plt.Line2D([], [], color="0.3", lw=1.6, ls="--")],
+                [f"enter {k}" for k in _ds.kinds] + ["end (closes a block of that kind)"], loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 0.97))
     save_figure(_fig, figure_path(scope_run["config"], "scope_tree_codes"))
     return
 
