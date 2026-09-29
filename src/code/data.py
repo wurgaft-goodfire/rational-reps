@@ -58,6 +58,9 @@ def init_dataset(config, overwrite_data: bool = False):
         return RelationalDataset(config)
     if config.setting == "hmm":
         return HMMDataset(config)
+    if config.setting == "scopes":
+        from .scopes import ScopeDataset
+        return ScopeDataset(config)
     raise ValueError(f"Unsupported setting: {config.setting}")
 
 
