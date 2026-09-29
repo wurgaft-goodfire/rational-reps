@@ -89,6 +89,15 @@ def test_break_is_likelier_inside_a_loop_only_with_kind_effects():
         assert (gain > 1.0) == expect
 
 
+def test_blocks_parse_the_nesting_of_a_program():
+    # def n0 { for n1 { n1 } if n2 { } }: the module (position 0) holds def, which holds for and if
+    ds = _dataset()
+    prog = ["def", "n0", "for", "n1", "n1", "end", "if", "n2", "end", "end"]
+    ids = [ds.start_token] + [ds.vocab.index(t) for t in prog]
+    blocks = ds.blocks(ids)
+    assert blocks == [(0, -1, None, None), (2, 0, "def", "n0"), (4, 1, "for", "n1"), (8, 1, "if", "n2")]
+
+
 def test_scopes_is_a_registered_setting():
     cfg = OmegaConf.create({"setting": "scopes", "random_seed": 0, "sample_mode": "sequence",
                             "scope_kwargs": {"n_names": 8, "name_bonus": 4.0, "kind_strength": 1.0, "pool_size": 16},

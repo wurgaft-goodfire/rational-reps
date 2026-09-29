@@ -154,6 +154,19 @@ class ScopeDataset(Dataset):
                 depth += (tok in self.kinds) - (tok == "end" and depth > 0)
         return out
 
+    def blocks(self, ids):
+        """The nesting tree of one stream (start token first): ``(position, parent, kind, name)`` per node, the
+        module first (position 0), then each block at the position of its bound name; parent indexes this list."""
+        out, stack = [(0, -1, None, None)], [0]
+        for t in range(1, len(ids) - 1):
+            tok = self.vocab[ids[t]]
+            if tok in self.kinds:
+                out.append((t + 1, stack[-1], tok, self.vocab[ids[t + 1]]))
+                stack.append(len(out) - 1)
+            elif tok == "end" and len(stack) > 1:
+                stack.pop()
+        return out
+
     def optimal_predictions(self, input_ids):
         """Exact next-token distributions aligned with ``logits[:, :-1]``: (B, T) -> (B, T-1, V)."""
         st = self._init_state(len(input_ids))

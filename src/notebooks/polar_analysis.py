@@ -350,29 +350,94 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 3 — block-entry steps
+    ## Figure 3 — the scope tree read off the code
 
-    Cosine between the mean block-entry steps (code after the bound name minus code before the kind token), one
-    per (kind, name), sorted by kind then name; the predicted code and the trained transformer.
+    Top: the nesting of one test program decoded from the representation alone: nodes are the module and each block
+    (the state after its bound name), links the minimum spanning tree of their distances, each link's kind the nearest
+    kind prototype (mean block-entry step); drawn like indented code, depth down and blocks in opening order, links
+    colored by decoded kind (dashed gray: wrong); titles give this program's scores and the mean over all test
+    programs with at least two blocks. Middle: block-entry steps (code after the bound name minus code
+    before the kind token; 300 drawn) as arrows on the plane of the kind means, thick = per-kind mean. Bottom: cosine
+    between the mean block-entry steps, one per (kind, name), sorted by kind then name.
     """)
     return
 
 
 @app.cell
-def _(FIG, figure_path, np, plt, save_figure, scope_codes, scope_run):
+def _(
+    FIG,
+    decode_tree,
+    figure_path,
+    np,
+    plt,
+    save_figure,
+    scope_codes,
+    scope_run,
+    tree_scores,
+):
     _ds = scope_run["dataset"]
+    _inp = np.asarray(scope_run["inputs"])
+    _KIND_COLORS = [FIG.colors["blue"], FIG.colors["orange"], FIG.colors["green"], "0.35"]
+    _T = scope_codes["predicted"].shape[1]
+    _trees = [_ds.blocks(_s) for _s in _inp]
+    _depth = lambda tree, i: 0 if tree[i][1] < 0 else 1 + _depth(tree, tree[i][1])
+    _ok = [b for b, tr in enumerate(_trees) if all(p < _T for p, *_ in tr)]
+    _b = max(_ok, key=lambda b: (max(_depth(_trees[b], i) for i in range(len(_trees[b]))), len(_trees[b])))
+    _tree = _trees[_b]
+    _parents = [p for _, p, _, _ in _tree]
+    _labels = [-1] + [_ds.kinds.index(k) for _, _, k, _ in _tree[1:]]
+    _XY = np.array([(i, -_depth(_tree, i)) for i in range(len(_tree))], float)
+    _names = ["module"] + [f"{k} {n}" for _, _, k, n in _tree[1:]]
     _keys = [(k, n) for k in _ds.kinds for n in _ds.names]
-    _fig, _axes = plt.subplots(1, len(scope_codes), figsize=(3.2 * len(scope_codes), 3.3))
-    for _ax, (_m, _H) in zip(_axes, scope_codes.items()):
+    _fig, _axes = plt.subplots(3, len(scope_codes), figsize=(4.6 * len(scope_codes), 12.5),
+                               gridspec_kw=dict(height_ratios=[0.8, 1, 1], hspace=0.28))
+    for _j, (_m, _H) in enumerate(scope_codes.items()):
+        _ent = _ds.block_entries(_inp, _H)
+        _k = np.array([_ds.kinds.index(e[0]) for e in _ent]); _V = np.array([e[3] for e in _ent])
+        _protos = np.array([_V[_k == l].mean(0) for l in range(len(_ds.kinds))])
+        _E = np.array([_H[_b, p] for p, *_ in _tree])
+        _dec = decode_tree(_E, _parents, _labels, protos=_protos)
+        _u, _l = tree_scores(_dec, _parents, _labels)
+        _ax = _axes[0, _j]
+        _true = {(p, c): _labels[c] for c, p in enumerate(_parents) if p >= 0}
+        for _p, _c, _lab in _dec:
+            _right = _true.get((_p, _c)) == _lab
+            _ax.plot(*zip(_XY[_p], _XY[_c]), color=_KIND_COLORS[_lab] if _right else "0.6", ls="-" if _right else "--", lw=2.2, zorder=1)
+        _ax.scatter(*_XY.T, s=22, color="k", zorder=2)
+        for _i, _nm in enumerate(_names):
+            _ax.annotate(_nm, _XY[_i], textcoords="offset points", xytext=(0, -8), ha="center", va="top", fontsize=8)
+        _ax.set_xlim(-0.6, len(_tree) - 0.4); _ax.set_ylim(_XY[:, 1].min() - 0.6, 0.4)
+        _ax.set_xticks([]); _ax.set_yticks([]); [_s.set_visible(False) for _s in _ax.spines.values()]
+        _all = [tree_scores(decode_tree(np.array([_H[b, p] for p, *_ in _trees[b]]), [p for _, p, _, _ in _trees[b]],
+                                        [-1] + [_ds.kinds.index(k) for _, _, k, _ in _trees[b][1:]], protos=_protos),
+                            [p for _, p, _, _ in _trees[b]], [-1] + [_ds.kinds.index(k) for _, _, k, _ in _trees[b][1:]])
+                for b in _ok if len(_trees[b]) > 2]
+        _mu, _ml = np.mean(_all, 0)
+        _ax.set_title(f"{_m}\nthis program: links {_u:.0%}, kinds {_l:.0%}\n{len(_all)} programs: links {_mu:.0%}, kinds {_ml:.0%}", fontsize=10)
+        _Mc = _protos - _protos.mean(0)
+        _B = np.linalg.svd(_Mc, full_matrices=False)[2][:2]
+        _scale = np.linalg.norm(_V, axis=1).mean()
+        _ax = _axes[1, _j]
+        for _i in np.random.default_rng(0).choice(len(_V), 300, replace=False):
+            _a, _c2 = (_V[_i] - _protos.mean(0)) @ _B.T / _scale
+            _ax.annotate("", (_a, _c2), (0, 0), arrowprops=dict(arrowstyle="-|>", color=_KIND_COLORS[_k[_i]], lw=0.6, alpha=0.3))
+        for _l2 in range(len(_ds.kinds)):
+            _a, _c2 = _Mc[_l2] @ _B.T / _scale
+            _ax.annotate("", (_a, _c2), (0, 0), arrowprops=dict(arrowstyle="-|>", color=_KIND_COLORS[_l2], lw=3, mutation_scale=16))
+        _ax.axhline(0, color="0.85", lw=0.6, zorder=0); _ax.axvline(0, color="0.85", lw=0.6, zorder=0)
+        _ax.set_xlim(-1.1, 1.1); _ax.set_ylim(-1.1, 1.1); _ax.set_aspect("equal"); _ax.set_xticks([]); _ax.set_yticks([])
         _steps = {}
-        for _k, _n, _, _v in _ds.block_entries(scope_run["inputs"], _H):
-            _steps.setdefault((_k, _n), []).append(_v)
+        for _kk, _n, _, _v in _ent:
+            _steps.setdefault((_kk, _n), []).append(_v)
         _M = np.array([np.mean(_steps[key], 0) for key in _keys])
         _M = _M / np.linalg.norm(_M, axis=1, keepdims=True)
+        _ax = _axes[2, _j]
         _ax.imshow(_M @ _M.T, cmap=FIG.diverging_cmap, vmin=-1, vmax=1)
         _ticks = np.arange(len(_ds.kinds)) * len(_ds.names) + len(_ds.names) / 2 - 0.5
-        _ax.set_xticks(_ticks, _ds.kinds); _ax.set_yticks(_ticks, _ds.kinds); _ax.set_title(_m)
-    save_figure(_fig, figure_path(scope_run["config"], "block_entry_cosines"))
+        _ax.set_xticks(_ticks, _ds.kinds); _ax.set_yticks(_ticks, _ds.kinds if _j == 0 else [])
+    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in _KIND_COLORS], _ds.kinds, loc="upper center", ncol=4,
+                frameon=False, bbox_to_anchor=(0.5, 0.995))
+    save_figure(_fig, figure_path(scope_run["config"], "scope_tree_codes"))
     return
 
 
