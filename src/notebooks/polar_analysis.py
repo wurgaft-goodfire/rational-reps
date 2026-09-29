@@ -170,7 +170,7 @@ def _(mo):
 
     Streams of code-like tokens: `for` / `def` / `if` / `with` open a block that binds a fresh name, `end` closes
     it, and every open scope adds its effect to the next-token scores: its name is used, `for` raises break /
-    continue, `def` return / yield, `if` pass. Width-64 transformer, next-token prediction, SGD; the predicted
+    continue, `def` return / yield, `if` pass. Width-64 transformer, next-token prediction, AdamW; the predicted
     code is the factored exact next-token rows.
     """)
     return
@@ -179,8 +179,8 @@ def _(mo):
 @app.cell
 def _(align_representations, cka, factor_logcond, load_run, np, predicted_inference_geometry, rsa):
     scope_run = load_run(["runner=transformer", "setting=scopes", "training_kwargs.context_length=64",
-                          "training_kwargs.optimizer=sgd", "training_kwargs.train_steps=60000",
-                          "training_kwargs.learning_rate=0.1", "model_kwargs.model_config.hidden_size=64",
+                          "training_kwargs.optimizer=adamw_torch", "training_kwargs.train_steps=15000", "training_kwargs.batch_size=1024",
+                          "training_kwargs.learning_rate=0.001", "model_kwargs.model_config.hidden_size=64",
                           "scope_kwargs.kind_strength=1.0"])
     _P = scope_run["targets"].astype(np.float64)                                 # (B, T, V) exact next-token rows
     _R = np.log(_P).reshape(-1, _P.shape[-1])
