@@ -67,6 +67,19 @@ def predicted_inference_geometry(log_cond, D):
 
 ##### Superposition: first-order geometry of a rank-limited softmax (notes/superposition.tex) #####
 
+def edge_vectors(E, parents):
+    """Child minus parent code for every tree edge, in child order: (n_edges, d)."""
+    E = np.asarray(E, dtype=np.float64)
+    return np.array([E[c] - E[p] for c, p in enumerate(parents) if p >= 0])
+
+
+def edge_cosines(E, parents):
+    """Cosine between every pair of edge vectors, (n_edges, n_edges)."""
+    V = edge_vectors(E, parents)
+    V = V / np.linalg.norm(V, axis=1, keepdims=True)
+    return V @ V.T
+
+
 def whiten(Z, tol=1e-10):
     """Predictive modes of binary features, u = z C^{-1/2} with C the covariance of z and
     the symmetric (pseudo-inverse) root, so mode k stays closest to feature k. Returns

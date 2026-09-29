@@ -7,26 +7,18 @@ import pytest
 
 from src.code.data import (adjacency_conditional, graph_conditional, labeled_tree, labeled_tree_positions,
                            tree_adjacency, tree_parents)
+from src.code.geometry import edge_cosines, edge_vectors
 
 PARENTS = tree_parents(n=2, k=3)                                               # 13 nodes, 12 edges
 LABELS = [0] + [PARENTS[1:c].count(PARENTS[c]) for c in range(1, 13)]         # birth order among siblings
 
 
-def _edge_vectors(E, parents):
-    return np.array([E[c] - E[p] for c, p in enumerate(parents) if p >= 0])
-
-
-def _cosines(V):
-    V = V / np.linalg.norm(V, axis=1, keepdims=True)
-    return V @ V.T
-
-
 @pytest.mark.parametrize("alpha", [0.25, 1.0, 4.0])
 def test_positions_are_polar_with_cosine_alpha_over_one_plus_alpha(alpha):
-    V = _edge_vectors(labeled_tree_positions(PARENTS, LABELS, alpha), PARENTS)
+    P = labeled_tree_positions(PARENTS, LABELS, alpha); V = edge_vectors(P, PARENTS)
     assert np.allclose(np.linalg.norm(V, axis=1), np.sqrt(1 + alpha))         # distance marks an edge
     lab = np.array(LABELS[1:]); same, off = lab[:, None] == lab[None], ~np.eye(12, dtype=bool)
-    C = _cosines(V)
+    C = edge_cosines(P, PARENTS)
     assert np.allclose(C[same & off], alpha / (1 + alpha)) and np.allclose(C[~same], 0.0)
 
 
@@ -49,7 +41,7 @@ def test_alpha_zero_is_the_geodesic_tree_kernel():
 def test_explicit_labels_set_the_shared_directions():
     # a path root -> 1 -> 2 -> 3 with labels a, a, b: edges 1 and 2 share a direction, 3 is orthogonal
     parents, labels = [-1, 0, 1, 2], [-1, 0, 0, 1]
-    C = _cosines(_edge_vectors(labeled_tree_positions(parents, labels, 1.0), parents))
+    C = edge_cosines(labeled_tree_positions(parents, labels, 1.0), parents)
     assert np.allclose(C, [[1, 0.5, 0], [0.5, 1, 0], [0, 0, 1]])
 
 
