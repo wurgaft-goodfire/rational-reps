@@ -809,6 +809,7 @@ _STRUCTURES = {
     "hypercube": _Structure(hypercube), "complete": _Structure(complete),
     "tree": _Structure(_tree_graph, tree_conditional),
     "labeled_tree": _Structure(_tree_graph, labeled_tree),
+    "family_tree": _Structure(_tree_graph, labeled_tree),        # its own name keeps family runs in their own dirs
     # bipartite (no adjacency): words -> features; hypothesis spaces -> observations
     "feature_cube": _Structure(None, feature_cube),
     "factors": _Structure(None, factors),

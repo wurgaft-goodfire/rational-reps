@@ -7,7 +7,7 @@
 # the opposite way (cosine -alpha/(1+alpha)), sibling links carry no shared step. gamma keeps the logit range
 # gamma/2 (6 + 4 alpha) near 4 nats. Train full width from the CLI (rank 15): embed_dim / hidden_size = 64.
 setting: graph-cooccurrence
-structure: labeled_tree
+structure: family_tree   # labeled_tree under its own name (run directories are keyed by structure)
 structure_kwargs:
   parents: [-1, 0, 0, 2, 2, 2, 5, 2, 7, 0, 9, 9, 9, 12, 9, 14]
   labels: [-1, 1, 0, 0, 0, 1, 2, 1, 2, 0, 0, 0, 1, 2, 1, 2]    # 0 up, 1 sibling, 2 down
