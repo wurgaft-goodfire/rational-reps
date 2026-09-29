@@ -13,3 +13,6 @@ structure_kwargs:
   alpha: 1.0
   gamma: 0.33
 sample_mode: pointwise
+model_kwargs:
+  model_config:
+    embed_dim: 64          # full rank: the code has rank 39 (40 nodes)
