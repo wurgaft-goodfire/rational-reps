@@ -356,3 +356,42 @@ def test_sharp_signed_singletons_pack_feature_lines_evenly_in_the_plane():
     np.fill_diagonal(C, 0.0)
     print("largest |cos| between feature lines", C.max(), "vs cos(pi/m)", np.cos(np.pi / m), "| excess CE", geometry.excess_ce(H @ D.T, L, P))
     assert abs(C.max() - np.cos(np.pi / m)) < 0.05, C.max()
+
+
+def test_frequency_threshold_has_the_small_strength_expansion():
+    # rho_c = 1 - C_m alpha^2 + O(alpha^4), C_m = 1/3 - 1/(2m)
+    for m in (4, 12):
+        a = 1e-2
+        assert np.isclose((1 - geometry.frequency_threshold(a, m)) / a ** 2, 1 / 3 - 1 / (2 * m), rtol=1e-3)
+
+
+def test_frequency_threshold_is_where_the_truncated_solution_turns_unstable():
+    # rank 1, feature 1 kept exactly and feature 2 dropped; perturb E(+-e_2) = +-u, D_2+- = +-v alpha.
+    # The Hessian of the weighted CE in (u, v) at 0 gains a negative eigenvalue exactly when
+    # pi_2 / pi_1 crosses rho_c
+    from scipy.special import log_softmax
+    m, alpha = 6, 1.5
+    rho = geometry.frequency_threshold(alpha, m)
+
+    def loss(u, v, ratio):
+        pi = np.r_[1.0, ratio, np.full(m - 2, 0.3)]
+        total = 0.0
+        for k in range(m):
+            for s in (1.0, -1.0):
+                target = np.zeros(2 * m)
+                target[k], target[m + k] = s * alpha, -s * alpha
+                e = {0: s, 1: s * u}.get(k, 0.0)                     # the rank-1 state representation
+                d = np.zeros(2 * m)
+                d[0], d[m], d[1], d[m + 1] = alpha, -alpha, v * alpha, -v * alpha
+                p = np.exp(log_softmax(target))
+                total += pi[k] / 2 * -(p * log_softmax(e * d)).sum()
+        return total
+
+    def min_eig(ratio, h=1e-3):
+        f = lambda u, v: loss(u, v, ratio)
+        fuu = (f(h, 0) - 2 * f(0, 0) + f(-h, 0)) / h ** 2
+        fvv = (f(0, h) - 2 * f(0, 0) + f(0, -h)) / h ** 2
+        fuv = (f(h, h) - f(h, -h) - f(-h, h) + f(-h, -h)) / (4 * h ** 2)
+        return np.linalg.eigvalsh([[fuu, fuv], [fuv, fvv]]).min()
+
+    assert min_eig(1.03 * rho) < 0 < min_eig(0.97 * rho)

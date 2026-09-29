@@ -6,7 +6,7 @@ from src.code.cases import CASES, all_runs, case_overrides
 from src.code.data import init_dataset
 from src.code.train import resolve_config
 
-EXPECTED_STATES = {"weak": 27, "sharp": 16, "power_half": 32, "power_one": 32, "mixed": 16}
+EXPECTED_STATES = {"weak": 27, "sharp": 16, "power_half": 32, "power_one": 32, "mixed": 16, "frequency": 32}
 
 
 def test_every_case_composes_to_a_signed_task_of_the_expected_size():
@@ -20,4 +20,8 @@ def test_every_case_composes_to_a_signed_task_of_the_expected_size():
         else:
             assert set(np.unique(Z)) <= {-1.0, 0.0, 1.0}
         assert config.cfg.model_kwargs.model_config.embed_dim == case["d"][0]
-    assert len(all_runs()) == 2 * 3 * sum(len(c["d"]) for c in CASES.values())
+    runs = all_runs()
+    assert len(runs) == len(set(runs)) == 3 * sum(len(c.get("runners", (0, 0))) * len(c["d"]) for c in CASES.values())
+    assert {r[1] for r in runs if r[0] == "frequency"} == {"linear"}
+    assert resolve_config(case_overrides("sharp", "linear", 2, 0)).training_kwargs["optimizer"] == "sgd"
+    assert resolve_config(case_overrides("frequency", "linear", 5, 0)).training_kwargs["optimizer"] == "adamw_torch"

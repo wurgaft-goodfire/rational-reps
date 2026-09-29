@@ -1,6 +1,7 @@
 """Word -> feature family: N words with i.i.d. Bernoulli(p) features in {0, 1},
 outcomes the m feature tokens, softmax logits alpha_i Z_xi with alpha_i = scale * decay^i."""
 import numpy as np
+import pytest
 from omegaconf import OmegaConf
 
 from src.code.config import Config
@@ -207,3 +208,55 @@ def test_signed_mixing_hands_the_model_mixed_coordinates_of_singleton_patterns()
     assert np.allclose(A @ A, Sigma) and np.allclose(Z, Zp @ A.T)
     assert np.allclose(L[:, :m] - L[:, m:], 2 * alpha * Zp)
     assert np.allclose(np.corrcoef(Z.T), Sigma)                      # the features the model sees are correlated
+
+
+def test_frequency_ladder_weights_each_signed_singleton_by_half_its_feature_frequency():
+    # p(z = +-e_i) = pi_i / 2 with pi_i proportional to (i + 1)^-freq_beta
+    m, beta = 5, 1.0
+    _, info = feature_cube(m=m, k=1, signed=True, all_bundles=True, freq_beta=beta)
+    Z, w = info["Z"], info["weights"]
+    pi = (1.0 + np.arange(m)) ** -beta
+    pi /= pi.sum()
+    feature = np.abs(Z).argmax(1)
+    assert np.isclose(w.sum(), 1.0) and np.allclose(w, pi[feature] / 2)
+
+
+def test_weighted_batch_cross_entropy_is_the_frequency_weighted_mean():
+    # the batch scales each target row by n w_z, so cross-entropy (linear in the target) over the
+    # tiled batch equals sum_z w_z CE_z exactly
+    import torch
+    import torch.nn.functional as F
+    from src.code.train import graph_overrides, resolve_config
+    m = 4
+    config = resolve_config(graph_overrides({"structure": "feature_cube", "m": m, "k": 1, "signed": True,
+                                             "all_bundles": True, "scale": 1.0, "decay": 1.0, "freq_beta": 1.0}))
+    ds = KernelDataset(config)
+    b = ds[0]
+    logits = torch.randn(len(b["input_ids"]), ds.n_outcomes, generator=torch.Generator().manual_seed(0)).to(b["distribution_labels"])
+    rows = b["input_ids"][:, 0].cpu().numpy()
+    per_row = -(ds.P[rows] * torch.log_softmax(logits, -1)).sum(-1).cpu().numpy()
+    w = ds.info["weights"][rows]
+    expected = (w * per_row).sum() / w.sum()
+    assert np.isclose(F.cross_entropy(logits, b["distribution_labels"]).item(), expected, rtol=1e-5)
+
+
+@pytest.mark.slow
+def test_weak_logits_keep_the_most_frequent_features_and_follow_reversed_frequencies(tmp_path):
+    # equal weak strengths, rank 3 of 6: the weighted SVD keeps the modes with the largest pi_i, so a
+    # trained linear network dedicates its dimensions to features 1-3; reversing the ladder
+    # (freq_beta = -1) moves them to features 4-6, which rules out an effect of feature order
+    from src.code.analysis_utils import leverage, representation
+    from src.code.train import graph_overrides, train_inline
+    for beta, kept in ((1.0, [0, 1, 2]), (-1.0, [3, 4, 5])):
+        spec = {"structure": "feature_cube", "m": 6, "k": 1, "signed": True, "all_bundles": True,
+                "scale": 0.5, "decay": 1.0, "freq_beta": beta}
+        model, ds, evaluator, *_ = train_inline(
+            graph_overrides(spec) + ["runner=linear", "model_kwargs.model_config.embed_dim=3", "random_seed=0",
+                                     "training_kwargs.train_steps=8000", "training_kwargs.optimizer=sgd",
+                                     "training_kwargs.learning_rate=0.5"],
+            name=f"freq_{beta}", cache_dir=str(tmp_path))
+        E = np.asarray(representation(evaluator.evaluate(model)["hidden_states"], static=True))
+        plus = [int(np.flatnonzero(ds.features[:, i] == 1)[0]) for i in range(6)]   # the +e_i states
+        lev = leverage(E[plus])[0]
+        assert np.allclose(np.sort(np.argsort(lev)[-3:]), kept), lev
+        assert lev[kept].min() > 0.9 and np.delete(lev, kept).max() < 0.1, lev

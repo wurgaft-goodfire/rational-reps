@@ -20,18 +20,27 @@ CASES = {
     # moderate strength so the losing tokens carry weight and training pins the whole geometry
     "mixed": dict(spec={"structure": "feature_cube", "m": 8, "k": 1, "signed": True, "all_bundles": True,
                         "scale": 3.0, "decay": 1.0, "mix": 0.5}, d=(8, 4)),
+    # singletons of equal strength at Zipf input frequencies pi_i ~ 1/i: the three most frequent features
+    # keep their own directions and the next ones share the last two; the linear network only, trained
+    # with AdamW since gradient descent settles the shared plane slowly (leverage is gauge-free, so the
+    # balanced split does not matter here)
+    "frequency": dict(spec={"structure": "feature_cube", "m": 16, "k": 1, "signed": True, "all_bundles": True,
+                            "scale": 1.35, "decay": 1.0, "freq_beta": 1.0}, d=(5,), runners=("linear",),
+                      training={"optimizer": "adamw_torch", "learning_rate": 0.01, "train_steps": 12000}),
 }
 
 
 def case_overrides(name, runner, d, seed):
     """Hydra overrides of one run of a case: its structure, the model class, the rank and the seed. Trained
-    by plain gradient descent from small init, which keeps E'E - D'D conserved, so the saved factors are
-    balanced and representation and readout can be drawn in one frame (as the concepts worlds are)."""
+    by plain gradient descent from small init unless the case names its own ``training``: that keeps
+    E'E - D'D conserved, so the saved factors are balanced and representation and readout can be drawn
+    in one frame (as the concepts worlds are)."""
+    training = {"train_steps": 8000, "optimizer": "sgd", "learning_rate": 0.5, **CASES[name].get("training", {})}
     return graph_overrides(CASES[name]["spec"]) + [f"runner={runner}", f"model_kwargs.model_config.embed_dim={d}",
-                                                   f"random_seed={seed}", "training_kwargs.train_steps=8000",
-                                                   "training_kwargs.optimizer=sgd", "training_kwargs.learning_rate=0.5"]
+                                                   f"random_seed={seed}"] + [f"training_kwargs.{k}={v}" for k, v in training.items()]
 
 
 def all_runs(runners=("linear", "optimum")):
-    """Every (name, runner, d, seed) run of every case."""
-    return [(name, runner, d, seed) for name, case in CASES.items() for runner in runners for d in case["d"] for seed in SEEDS]
+    """Every (name, runner, d, seed) run of every case; a case may name its own runners."""
+    return [(name, runner, d, seed) for name, case in CASES.items() for runner in case.get("runners", runners)
+            for d in case["d"] for seed in SEEDS]

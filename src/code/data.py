@@ -110,6 +110,7 @@ class KernelDataset(Dataset):
 
         self.infer_latent = bool(config.get("infer_latent", False))
         self.prior = self.transition = None                       # a subclass may supply dynamics
+        self.weights = None                                       # input frequencies, uniform unless the structure gives them
         self._cond, P = self._build(config)
         self.P = P / P.sum(-1, keepdim=True)                      # the kernel p(outcome | z)
         self.n_outcomes = self.P.shape[-1]
@@ -134,6 +135,8 @@ class KernelDataset(Dataset):
         self.n_items = len(L)
         self.bipartite = self.info["bipartite"]
         self.features = self.info.get("Z")                        # item feature codes, if any
+        if "weights" in self.info:
+            self.weights = torch.tensor(self.info["weights"], dtype=torch.float32, device=self.device)
         if "prior" in self.info:                                  # the structure's prior over its hidden inputs
             self.prior = torch.tensor(self.info["prior"], dtype=torch.float64, device=self.device)
         P = apply_lapse(np.exp(L), config.get("lapse", 0.05))
@@ -236,11 +239,16 @@ class KernelDataset(Dataset):
         Only the outcome is scored — with several input slots the stream also contains
         transitions between inputs, which are independent and so unlearnable."""
         inputs = self._input_tuples()
-        rows = self.P[self._row_index(inputs)]
+        index = self._row_index(inputs)
+        rows = self.P[index]
         x = torch.multinomial(rows, 1, generator=self.rng) + self.n_items * self.bipartite
         seq = torch.cat([inputs, x], dim=1)
         labels = torch.full_like(seq, -100)
         labels[:, -1] = seq[:, -1]
+        if self.weights is not None:
+            # input frequencies: cross-entropy is linear in the target, so rows scaled by n w_z make
+            # the batch mean the frequency-weighted mean sum_z w_z CE_z
+            rows = rows * (self.n_items * self.weights[index])[:, None]
         return {"input_ids": seq, "labels": labels, "distribution_labels": rows}
 
     def _tile(self, tuples):
@@ -636,7 +644,7 @@ def _tree_graph(n=2, k=2, parents=None, levels=None, **_):
 
 def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
                  spectrum="geometric", beta=1.5, rho=0.0, blocks=1,
-                 paired=False, all_bundles=False, signed=False, k=None, mix=0.0):
+                 paired=False, all_bundles=False, signed=False, k=None, mix=0.0, freq_beta=None):
     """Bipartite word -> feature structure: N words with i.i.d. Bernoulli(p) features
     Z in {0, 1}, outcomes the m feature tokens, Lc(x, i) = alpha_i Z_xi and
     L = log_softmax(Lc) (p = sparsity, scale = sharpness). ``spectrum`` sets the importance
@@ -651,7 +659,9 @@ def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
     (uniform supports; with ``all_bundles`` every signed k-support once, else every state of
     {-1, 0, 1}^m); ``mix`` > 0 hands the model z = A z' with z' the signed patterns and A the
     symmetric root of the AR(1) correlation matrix mix^|i-j| (neighbouring features correlated,
-    partial correlations mix between neighbours and 0 beyond), the logits staying on z'. Returns (L (n_words, m or 2m), {"Z" (n_words, m), "alpha" (m,)}), plus "patterns"
+    partial correlations mix between neighbours and 0 beyond), the logits staying on z'.
+    ``freq_beta`` gives signed singletons unequal input frequencies, p(z = +-e_i) = pi_i / 2 with
+    pi_i proportional to (i+1)^-freq_beta, as info["weights"] (n_words,). Returns (L (n_words, m or 2m), {"Z" (n_words, m), "alpha" (m,)}), plus "patterns"
     and "A" when mixed."""
     from itertools import combinations, product
     from scipy.special import logsumexp
@@ -689,10 +699,15 @@ def feature_cube(N=256, m=8, p=0.3, decay=0.9, scale=1.75, seed=0,
     else:
         Lc = Z * alpha
     info = {"Z": Z, "alpha": alpha, "bipartite": True}
+    if freq_beta is not None:
+        if not (signed and k == 1 and all_bundles):
+            raise ValueError("freq_beta weights signed singletons: needs signed, k=1, all_bundles")
+        pi = (1.0 + np.arange(m)) ** -float(freq_beta)
+        info["weights"] = (pi / pi.sum())[np.abs(Z).argmax(1)] / 2
     if mix:
         lam, V = np.linalg.eigh(mix ** np.abs(np.arange(m)[:, None] - np.arange(m)[None]))
         A = (V * np.sqrt(lam)) @ V.T
-        info = {"Z": Z @ A.T, "patterns": Z, "A": A, "alpha": alpha, "bipartite": True}
+        info.update(Z=Z @ A.T, patterns=Z, A=A)
     return Lc - logsumexp(Lc, axis=1, keepdims=True), info
 
 

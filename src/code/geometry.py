@@ -228,3 +228,9 @@ def rank_constrained_geometry(alpha, Z, d, gtol=1e-7, max_iter=600):
     `modes` gives the task. Returns (H (n, d), D (m, d)) with logits H D^T."""
     Z = np.asarray(Z, float)
     return profiled_fit(Z, softmax_stats(alpha, Z)[1], d, gtol=gtol, max_iter=max_iter)
+
+
+def frequency_threshold(alpha, m):
+    """rho_c(alpha, m): for signed singletons of common strength alpha over m features, a retained
+    feature i and a dropped feature j start sharing a direction when pi_j / pi_i > rho_c."""
+    return alpha ** 2 * (m - 1 + np.cosh(alpha)) / (m * np.sinh(alpha) ** 2)

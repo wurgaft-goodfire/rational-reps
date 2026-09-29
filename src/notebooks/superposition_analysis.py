@@ -41,8 +41,8 @@ def _(mo):
     from hydra.core.override_parser.overrides_parser import OverridesParser
     from omegaconf import OmegaConf
     from src.code.analysis_utils import feature_vectors, has_run, leverage, load_run, rigid_map
-    from src.code.cases import SEEDS as CASE_SEEDS, case_overrides
-    from src.code.geometry import excess_ce, factor_logcond, modes
+    from src.code.cases import CASES, SEEDS as CASE_SEEDS, case_overrides
+    from src.code.geometry import excess_ce, factor_logcond, frequency_threshold, modes
     from src.code.train import resolve_config
     from src.code import plot_utils
     import matplotlib.pyplot as plt
@@ -68,6 +68,7 @@ def _(mo):
     CLASSES = ["linear", "paired_features", "additive_features", "optimum"]   # every model class a cell can hold
     return (
         B_KEY,
+        CASES,
         CASE_SEEDS,
         CLASSES,
         COL,
@@ -81,6 +82,7 @@ def _(mo):
         excess_ce,
         factor_logcond,
         feature_vectors,
+        frequency_threshold,
         has_run,
         leverage,
         load_run,
@@ -375,6 +377,102 @@ def _(COL, CONFIG, case_runs, nearest_token_cosine, np, plot_utils, plt):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    ## Figure 3 — unequal frequencies: a dedicated head and a shared plane
+    Sixteen features of equal strength $\alpha = 1.35$, one active at a time, at Zipf input frequencies
+    $\pi_i \propto 1/i$, $d = 5$. Left: the three most frequent features keep one direction each (seed 0).
+    Middle: the next three share the remaining plane, whitened vectors $E(E^\top E)^{-1/2}$ of the $+e_i$
+    states, squared length the leverage; the $-e_i$ states are antipodal. Right: leverage over three seeds,
+    with the note's linear-instability band ($\pi_j / \pi_i > \rho_c$ for a kept $i$ and a dropped $j$) shaded.
+    """)
+    return
+
+
+@app.cell
+def _(
+    Arrow3D,
+    CASES,
+    CASE_SEEDS,
+    COL,
+    CONFIG,
+    basis3,
+    case_overrides,
+    frequency_threshold,
+    leverage,
+    load_run,
+    np,
+    plot_utils,
+    plt,
+    whiten,
+):
+    _case = CASES["frequency"]
+    _d, _alpha0 = _case["d"][0], _case["spec"]["scale"]
+    _runs = [load_run(case_overrides("frequency", "linear", _d, _s)) for _s in CASE_SEEDS]
+    _Z = np.asarray(_runs[0]["dataset"].features, float)
+    _m = _Z.shape[1]
+    _plus = [int(np.flatnonzero(_Z[:, _i] == 1)[0]) for _i in range(_m)]                     # the +e_i states
+    _levs = np.array([leverage(_r["representation"][_plus])[0] for _r in _runs])             # (seeds, m)
+    # the note's linear-instability band at this alpha: a kept feature i <= d or a dropped j > d whose pair
+    # (i, j) has pi_j / pi_i > rho_c
+    _pi = 1.0 / (1.0 + np.arange(_m))
+    _rho = frequency_threshold(_alpha0, _m)
+    _band = [_i for _i in range(_d) if _pi[_d] / _pi[_i] > _rho] + [_j for _j in range(_d, _m) if _pi[_j] / _pi[_d - 1] > _rho]
+    _head = [_i for _i in range(_d) if _i < min(_band)]
+    # seed 0 drawn: whitened +e_i vectors (squared length = leverage), the head's span and the plane beside it
+    _W = whiten(_runs[0]["representation"][_plus])
+    _Q = np.linalg.qr(_W[_head].T)[0].T                                                      # head span (3, d)
+    _rest = _W - _W @ _Q.T @ _Q
+    _P = np.linalg.svd(_rest, full_matrices=False)[2][:_d - len(_head)]                       # the plane (2, d)
+    _on = [_i for _i in range(len(_head), _m) if _levs[:, _i].mean() > 0.02]
+    _FC = {_i: plt.cm.viridis(_k / max(1, len(_band) - 1) * 0.85) for _k, _i in enumerate(_band)}
+
+    _fig = plt.figure(figsize=(15, 5), layout="constrained")
+    _axh = _fig.add_subplot(1, 3, 1, projection="3d")
+    _B = basis3(_W[_head], _W, True)                                                         # the head along the axes
+    for _i in _head:
+        _v = _W[_i] @ _B.T
+        _axh.add_artist(Arrow3D(_v, arrowstyle="-|>", mutation_scale=16, lw=2.4, color="0.25", shrinkA=0, shrinkB=0))
+        _axh.text(*(1.08 * _v), str(_i + 1), fontsize=12, ha="center", va="center")
+    for _a in range(3):                                                                       # the unit cube the three span
+        for _b in (0, 1):
+            for _c in (0, 1):
+                _p0 = np.zeros(3); _p0[(_a + 1) % 3] = _b; _p0[(_a + 2) % 3] = _c
+                _p1 = _p0.copy(); _p1[_a] = 1
+                _axh.plot(*zip(_p0, _p1), color="0.85", lw=0.8)
+    _axh.set_xlim(0, 1.1); _axh.set_ylim(0, 1.1); _axh.set_zlim(0, 1.1); _axh.set_box_aspect((1, 1, 1), zoom=0.95)
+    _axh.set_proj_type("ortho"); _axh.view_init(elev=24, azim=35); _axh.set_axis_off()
+    _axh.set_title(f"head: features {_head[0] + 1}–{_head[-1] + 1}, one direction each", fontsize=12)
+
+    _axp = _fig.add_subplot(1, 3, 2)
+    _th = np.linspace(0, 2 * np.pi, 200)
+    _axp.plot(np.cos(_th), np.sin(_th), color="0.85", lw=1.0, zorder=0)                        # leverage 1
+    for _i in _on:
+        _v = _W[_i] @ _P.T
+        _axp.annotate("", xy=_v, xytext=(0, 0), arrowprops=dict(arrowstyle="-|>", lw=2.2, color=_FC.get(_i, "0.5"), shrinkA=0, shrinkB=0))
+        _axp.annotate(str(_i + 1), _v / np.linalg.norm(_v) * (np.linalg.norm(_v) + 0.12), ha="center", va="center", fontsize=12)
+    _axp.set_xlim(-1.2, 1.2); _axp.set_ylim(-1.2, 1.2); _axp.set_aspect("equal")
+    plot_utils.FIG.clean(_axp)
+    _axp.set_title(f"the plane beside the head: features {_on[0] + 1}–{_on[-1] + 1} share it", fontsize=12)
+
+    _axb = _fig.add_subplot(1, 3, 3)
+    _n = 10
+    _axb.axvspan(min(_band) + 0.5, max(_band) + 1.5, color=COL["orange"], alpha=0.12, lw=0)
+    _axb.text((min(_band) + max(_band)) / 2 + 1, 1.08, rf"theory: unstable band ($\rho_c$ = {_rho:.2f})", ha="center", fontsize=10, color=COL["orange"])
+    _axb.bar(np.arange(1, _n + 1), _levs[:, :_n].mean(0), color=[_FC.get(_i, "0.25") for _i in range(_n)], width=0.7)
+    for _l in _levs:
+        _axb.scatter(np.arange(1, _n + 1), _l[:_n], color="black", s=10, zorder=3)
+    _axb.set_xticks(np.arange(1, _n + 1)); _axb.set_ylim(0, 1.15)
+    _axb.set_xlabel(r"feature $i$ (by frequency, $\pi_i \propto 1/i$)"); _axb.set_ylabel(r"leverage $d_i$")
+    plot_utils.FIG.style_axes(_axb)
+    _axb.set_title("trained leverage, 3 seeds", fontsize=12)
+    _fig.suptitle(rf"$m$ = {_m}, $d$ = {_d}, $\alpha$ = {_alpha0}")
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3_frequency"))
+    _out
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ## Part II — the general case
 
     The Bernoulli feature cube of the sweep: $m = 64$ features active with probability $p$ on the
@@ -385,7 +483,7 @@ def _(mo):
 
 @app.cell
 def _(CUT, HEAD, np, plot_utils, plt):
-    # the frame drawing of figure 3
+    # the frame drawing of figures 3 and 4
     from matplotlib.patches import FancyArrowPatch
     from mpl_toolkits.mplot3d.proj3d import proj_transform
 
@@ -436,13 +534,13 @@ def _(CUT, HEAD, np, plot_utils, plt):
             ax.set_axis_off()
         ax.set_title(title, fontsize=11)
 
-    return ALPHA_CMAP, band, basis3, frame_panel
+    return ALPHA_CMAP, Arrow3D, band, basis3, frame_panel
 
 
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Figure 3 — the sparsity sweep
+    ## Figure 4 — the sparsity sweep
     Sparsity $p$ falls left to right; each mega-row is one $d$, largest first. Per cell, a predicted block and a trained
     block: the whitened first-order vectors $E(E^\top E)^{-1/2}$ (squared length the leverage $d_i$) of the superposed band
     (the features past the top three with $d_i > 0.2$) in its PCA frame, coloured by $\alpha_i$ (the top three join when the band has
@@ -531,7 +629,7 @@ def _(
     _cb = _fig.colorbar(plt.cm.ScalarMappable(norm=_norm, cmap=ALPHA_CMAP), cax=_sf_bar.add_axes([0.15, 0.52, 0.25, 0.09]), label=r"$\alpha_i$")
     _cb.set_ticks([1, 2, 4, 8]); _cb.set_ticklabels(["1", "2", "4", "8"]); _cb.ax.minorticks_off()
     _fig.colorbar(_im, cax=_sf_bar.add_axes([0.15, 0.41, 0.25, 0.09]))
-    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig3_sparsity"))
+    _out = plot_utils.save_figure(_fig, plot_utils.figure_path(CONFIG, "fig4_sparsity"))
     mo.vstack([mo.hstack([SEL_F7["beta"], SEL_F7["rho"]], justify="start", gap=2), _out])
     return
 
