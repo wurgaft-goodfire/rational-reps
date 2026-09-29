@@ -320,7 +320,7 @@ def _(
     rsa,
 ):
     scope_run = load_run(["runner=transformer", "setting=scopes", "training_kwargs.context_length=64",
-                          "training_kwargs.optimizer=adamw_torch", "training_kwargs.train_steps=15000", "training_kwargs.batch_size=1024",
+                          "training_kwargs.optimizer=adamw_torch", "training_kwargs.train_steps=45000", "training_kwargs.batch_size=1024",
                           "training_kwargs.learning_rate=0.001", "model_kwargs.model_config.hidden_size=64",
                           "scope_kwargs.kind_strength=0.5"])
     _P = scope_run["targets"].astype(np.float64)                                 # (B, T, V) exact next-token rows
@@ -332,7 +332,8 @@ def _(
                    "transformer": scope_run["representation"][:, :_P.shape[1]]}  # position t predicts token t+1
 
     _E0 = scope_codes["predicted"].reshape(-1, _rank)
-    _idx = np.random.default_rng(0).choice(len(_E0), 3000, replace=False)
+    _block = ~np.isin(np.asarray(scope_run["inputs"])[:, :_P.shape[1]], range(3)).reshape(-1)   # no name pending: a used
+    _idx = np.random.default_rng(0).choice(np.flatnonzero(_block), 3000, replace=False)       # name's -30 is never scored
     print(f"KL {scope_run['loss']:.1e}")
     print(f"{'code':12s} {'RSA':>6s} {'CKA':>6s} {'affine R2':>9s} | {'same kind':>9s} {'diff kind':>9s} {'same name':>9s} {'|step| cv':>9s}")
     for _m, _H in scope_codes.items():
