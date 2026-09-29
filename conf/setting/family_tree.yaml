@@ -12,6 +12,6 @@ structure_kwargs:
   parents: [-1, 0, 0, 2, 2, 2, 5, 2, 7, 0, 9, 9, 9, 12, 9, 14]
   labels: [-1, 1, 0, 0, 0, 1, 2, 1, 2, 0, 0, 0, 1, 2, 1, 2]    # 0 up, 1 sibling, 2 down
   label_vectors: [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]   # up +generation, sibling its own axis, down -generation
-  alpha: 1.0
-  gamma: 0.8
+  alpha: 0.5               # a link (squared distance 1 + alpha) stays closer than two people sharing a parent and link (2)
+  gamma: 1.05
 sample_mode: pointwise

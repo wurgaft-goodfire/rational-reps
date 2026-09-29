@@ -55,7 +55,7 @@ def _(mo):
 
     Ego's family as links up to a parent, to a sibling and down to a child. When a person is mentioned, the
     companion is drawn with $\log p(y \mid x) = -\tfrac{\gamma}{2}\left[d_{\mathrm{kin}}(x, y) + \alpha
-    \lVert c(x) - c(y) \rVert^2\right]$, $c = $ (generation, sibling links) counted from ego, $\alpha = 1$: close
+    \lVert c(x) - c(y) \rVert^2\right]$, $c = $ (generation, sibling links) counted from ego, $\alpha = 1/2$ (a link, squared distance $1 + \alpha$, stays closer than two people sharing a parent and link type, $2$): close
     kin, one generation and one line (direct or collateral) are mentioned together. Static models read a person and
     output the companion; the in-context transformer reads a sequence of co-mentions. Full width, SGD.
     """)
