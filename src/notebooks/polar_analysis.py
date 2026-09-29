@@ -302,7 +302,8 @@ def _(mo):
 
     Streams of code-like tokens: `for` / `def` / `if` open a block that binds a fresh name, `end` closes
     it, and every open scope adds its effect to the next-token scores: its name is used, `for` raises break /
-    continue, `def` return / yield, `if` pass. Width-64 transformer, next-token prediction, AdamW; the predicted
+    continue, `def` return / yield, `if` pass (kind effects at half strength, so same-kind sibling blocks stay farther
+    apart than parent and child). Width-64 transformer, next-token prediction, AdamW; the predicted
     code is the factored exact next-token rows.
     """)
     return
@@ -321,7 +322,7 @@ def _(
     scope_run = load_run(["runner=transformer", "setting=scopes", "training_kwargs.context_length=64",
                           "training_kwargs.optimizer=adamw_torch", "training_kwargs.train_steps=15000", "training_kwargs.batch_size=1024",
                           "training_kwargs.learning_rate=0.001", "model_kwargs.model_config.hidden_size=64",
-                          "scope_kwargs.kind_strength=1.0"])
+                          "scope_kwargs.kind_strength=0.5"])
     _P = scope_run["targets"].astype(np.float64)                                 # (B, T, V) exact next-token rows
     _R = np.log(_P).reshape(-1, _P.shape[-1])
     _, _, _D, _S = factor_logcond(_R)
@@ -352,7 +353,8 @@ def _(mo):
     mo.md(r"""
     ## Figure 3 — the scope tree read off the code
 
-    Top: the nesting of one test program decoded from the representation alone: nodes are the module and each block
+    Top: the nesting of one test program (drawn at random among those with six or more blocks, three deep)
+    decoded from the representation alone: nodes are the module and each block
     (the state after its bound name), links the minimum spanning tree of their distances, each link's kind the nearest
     kind prototype (mean block-entry step); drawn like indented code, depth down and blocks in opening order, links
     colored by decoded kind (dashed gray: wrong); titles give this program's scores and the mean over all test
@@ -382,7 +384,8 @@ def _(
     _trees = [_ds.blocks(_s) for _s in _inp]
     _depth = lambda tree, i: 0 if tree[i][1] < 0 else 1 + _depth(tree, tree[i][1])
     _ok = [b for b, tr in enumerate(_trees) if all(p < _T for p, *_ in tr)]
-    _b = max(_ok, key=lambda b: (max(_depth(_trees[b], i) for i in range(len(_trees[b]))), len(_trees[b])))
+    _rich = [b for b in _ok if len(_trees[b]) >= 6 and max(_depth(_trees[b], i) for i in range(len(_trees[b]))) >= 3]
+    _b = int(np.random.default_rng(0).choice(_rich))                        # a random program with some nesting
     _tree = _trees[_b]
     _parents = [p for _, p, _, _ in _tree]
     _labels = [-1] + [_ds.kinds.index(k) for _, _, k, _ in _tree[1:]]
