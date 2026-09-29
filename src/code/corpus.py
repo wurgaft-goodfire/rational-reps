@@ -148,16 +148,16 @@ def log_conditional(C_ij, r_i, floor=1.0):
     return np.log(np.maximum(np.asarray(C_ij, dtype=np.float64), floor)) - np.log(np.asarray(r_i, dtype=np.float64))[:, None]
 
 
-def full_embedding(C, V, target, d, device="cuda", eps=0.01):
+def full_embedding(C, V, target, d=None, device="cuda", eps=0.01, rows=None):
     """(V, d) word embedding from a block of the count matrix ``C`` (its top ``V`` words, or the words at the
     indices ``V``): the target matrix's d largest eigenmodes as U sqrt(lambda), largest first (the word2vec-style
-    factor of Karkada et al.). With P the block's joint probabilities and p its marginals, ``"m"`` is P / p p^T,
-    ``"mstar"`` is 2 (P - p p^T) / (P + p p^T), ``"logm"`` is log(P / p p^T + eps), and ``"logcond"`` is the
-    row-centred log P(j | i) (one-co-occurrence floor), whose balanced SVD factor U sqrt(S) comes from the
-    eigenmodes of its Gram."""
+    factor of Karkada et al.); ``d=None`` keeps every positive mode, ``rows`` returns only those rows. With P the
+    block's joint probabilities and p its marginals, ``"m"`` is P / p p^T, ``"mstar"`` is 2 (P - p p^T) / (P + p p^T),
+    ``"logm"`` is log(P / p p^T + eps), and ``"logcond"`` is the row-centred log P(j | i) (one-co-occurrence
+    floor), whose balanced SVD factor U sqrt(S) comes from the eigenmodes of its Gram."""
     import torch
-    rows = np.arange(V) if isinstance(V, (int, np.integer)) else np.asarray(V)
-    X = torch.as_tensor(np.asarray(C[rows][:, rows] if len(rows) < len(C) else C, dtype=np.float32), device=device).double()
+    block = np.arange(V) if isinstance(V, (int, np.integer)) else np.asarray(V)
+    X = torch.as_tensor(np.asarray(C[block][:, block] if len(block) < len(C) else C, dtype=np.float32), device=device).double()
     if target == "logcond":
         L = torch.log(X.clamp(min=1.0)); L = L - L.mean(1, keepdim=True)
         G, power = L @ L.T, 0.25                                          # G = U S^2 U^T, so U (S^2)^(1/4) = U sqrt(S)
@@ -167,7 +167,9 @@ def full_embedding(C, V, target, d, device="cuda", eps=0.01):
         power = 0.5
     lam, U = torch.linalg.eigh(G)
     lam, U = lam.flip(0), U.flip(1)                                        # largest first
-    k = min(d, int((lam > 0).sum()))
+    k = int((lam > 0).sum()) if d is None else min(d, int((lam > 0).sum()))
+    if rows is not None:
+        U = U[torch.as_tensor(np.asarray(rows), device=device)]
     return (U[:, :k] * lam[:k] ** power).cpu().numpy()
 
 

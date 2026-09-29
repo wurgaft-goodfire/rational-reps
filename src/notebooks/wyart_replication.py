@@ -16,7 +16,7 @@ def _(mo):
     mo.md(r"""
     # Wyart-group replications: corpus statistics vs Gemma-2-2B
 
-    Karkada et al. (symmetry: years, states, months), Nava & Wyart (WordNet trees) and Korchinski et al. (analogies),
+    Karkada et al. (symmetry: years, months), Nava & Wyart (WordNet trees) and Korchinski et al. (analogies),
     each on their corpus (Wikipedia 2023-11) and on Gutenberg and FineWeb-Edu as transfer. Every setting has a main
     panel, Gemma beside three codes for the same words: their word embedding (the top modes of their target matrix over
     the full vocabulary), the same construction under the repo's row-centred log-conditional, and our block code from
@@ -122,12 +122,21 @@ def _(
         return dict(np.load(path))
 
 
-    def embedding(c, weighting, V, target, d, label=None):
-        """Cached (V, d) full-vocabulary embedding of the corpus: rows are its first V words, or the words at indices V."""
-        path = CACHE / "corpus" / TAGS[c] / f"emb_{weighting.replace('/', '')}_{target}_V{label or V}_d{d}.npy"
+    def embedding(c, weighting, V, target):
+        """Cached full-rank embedding of the corpus's first V words (every positive mode of the target)."""
+        path = CACHE / "corpus" / TAGS[c] / f"emb_{weighting.replace('/', '')}_{target}_V{V}_dfull.npy"
         if not path.exists():
-            np.save(path, full_embedding(corpora[c, weighting][0], V, target, d).astype(np.float32))
+            np.save(path, full_embedding(corpora[c, weighting][0], V, target).astype(np.float32))
         return np.load(path)
+
+
+    def embedding_rows(c, weighting, V, target, words, label=None):
+        """The full-rank embedding's rows for ``words`` only, cached per word set (the whole matrix is never stored).
+        ``V`` is the top-V block or an index list over the corpus vocabulary; ``label`` names an index list."""
+        pos = None if isinstance(V, int) else {int(i): p for p, i in enumerate(V)}
+        rows = [index[c][w] if pos is None else pos[index[c][w]] for w in words]
+        return cached("rows", f"{c} {weighting} V{label or V} {target} full " + " ".join(words),
+                      lambda: {"rows": full_embedding(corpora[c, weighting][0], V, target, rows=rows).astype(np.float32)})["rows"]
 
 
     def block_code(c, weighting, words):
@@ -147,7 +156,7 @@ def _(
                                               for m in (rsa, cka)})
 
 
-    return block_code, cached, embedding, layer_table, scores
+    return block_code, cached, embedding, embedding_rows, layer_table, scores
 
 
 @app.cell
@@ -212,15 +221,16 @@ def _(mo):
     mo.md(r"""
     ## 1. Years (Karkada et al.)
 
-    Their setting: Wikipedia, 25k words, window 16 with weights 16+1-d, M* = 2 tanh(PMI/2), top 1000 modes; years 1700-2020 read from
+    Their setting: Wikipedia, 25k words, window 16 with weights 16+1-d, M* = 2 tanh(PMI/2), every positive mode kept (their d = 25000
+    column; at 1000 modes the month ring and the fine year structure are lost); years 1700-2020 read from
     Gemma as "In the year x" at the final token. Main panel: the year rows of each code beside Gemma's best layer.
     """)
     return
 
 
 @app.cell
-def _(TAGS, block_code, embedding, index):
-    V_K, D_K = 25000, 1000                                                   # Karkada's vocabulary and embedding dimension
+def _(TAGS, block_code, embedding_rows, index):
+    V_K = 25000                                                              # Karkada's vocabulary; every positive mode kept
     YEARS_ALL = [str(y) for y in range(1700, 2021)]
 
 
@@ -228,11 +238,10 @@ def _(TAGS, block_code, embedding, index):
         return [w for w in words if index[c].get(w, V) < V]
 
 
-    def code_rows(c, words, weighting="linear", V=V_K, d=D_K, target="mstar"):
+    def code_rows(c, words, weighting="linear", V=V_K, target="mstar"):
         """Their embedding rows, our log-conditional embedding rows, and our block code, for words of the corpus."""
-        ids = [index[c][w] for w in words]
-        return {"M* embedding": embedding(c, weighting, V, target, d)[ids],
-                "log-cond embedding": embedding(c, weighting, V, "logcond", d)[ids],
+        return {"M* embedding": embedding_rows(c, weighting, V, target, words),
+                "log-cond embedding": embedding_rows(c, weighting, V, "logcond", words),
                 "block code": block_code(c, weighting, words)}
 
 
@@ -243,12 +252,21 @@ def _(TAGS, block_code, embedding, index):
 
 
 @app.cell
-def _(TAGS, TEMPLATES, YEARS_ALL, code_rows, gemma_reps, layer_table, np, years):
+def _(
+    TAGS,
+    TEMPLATES,
+    YEARS_ALL,
+    code_rows,
+    gemma_reps,
+    layer_table,
+    np,
+    years,
+):
     _G = gemma_reps("years", YEARS_ALL, TEMPLATES["years"])                  # (layers, 321, d)
     _pos = {y: i for i, y in enumerate(YEARS_ALL)}
     gemma_years = {c: _G[:, [_pos[y] for y in years[c]]] for c in TAGS}
     year_codes = {c: code_rows(c, years[c]) for c in TAGS}
-    _t = {c: layer_table(year_codes[c], gemma_years[c], f"years {c} {TEMPLATES['years']} L{_G.shape[0]} " + " ".join(years[c])) for c in TAGS}
+    _t = {c: layer_table(year_codes[c], gemma_years[c], f"years full-rank {c} {TEMPLATES['years']} L{_G.shape[0]} " + " ".join(years[c])) for c in TAGS}
     year_rsa, year_cka = {c: t["rsa"] for c, t in _t.items()}, {c: t["cka"] for c, t in _t.items()}
     YEAR_LAYER = int(np.mean([v.mean(1) for v in year_rsa.values()], 0).argmax())
     print(f"Gemma layer {YEAR_LAYER} (best mean RSA over codes and corpora)")
@@ -268,7 +286,7 @@ def _(
     def years_panel(c):
         G = gemma_years[c][YEAR_LAYER]
         fig = plot_utils.plot_embedding_panels(G, year_codes[c], None, cmap="magma", scores={k: scores(E, G) for k, E in year_codes[c].items()},
-                                               first_name=f"Gemma L{YEAR_LAYER}", starred="rest")
+                                               first_name=f"Gemma L{YEAR_LAYER}", starred="rest", gram_percentile=95, gram_center=False)  # their uncentred Gram
         fig.suptitle(f"years, {c}: Gemma-2-2B beside their M* embedding, the log-conditional embedding and our block code", y=1.02)
         return plot_utils.save_figure(fig, FIGURES / f"wyart_years_{c}.png")
 
@@ -426,170 +444,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 2. US states (Karkada et al.)
-
-    The 48 contiguous states, read from Gemma as "The location of the US state x". The full-vocabulary embeddings have no
-    row for two-word names, so this setting uses the 38 single-word states throughout. Main panel: PCA of the state rows.
-    """)
-    return
-
-
-@app.cell
-def _(TAGS, TEMPLATES, code_rows, gemma_reps, layer_table, np):
-    CENTROIDS = {"alabama": (32.8, -86.8), "arizona": (34.3, -111.7), "arkansas": (34.9, -92.4), "california": (37.2, -119.5),
-                 "colorado": (39.0, -105.5), "connecticut": (41.6, -72.7), "delaware": (39.0, -75.5), "florida": (28.6, -82.4),
-                 "georgia": (32.7, -83.4), "idaho": (44.4, -114.6), "illinois": (40.0, -89.2), "indiana": (39.9, -86.3),
-                 "iowa": (42.1, -93.5), "kansas": (38.5, -98.4), "kentucky": (37.5, -85.3), "louisiana": (31.1, -92.0),
-                 "maine": (45.4, -69.2), "maryland": (39.0, -76.8), "massachusetts": (42.3, -71.8), "michigan": (44.3, -85.4),
-                 "minnesota": (46.3, -94.3), "mississippi": (32.7, -89.7), "missouri": (38.4, -92.5), "montana": (47.0, -109.6),
-                 "nebraska": (41.5, -99.8), "nevada": (39.3, -116.6), "ohio": (40.3, -82.8), "oklahoma": (35.6, -97.5),
-                 "oregon": (43.9, -120.6), "pennsylvania": (40.9, -77.8), "tennessee": (35.9, -86.4), "texas": (31.5, -99.3),
-                 "utah": (39.3, -111.7), "vermont": (44.1, -72.7), "virginia": (37.5, -78.8), "washington": (47.4, -120.5),
-                 "wisconsin": (44.6, -90.0), "wyoming": (43.0, -107.5)}                   # (latitude, longitude) of the state centroid
-    STATES = list(CENTROIDS)
-    LATLON = np.array([CENTROIDS[s] for s in STATES])
-    _G = gemma_reps("states", [s.title() for s in STATES], TEMPLATES["states"])
-    gemma_states = {c: _G for c in TAGS}
-    state_codes = {c: code_rows(c, STATES) for c in TAGS}
-    _t = {c: layer_table(state_codes[c], _G, f"states {c} {TEMPLATES['states']} L{_G.shape[0]} " + " ".join(STATES)) for c in TAGS}
-    state_rsa, state_cka = {c: t["rsa"] for c, t in _t.items()}, {c: t["cka"] for c, t in _t.items()}
-    STATE_LAYER = int(np.mean([v.mean(1) for v in state_rsa.values()], 0).argmax())
-    print(f"{len(STATES)} single-word contiguous states; Gemma layer {STATE_LAYER}")
-    return LATLON, STATES, STATE_LAYER, gemma_states, state_cka, state_codes, state_rsa
-
-
-@app.cell
-def _(
-    FIGURES,
-    STATE_LAYER,
-    gemma_states,
-    plot_utils,
-    scores,
-    state_codes,
-    view_corpus,
-):
-    def states_panel(c):
-        G = gemma_states[c][STATE_LAYER]
-        fig = plot_utils.plot_embedding_panels(G, state_codes[c], None, scores={k: scores(E, G) for k, E in state_codes[c].items()},
-                                               first_name=f"Gemma L{STATE_LAYER}", starred="rest")
-        fig.suptitle(f"states, {c}: Gemma-2-2B beside the three codes", y=1.02)
-        return plot_utils.save_figure(fig, FIGURES / f"wyart_states_{c}.png")
-
-
-    states_panel(view_corpus.value)
-    return
-
-
-@app.cell
-def _(
-    STATE_LAYER,
-    TAGS,
-    cka_null,
-    cka_shuffle_null,
-    gemma_states,
-    layer_curves,
-    state_cka,
-    state_codes,
-    state_rsa,
-):
-    for _c in TAGS:
-        _G = gemma_states[_c][STATE_LAYER]
-        print(f"{_c:10s} " + "  ".join(f"{k} {state_rsa[_c][STATE_LAYER, j]:.2f}/{state_cka[_c][STATE_LAYER, j]:.2f}" for j, k in enumerate(state_codes[_c]))
-              + f"   CKA floor {cka_null(_G):.2f}/{cka_shuffle_null(_G):.2f}")
-    layer_curves("states", state_rsa, state_cka, STATE_LAYER, list(state_codes["wikipedia"]), "wyart_states_layers.png")
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    **Their tests.** Eigenmodes on the map: the top three PCs of each code's centred state Gram, drawn as colours at the
-    state centroids (their Figure 3; they compare with a distance-kernel model, which we leave out). Coordinate
-    decoding: leave-one-out ridgeless regression of latitude and longitude on the top r PCs, R² vs r.
-    """)
-    return
-
-
-@app.cell
-def _(
-    FIGURES,
-    LATLON,
-    STATES,
-    STATE_LAYER,
-    gemma_states,
-    pcs,
-    plot_utils,
-    plt,
-    state_codes,
-    view_corpus,
-):
-    def state_modes(c):
-        codes = {f"Gemma L{STATE_LAYER}": gemma_states[c][STATE_LAYER], **state_codes[c]}
-        fig, axes = plt.subplots(len(codes), 3, figsize=(10, 2.4 * len(codes)))
-        for row, (name, E) in zip(axes, codes.items()):
-            P = pcs(E)
-            for k, ax in enumerate(row):
-                lim = abs(P[:, k]).max()
-                ax.scatter(LATLON[:, 1], LATLON[:, 0], c=P[:, k], cmap=plot_utils.FIG.diverging_cmap, vmin=-lim, vmax=lim, s=60)
-                for s, (lat, lon) in zip(STATES, LATLON):
-                    ax.annotate(s[:2], (lon, lat), fontsize=5, ha="center", va="center")
-                ax.set_xticks([]); ax.set_yticks([]); ax.set_aspect(1 / 0.78)
-                ax.set_title(f"{name}: mode {k + 1}", fontsize=8)
-        fig.suptitle(f"states, {c}: top Gram eigenmodes on the map (Karkada Fig. 3)", y=1.0)
-        fig.tight_layout()
-        return plot_utils.save_figure(fig, FIGURES / f"wyart_states_modes_{c}.png")
-
-
-    state_modes(view_corpus.value)
-    return
-
-
-@app.cell
-def _(
-    FIGURES,
-    LATLON,
-    STATE_LAYER,
-    gemma_states,
-    np,
-    pcs,
-    plot_utils,
-    plt,
-    state_codes,
-    view_corpus,
-):
-    def loo_r2(E, Y, ranks):
-        """Leave-one-out ridgeless R² of Y (n, 2) from the top-r PCs of E, averaged over the two coordinates."""
-        P = pcs(E); n = len(Y); out = []
-        for r in ranks:
-            X = np.column_stack([P[:, :r], np.ones(n)]); pred = np.zeros_like(Y)
-            for i in range(n):
-                m = np.arange(n) != i
-                pred[i] = X[i] @ np.linalg.lstsq(X[m], Y[m], rcond=None)[0]
-            out.append(np.mean(1 - ((pred - Y) ** 2).sum(0) / ((Y - Y.mean(0)) ** 2).sum(0)))
-        return np.array(out)
-
-
-    def state_decoding(c):
-        ranks = [1, 2, 3, 4, 6, 8, 10, 12]
-        codes = {f"Gemma L{STATE_LAYER}": gemma_states[c][STATE_LAYER], **state_codes[c]}
-        fig, ax = plt.subplots(figsize=(5, 3.4))
-        for name, E in codes.items():
-            r2 = loo_r2(E, LATLON, ranks)
-            ax.plot(ranks, r2, marker="o", ms=3, label=name)
-            print(f"{c:10s} {name:20s} R² at r=6: {r2[ranks.index(6)]:.2f}, best {r2.max():.2f} at r={ranks[int(r2.argmax())]}")
-        ax.axhline(0.5, color="0.7", lw=0.8); ax.set_ylim(-0.5, 1); ax.set_xlabel("rank r"); ax.set_ylabel("leave-one-out R² (lat, lon)")
-        ax.set_title(f"decoding state coordinates, {c}", fontsize=9); ax.legend(frameon=False, fontsize=8)
-        return plot_utils.save_figure(fig, FIGURES / f"wyart_states_decoding_{c}.png")
-
-
-    state_decoding(view_corpus.value)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 3. Months (Karkada et al.)
+    ## 2. Months (Karkada et al.)
 
     "The month of the year is x". Main panel: the month rows on the ring. Their test is the ring itself in the full
     embedding; we count how many of the 12 calendar-adjacent pairs are adjacent around PC1-PC2.
@@ -613,7 +468,7 @@ def _(
     MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
     gemma_months = gemma_reps("months", [m.capitalize() for m in MONTHS], TEMPLATES["months"])
     month_codes = {c: code_rows(c, MONTHS) for c in TAGS}
-    _t = {c: layer_table(month_codes[c], gemma_months, f"months {c} {TEMPLATES['months']} L{gemma_months.shape[0]}") for c in TAGS}
+    _t = {c: layer_table(month_codes[c], gemma_months, f"months full-rank {c} {TEMPLATES['months']} L{gemma_months.shape[0]}") for c in TAGS}
     month_rsa, month_cka = {c: t["rsa"] for c, t in _t.items()}, {c: t["cka"] for c, t in _t.items()}
     MONTH_LAYER = int(np.mean([v.mean(1) for v in month_rsa.values()], 0).argmax())
 
@@ -648,7 +503,7 @@ def _(
     _G = gemma_months[MONTH_LAYER]
     _fig = plot_utils.plot_embedding_panels(_G, month_codes[_c], {"structure": "ring", "n": 12},
                                             scores={k: scores(E, _G) for k, E in month_codes[_c].items()},
-                                            first_name=f"Gemma L{MONTH_LAYER}", starred="rest")
+                                            first_name=f"Gemma L{MONTH_LAYER}", starred="rest", gram_percentile=95)
     _fig.suptitle(f"months, {_c}: Gemma-2-2B beside the three codes", y=1.02)
     plot_utils.save_figure(_fig, FIGURES / f"wyart_months_{_c}.png")
     return
@@ -657,10 +512,10 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 4. WordNet trees (Nava & Wyart)
+    ## 3. WordNet trees (Nava & Wyart)
 
     Their setting: Wikipedia, weights 16/d, vocabulary = the WordNet noun lemmas seen in the corpus (here: those within our
-    50k words), M* over that vocabulary, top 2048 modes; Gemma's unembeddings (= layer 0) with and without whitening.
+    50k words), M* over that vocabulary, every positive mode kept; Gemma's unembeddings (= layer 0) with and without whitening.
     Trees: depth-3 perfect binary subtrees of the contracted hierarchy under organism, artifact, event, 40 each.
     Main panel: one tree as ultrametric dendrograms, Gemma's best layer beside the three codes.
     """)
@@ -710,7 +565,7 @@ def _(
     block_code,
     cached,
     cka,
-    embedding,
+    embedding_rows,
     gemma_reps,
     index,
     np,
@@ -720,25 +575,22 @@ def _(
     whitened,
     wn_words,
 ):
-    D_N = 2048
-
-
     def tree_nodes(tree):
         return [w for level in tree for w in level]
 
 
-    def wn_embedding(c, target):
-        """Their embedding over the corpus's WordNet noun lemmas, 1/d weights: rows aligned with wn_words[c]."""
+    def wn_rows(c, target, words):
+        """Their embedding over the corpus's WordNet noun lemmas (1/d weights, every positive mode), rows for ``words``."""
         ids = np.array([index[c][w] for w in wn_words[c]])
-        return embedding(c, "1/d", ids, target, D_N, label=f"wn{len(ids)}")
+        return embedding_rows(c, "1/d", ids, target, words, label=f"wn{len(ids)}")
 
 
-    _pos = {c: {w: i for i, w in enumerate(wn_words[c])} for c in TAGS}
-    _emb = {(c, t): wn_embedding(c, t) for c in TAGS for t in ("mstar", "logcond")}
+    _pos = {w: i for i, w in enumerate(tree_words)}
+    _emb = {(c, t): wn_rows(c, t, tree_words) for c in TAGS for t in ("mstar", "logcond")}
 
 
     def tree_codes(c, tree):
-        words = tree_nodes(tree); rows = [_pos[c][w] for w in words]
+        words = tree_nodes(tree); rows = [_pos[w] for w in words]
         return {"M* embedding": _emb[c, "mstar"][rows], "log-cond embedding": _emb[c, "logcond"][rows], "block code": block_code(c, "1/d", words)}
 
 
@@ -761,7 +613,7 @@ def _(
         return np.array([np.mean([metric(codes[k], gemma_tree_code(t, layer)) for t, codes in zip(trees[r], tree_code_sets[r, c])]) for k in CODE_NAMES])
 
 
-    _t = {(r, c): cached(f"trees_{r}_{c}", f"{r} {c} L{_G.shape[0]} " + " ".join(w for t in trees[r] for w in tree_nodes(t)),
+    _t = {(r, c): cached(f"trees_{r}_{c}", f"{r} {c} full-rank L{_G.shape[0]} " + " ".join(w for t in trees[r] for w in tree_nodes(t)),
                          lambda r=r, c=c: {m.__name__: np.array([tree_scores(m, l, r, c) for l in range(_G.shape[0])]) for m in (rsa, cka)})
           for r in trees for c in TAGS}                                                            # (layers, codes) per root and corpus
     tree_rsa, tree_cka = {rc: t["rsa"] for rc, t in _t.items()}, {rc: t["cka"] for rc, t in _t.items()}
@@ -808,7 +660,7 @@ def _(
         spec = {"structure": "tree", "parents": [-1] + [(u - 1) // 2 for u in range(1, 15)], "view": "ultrametric"}
         G = gemma_tree_code(tree, TREE_LAYER); codes = tree_codes(c, tree)
         fig = plot_utils.plot_embedding_panels(G, codes, spec, cmap=ListedColormap(["0.5"] * 7 + LEAF_COLORS),
-                                               scores={k: scores(E, G) for k, E in codes.items()}, first_name=f"Gemma L{TREE_LAYER}", starred="rest")
+                                               scores={k: scores(E, G) for k, E in codes.items()}, first_name=f"Gemma L{TREE_LAYER}", starred="rest", gram_percentile=95)
         fig.suptitle(f"{root} tree {i}, {c}: " + " / ".join(", ".join(l) for l in tree), y=1.04, fontsize=9)
         return plot_utils.save_figure(fig, FIGURES / f"wyart_tree_{root}_{c}.png")
 
@@ -1016,10 +868,9 @@ def _(TEMPLATES, block_code, embedding, gemma_reps, index, np, wn_words):
 
 
     def example_codes(c):
-        pos = {w: i for i, w in enumerate(wn_words[c])}; rows = [pos[w] for w in example_words]
         ids = np.array([index[c][w] for w in wn_words[c]])
-        return {"M* embedding": embedding(c, "1/d", ids, "mstar", 2048, label=f"wn{len(ids)}")[rows],
-                "log-cond embedding": embedding(c, "1/d", ids, "logcond", 2048, label=f"wn{len(ids)}")[rows],
+        return {"M* embedding": embedding_rows(c, "1/d", ids, "mstar", example_words, label=f"wn{len(ids)}"),
+                "log-cond embedding": embedding_rows(c, "1/d", ids, "logcond", example_words, label=f"wn{len(ids)}"),
                 "block code": block_code(c, "1/d", example_words)}
 
 
@@ -1042,7 +893,7 @@ def _(
         spec = {"structure": "tree", "parents": [-1] + [(u - 1) // 2 for u in range(1, 15)], "view": "ultrametric"}
         codes = example_codes(c); G = gemma_example[TREE_LAYER]
         fig = plot_utils.plot_embedding_panels(G, codes, spec, cmap=ListedColormap(["0.5"] * 7 + ["#1f4e9c"] * 2 + ["#7fb2e5"] * 2 + ["#b22222"] * 2 + ["#f4a582"] * 2),
-                                               scores={k: scores(E, G) for k, E in codes.items()}, first_name=f"Gemma L{TREE_LAYER}", starred="rest")
+                                               scores={k: scores(E, G) for k, E in codes.items()}, first_name=f"Gemma L{TREE_LAYER}", starred="rest", gram_percentile=95)
         fig.suptitle(f"their organism example, {c}: " + " / ".join(", ".join(l) for l in EXAMPLE), y=1.04, fontsize=9)
         return plot_utils.save_figure(fig, FIGURES / f"wyart_example_tree_{c}.png")
 
@@ -1090,7 +941,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 5. Analogies (Korchinski et al.)
+    ## 4. Analogies (Korchinski et al.)
 
     Their setting: Wikipedia, the 10k most frequent words, window 16 with weights 16+1-d, targets M = P_ij / (P_i P_j) and
     log(M + 0.01), embeddings U_K √λ_K, top-1 by Euclidean distance over all 10k words (query words excluded), Mikolov's 14
@@ -1125,14 +976,14 @@ def _(
     np,
     vocab,
 ):
-    RANKS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000]
+    RANKS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, V_KO]                          # the last is full rank
     TARGETS = {"M": "m", "log M": "logm", "log-cond": "logcond"}
 
 
     def accuracy_by_rank(c):
         """{target: (ranks, families)} top-1 Euclidean accuracy over the corpus's 10k words."""
         idx = {w: i for i, w in enumerate(vocab[c][:V_KO])}
-        W = {name: embedding(c, "linear", V_KO, t, 1000) for name, t in TARGETS.items()}            # load each once
+        W = {name: embedding(c, "linear", V_KO, t) for name, t in TARGETS.items()}                  # load each once
         return {name: np.array([[analogy_accuracy(E[:, :K], idx, qs, metric="euclidean") for qs in analogies[c].values()] for K in RANKS])
                 for name, E in W.items()}
 
@@ -1226,8 +1077,8 @@ def _(
         idx = {w: i for i, w in enumerate(vocab[c][:V_KO])}; rows = [idx[w] for w in words]
         fam = {w: j for j, qs in enumerate(analogies[c].values()) for t in qs for w in t}
         colors = np.array([fam[w] for w in words])
-        codes = {"M embedding": embedding(c, "linear", V_KO, "m", 1000)[rows], "log M embedding": embedding(c, "linear", V_KO, "logm", 1000)[rows],
-                 "log-cond embedding": embedding(c, "linear", V_KO, "logcond", 1000)[rows], "block code": block_code(c, "linear", words)}
+        codes = {"M embedding": embedding(c, "linear", V_KO, "m")[rows], "log M embedding": embedding(c, "linear", V_KO, "logm")[rows],
+                 "log-cond embedding": embedding(c, "linear", V_KO, "logcond")[rows], "block code": block_code(c, "linear", words)}
         G = gemma_vocab[GEMMA_ANALOGY_LAYER][[widx[w] for w in words]]
         fig = plot_utils.plot_embedding_panels(G, codes, None, cmap="tab20", colors=colors, scores={k: scores(E, G) for k, E in codes.items()},
                                                first_name=f"Gemma L{GEMMA_ANALOGY_LAYER}", starred="rest", gram_percentile=99)

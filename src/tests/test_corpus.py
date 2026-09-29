@@ -247,6 +247,8 @@ def test_full_embedding_factors_the_bounded_pmi_and_log_ratio_targets_by_their_t
     assert full_embedding(C, V, "mstar", d=2, device="cpu").shape == (V, 2)
     idx = np.array([0, 2, 5])                                              # a word subset instead of the top-V block
     assert np.allclose(full_embedding(C, idx, "mstar", d=3, device="cpu"), full_embedding(C[np.ix_(idx, idx)], 3, "mstar", d=3, device="cpu"))
+    W = full_embedding(C, V, "mstar", device="cpu")                        # d=None: every positive mode; rows: a subset of them
+    assert W.shape[1] == keep.sum() and np.allclose(full_embedding(C, V, "mstar", device="cpu", rows=[1, 4]), W[[1, 4]])
 
 
 def test_full_embedding_logcond_is_the_balanced_factor_of_the_row_centred_log_conditional():
