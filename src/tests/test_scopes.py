@@ -14,7 +14,7 @@ from src.code.scopes import ScopeDataset
 
 def _dataset(kind_strength=1.0, T=48, B=512):
     cfg = OmegaConf.create({"setting": "scopes", "random_seed": 0, "sample_mode": "sequence",
-                            "scope_kwargs": {"n_names": 8, "name_bonus": 4.0, "kind_strength": kind_strength},
+                            "scope_kwargs": {"n_names": 8, "name_bonus": 4.0, "kind_strength": kind_strength, "pool_size": 8192},
                             "training_kwargs": {"context_length": T, "batch_size": B}})
     return ScopeDataset(cfg)
 
@@ -102,6 +102,6 @@ def test_break_is_likelier_inside_a_loop_only_with_kind_effects():
 
 def test_scopes_is_a_registered_setting():
     cfg = OmegaConf.create({"setting": "scopes", "random_seed": 0, "sample_mode": "sequence",
-                            "scope_kwargs": {"n_names": 8, "name_bonus": 4.0, "kind_strength": 1.0},
+                            "scope_kwargs": {"n_names": 8, "name_bonus": 4.0, "kind_strength": 1.0, "pool_size": 16},
                             "training_kwargs": {"context_length": 16, "batch_size": 4}})
     assert isinstance(init_dataset(cfg), ScopeDataset)

@@ -15,12 +15,14 @@ DEPTH_EFFECTS = {"end": 1.0, **{k: -0.7 for k in KINDS}}          # deeper: clos
 BASE = {"name": -3.0, "key": -2.0, "pass": -1.0, "end": -4.0}
 FRESH, TAKEN = 0.0, -6.0                                          # the name after a kind: avoid open names
 MAX_DEPTH = 32
+POOL_CHUNK = 16384
 
 
 class ScopeDataset(Dataset):
     """Streams of scope-stack programs for a causal LM, with exact next-token targets. ``scope_kwargs``:
     ``n_names`` (bound-name tokens), ``name_bonus`` (b, how much an open scope's name is used),
-    ``kind_strength`` (scales the kind effects; 0 is the null, where a block's kind changes nothing)."""
+    ``kind_strength`` (scales the kind effects; 0 is the null, where a block's kind changes nothing),
+    ``pool_size`` (programs sampled once, which the batches draw from)."""
 
     def __init__(self, config):
         self.config = config
@@ -53,6 +55,7 @@ class ScopeDataset(Dataset):
         self.start_token = V
         self.vocab_size = V + 1
         self.num_dims = V
+        self._pool = None
 
     compute_metrics = KernelDataset.compute_metrics
 
@@ -115,16 +118,25 @@ class ScopeDataset(Dataset):
         return torch.log_softmax(lo, -1).cpu().numpy()
 
     # ── interface read by the trainer / evaluator ───────────────────────────
-    def batch(self, size=None):
-        B, T = size or self.config.training_kwargs["batch_size"], self.context_length
+    def _sample(self, B, rng):
+        """B programs of ``context_length`` tokens after the start token, token by token: (B, T+1)."""
         st = self._init_state(B)
         seq = [torch.full((B,), self.start_token, dtype=torch.long, device=self.device)]
-        for _ in range(T):
-            p = torch.softmax(self._logits(st), -1)
-            tok = torch.multinomial(p, 1, generator=self.rng).squeeze(1)
+        for _ in range(self.context_length):
+            tok = torch.multinomial(torch.softmax(self._logits(st), -1), 1, generator=rng).squeeze(1)
             self._step(st, tok)
             seq.append(tok)
-        seq = torch.stack(seq, 1)
+        return torch.stack(seq, 1)
+
+    def batch(self, size=None):
+        """``size`` programs drawn from a pool of ``scope_kwargs.pool_size``, sampled once with a generator of its
+        own (sampling token by token at every training step is too slow)."""
+        if self._pool is None:
+            n, rng = self.config.get("scope_kwargs")["pool_size"], torch.Generator(device=self.device)
+            rng.manual_seed(self.config.random_seed + 1)
+            self._pool = torch.cat([self._sample(min(POOL_CHUNK, n - i), rng) for i in range(0, n, POOL_CHUNK)])
+        B = size or self.config.training_kwargs["batch_size"]
+        seq = self._pool[torch.randint(len(self._pool), (B,), generator=self.rng, device=self.device)]
         return {"input_ids": seq, "labels": seq.clone()}
 
     def optimal_predictions(self, input_ids):

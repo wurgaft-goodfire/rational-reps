@@ -11,3 +11,4 @@ scope_kwargs:
   n_names: 12
   name_bonus: 4.0
   kind_strength: 1.0
+  pool_size: 262144       # programs sampled once; batches draw from them
