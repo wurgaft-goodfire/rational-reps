@@ -628,6 +628,34 @@ def tree_adjacency(parents):
     return A
 
 
+def labeled_tree_positions(parents, labels, alpha):
+    """Node positions of a labeled tree, (n, n + n_labels): the edge into node c is a private unit
+    step e_c plus sqrt(alpha) times its label's shared step; a node sums the steps on its root path."""
+    n = len(parents); A = np.zeros((n, n))
+    for x in range(n):
+        v = x
+        while parents[v] >= 0:
+            A[x, v] = 1.0; v = parents[v]
+    labels = np.asarray(labels); M = np.zeros((n, labels.max() + 1))
+    edges = [c for c in range(n) if parents[c] >= 0]
+    M[edges, labels[edges]] = 1.0
+    return np.c_[A, np.sqrt(alpha) * A @ M]
+
+
+def labeled_tree(n=2, k=3, parents=None, labels=None, alpha=1.0, gamma=1.0):
+    """Labeled-tree log-conditional over all nodes, log p(y|x) = -gamma/2 ||p(x) - p(y)||^2 + const,
+    p = `labeled_tree_positions`. ``labels[c]`` is the label of the edge into node c (root entry
+    ignored); default = birth order among siblings. The code is polar: equal edge lengths,
+    same-label cosine alpha / (1 + alpha), different labels orthogonal."""
+    from scipy.special import logsumexp
+    parents = tree_parents(n, k, parents)
+    if labels is None:
+        labels = [0] + [parents[1:c].count(parents[c]) for c in range(1, len(parents))]
+    P = labeled_tree_positions(parents, labels, alpha)
+    lo = -gamma / 2 * ((P[:, None] - P[None]) ** 2).sum(-1)
+    return lo - logsumexp(lo, axis=1, keepdims=True)
+
+
 def _tree_graph(n=2, k=2, parents=None, levels=None, **_):
     """Tree adjacency over *all* nodes (balanced depth-n branch-k, per-level branching from
     ``levels``, or an explicit ``parents`` list). ``**_`` swallows conditional-only keys."""
@@ -775,6 +803,7 @@ _STRUCTURES = {
     "sphere": _Structure(sphere), "communities": _Structure(communities),
     "hypercube": _Structure(hypercube), "complete": _Structure(complete),
     "tree": _Structure(_tree_graph, tree_conditional),
+    "labeled_tree": _Structure(_tree_graph, labeled_tree),
     # bipartite (no adjacency): words -> features; hypothesis spaces -> observations
     "feature_cube": _Structure(None, feature_cube),
     "factors": _Structure(None, factors),
