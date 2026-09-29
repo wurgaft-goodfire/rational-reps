@@ -80,10 +80,11 @@ def edge_cosines(E, parents):
     return V @ V.T
 
 
-def decode_tree(E, parents, labels):
+def decode_tree(E, parents, labels, protos=None):
     """Read a labeled tree off a code E (n, d), as the Polar Probe does: links = minimum spanning tree of the
-    pairwise distances; each link's label = the type prototype (mean true link vector, the link itself left out)
-    nearest by |cosine|, its sign giving which end is the parent. Returns [(parent, child, label)]."""
+    pairwise distances; each link's label = the type prototype (mean true link vector, the link itself left out;
+    or the given ``protos`` (n_labels, d)) nearest by |cosine|, its sign giving which end is the parent.
+    Returns [(parent, child, label)]."""
     from scipy.sparse.csgraph import minimum_spanning_tree
     E = np.asarray(E, dtype=np.float64)
     D = np.linalg.norm(E[:, None] - E[None], axis=-1)
@@ -93,9 +94,9 @@ def decode_tree(E, parents, labels):
     out = []
     for i, j in links:
         rest = np.array([{i, j} != {p, c} for p, c in true])              # leave a true link out of its own prototypes
-        protos = np.array([V[rest & (lab == l)].mean(0) for l in range(lab.max() + 1)])
+        P = protos if protos is not None else np.array([V[rest & (lab == l)].mean(0) for l in range(lab.max() + 1)])
         v = E[j] - E[i]
-        cos = protos @ v / (np.linalg.norm(protos, axis=1) * np.linalg.norm(v))
+        cos = P @ v / (np.linalg.norm(P, axis=1) * np.linalg.norm(v))
         l = int(np.argmax(np.abs(cos)))
         out.append((i, j, l) if cos[l] > 0 else (j, i, l))
     return out
