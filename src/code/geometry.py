@@ -80,6 +80,39 @@ def edge_cosines(E, parents):
     return V @ V.T
 
 
+def decode_tree(E, parents, labels):
+    """Read a labeled tree off a code E (n, d), as the Polar Probe does: links = minimum spanning tree of the
+    pairwise distances; each link's label = the type prototype (mean true link vector, the link itself left out)
+    nearest by |cosine|, its sign giving which end is the parent. Returns [(parent, child, label)]."""
+    from scipy.sparse.csgraph import minimum_spanning_tree
+    E = np.asarray(E, dtype=np.float64)
+    D = np.linalg.norm(E[:, None] - E[None], axis=-1)
+    links = np.argwhere(minimum_spanning_tree(D).toarray() > 0)
+    true = [(p, c) for c, p in enumerate(parents) if p >= 0]
+    V, lab = edge_vectors(E, parents), np.asarray(labels)[[c for _, c in true]]
+    out = []
+    for i, j in links:
+        rest = np.array([{i, j} != {p, c} for p, c in true])              # leave a true link out of its own prototypes
+        protos = np.array([V[rest & (lab == l)].mean(0) for l in range(lab.max() + 1)])
+        v = E[j] - E[i]
+        cos = protos @ v / (np.linalg.norm(protos, axis=1) * np.linalg.norm(v))
+        l = int(np.argmax(np.abs(cos)))
+        out.append((i, j, l) if cos[l] > 0 else (j, i, l))
+    return out
+
+
+def tree_scores(decoded, parents, labels, reverse=None):
+    """(unlabeled attachment, labeled attachment): the share of true links found, ignoring then requiring the
+    decoded label and direction. ``reverse`` maps a label to the label of the same link read backwards (up <-> down),
+    so a reversed decode with the reversed label counts as correct."""
+    true = {(p, c): labels[c] for c, p in enumerate(parents) if p >= 0}
+    found = {frozenset(pc) for pc in true}
+    reverse = reverse or {}
+    unlabeled = sum(frozenset((p, c)) in found for p, c, _ in decoded) / len(true)
+    labeled = sum(true.get((p, c)) == l or (l in reverse and true.get((c, p)) == reverse[l]) for p, c, l in decoded)
+    return unlabeled, labeled / len(true)
+
+
 def whiten(Z, tol=1e-10):
     """Predictive modes of binary features, u = z C^{-1/2} with C the covariance of z and
     the symmetric (pseudo-inverse) root, so mode k stays closest to feature k. Returns

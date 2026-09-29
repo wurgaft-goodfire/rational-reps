@@ -7,7 +7,7 @@ import pytest
 
 from src.code.data import (adjacency_conditional, graph_conditional, labeled_tree, labeled_tree_positions,
                            tree_adjacency, tree_parents)
-from src.code.geometry import edge_cosines, edge_vectors
+from src.code.geometry import decode_tree, edge_cosines, edge_vectors, tree_scores
 
 PARENTS = tree_parents(n=2, k=3)                                               # 13 nodes, 12 edges
 LABELS = [0] + [PARENTS[1:c].count(PARENTS[c]) for c in range(1, 13)]         # birth order among siblings
@@ -56,6 +56,19 @@ def test_signed_label_vectors_point_up_and_down_links_opposite_ways(alpha):
     c = alpha / (1 + alpha)
     assert np.allclose(np.linalg.norm(V, axis=1) ** 2, [1 + alpha, 1, 1 + alpha, 1 + alpha])
     assert np.allclose(edge_cosines(P, parents), [[1, 0, -c, c], [0, 1, 0, 0], [-c, 0, 1, -c], [c, 0, -c, 1]])
+
+
+FAMILY = dict(parents=[-1, 0, 0, 2, 2, 2, 5, 2, 7, 0, 9, 9, 9, 12, 9, 14],
+              labels=[-1, 1, 0, 0, 0, 1, 2, 1, 2, 0, 0, 0, 1, 2, 1, 2],
+              label_vectors=[[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
+
+
+def test_the_tree_is_read_back_from_the_positions():
+    # links = minimum spanning tree of distances, type and direction = nearest link prototype; up and down are one
+    # axis with opposite signs, so a down link read backwards is an up link
+    P = labeled_tree_positions(FAMILY["parents"], FAMILY["labels"], 0.5, FAMILY["label_vectors"])
+    decoded = decode_tree(P, FAMILY["parents"], FAMILY["labels"])
+    assert tree_scores(decoded, FAMILY["parents"], FAMILY["labels"], reverse={0: 2, 2: 0}) == (1.0, 1.0)
 
 
 def test_labeled_tree_is_a_registered_structure():
