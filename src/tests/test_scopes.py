@@ -14,7 +14,7 @@ from src.code.scopes import ScopeDataset
 
 def _dataset(kind_strength=1.0, T=48, B=512):
     cfg = OmegaConf.create({"setting": "scopes", "random_seed": 0, "sample_mode": "sequence",
-                            "scope_kwargs": {"n_names": 8, "name_bonus": 4.0, "kind_strength": kind_strength, "pool_size": 8192},
+                            "scope_kwargs": {"n_names": 32, "name_bonus": 4.0, "kind_strength": kind_strength, "pool_size": 8192},
                             "training_kwargs": {"context_length": T, "batch_size": B}})
     return ScopeDataset(cfg)
 
@@ -96,6 +96,14 @@ def test_blocks_parse_the_nesting_of_a_program():
     ids = [ds.start_token] + [ds.vocab.index(t) for t in prog]
     blocks = ds.blocks(ids)
     assert blocks == [(0, -1, None, None), (2, 0, "def", "n0"), (4, 1, "for", "n1"), (8, 1, "if", "n2")]
+
+
+def test_bound_names_are_never_reused_within_a_program():
+    ds = _dataset()
+    toks = ds.batch()["input_ids"].cpu().numpy()
+    for s in toks:
+        bound = [ds.vocab[s[t + 1]] for t in range(1, len(s) - 1) if ds.vocab[s[t]] in ds.kinds]
+        assert len(bound) == len(set(bound))
 
 
 def test_scopes_is_a_registered_setting():

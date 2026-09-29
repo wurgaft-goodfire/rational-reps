@@ -13,7 +13,7 @@ KEYS = ["break", "continue", "return", "yield", "pass"]
 KIND_EFFECTS = {"for": {"break": 3.0, "continue": 3.0}, "def": {"return": 3.0, "yield": 1.5}, "if": {"pass": 1.5}}
 DEPTH_EFFECTS = {"end": 1.0, **{k: -0.7 for k in KINDS}}          # deeper: closing likelier, opening rarer
 BASE = {"name": -3.0, "key": -2.0, "pass": -1.0, "end": -4.0}
-FRESH, TAKEN = 0.0, -6.0                                          # the name after a kind: avoid open names
+USED = -30.0                                                      # the name after a kind is fresh: never bound before in the program
 MAX_DEPTH = 32
 POOL_CHUNK = 16384
 
@@ -77,7 +77,7 @@ class ScopeDataset(Dataset):
     def _init_state(self, B):
         z = lambda *s, dt=torch.long: torch.zeros(*s, dtype=dt, device=self.device)
         return {"S": z(B, len(self.vocab), dt=torch.float64), "kind": z(B, MAX_DEPTH), "name": z(B, MAX_DEPTH),
-                "depth": z(B), "taken": z(B, len(self.names), dt=torch.float64),
+                "depth": z(B), "used": z(B, len(self.names), dt=torch.float64),
                 "expect": z(B, dt=torch.bool), "pending": z(B)}
 
     def _logits(self, st):
@@ -85,7 +85,7 @@ class ScopeDataset(Dataset):
         normal = self.base + st["S"]
         fresh = torch.full_like(normal, -30.0)
         n0 = len(self.kinds)
-        fresh[:, n0:n0 + len(self.names)] = FRESH + TAKEN * st["taken"]
+        fresh[:, n0:n0 + len(self.names)] = USED * (st["used"] > 0)
         return torch.where(st["expect"][:, None], fresh, normal)
 
     def _step(self, st, tok):
@@ -97,7 +97,7 @@ class ScopeDataset(Dataset):
         st["kind"][rows[push], d[push]] = st["pending"][push]
         st["name"][rows[push], d[push]] = name[push]
         st["S"][push] += self.W[st["pending"][push], name[push]]
-        st["taken"][rows[push], name[push]] += 1
+        st["used"][rows[push], name[push]] += 1
         st["depth"] = d + push.long()
         opened = ~push & (tok < n0)
         st["pending"] = torch.where(opened, tok, st["pending"])
@@ -106,7 +106,6 @@ class ScopeDataset(Dataset):
         top = (st["depth"] - 1).clamp(min=0)
         k, n = st["kind"][rows, top], st["name"][rows, top]
         st["S"][pop] -= self.W[k[pop], n[pop]]
-        st["taken"][rows[pop], n[pop]] -= 1
         st["depth"] = st["depth"] - pop.long()
         assert int(st["depth"].max()) < MAX_DEPTH
 

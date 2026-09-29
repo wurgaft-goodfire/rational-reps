@@ -8,7 +8,7 @@
 setting: scopes
 structure: scope_stack        # names the run directory's task
 scope_kwargs:
-  n_names: 12
+  n_names: 32              # bound names are fresh within a program, so enough for every block
   name_bonus: 4.0
   kind_strength: 0.5       # keeps same-kind sibling blocks farther apart than parent and child
   pool_size: 262144       # programs sampled once; batches draw from them
