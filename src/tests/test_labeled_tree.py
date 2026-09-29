@@ -7,7 +7,7 @@ import pytest
 
 from src.code.data import (adjacency_conditional, graph_conditional, labeled_tree, labeled_tree_positions,
                            tree_adjacency, tree_parents)
-from src.code.geometry import decode_tree, edge_cosines, edge_vectors, tree_scores
+from src.code.geometry import decode_tree, edge_cosines, edge_vectors, tree_distances, tree_scores
 
 PARENTS = tree_parents(n=2, k=3)                                               # 13 nodes, 12 edges
 LABELS = [0] + [PARENTS[1:c].count(PARENTS[c]) for c in range(1, 13)]         # birth order among siblings
@@ -69,6 +69,11 @@ def test_the_tree_is_read_back_from_the_positions():
     P = labeled_tree_positions(FAMILY["parents"], FAMILY["labels"], 0.5, FAMILY["label_vectors"])
     decoded = decode_tree(P, FAMILY["parents"], FAMILY["labels"])
     assert tree_scores(decoded, FAMILY["parents"], FAMILY["labels"], reverse={0: 2, 2: 0}) == (1.0, 1.0)
+
+
+def test_tree_distances_count_links():
+    D = tree_distances([-1, 0, 1, 0])                                         # 0 - 1 - 2 and 0 - 3
+    assert D[2, 3] == 3 and D[1, 3] == 2 and D[0, 2] == 2
 
 
 def test_labeled_tree_is_a_registered_structure():

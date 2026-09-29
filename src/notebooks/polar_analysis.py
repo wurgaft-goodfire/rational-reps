@@ -234,13 +234,13 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 2 — one sequence in the in-context transformer
+    ## Figure 2 — one sequence read by the in-context transformer
 
-    Left: the transformer's representation at every mention in one test sequence (gray), on that sequence's top two
-    principal directions; black points are each person's mean, joined by their family links (colored by type). The
-    sequence is the most complete one whose people form a connected family tree. Middle: the same links as vectors
-    (farther person's mean minus the nearer one's) on the generation and sibling axes of the model's per-person codes.
-    Right: link cosines of its per-person codes over all test sequences, as in Figure 1.
+    Both panels on one plane of the transformer's raw representation: the generation axis (mean up link minus mean down
+    link of its per-person codes) and the sibling axis orthogonal to it. Left: every link of its per-person codes (thick =
+    per-type mean). Middle: its representation as one test sequence is read, an arrow from each mention to the next,
+    colored by how the two people are related (gray: not directly related); labels at each person's mean position. Right:
+    link cosines of its per-person codes over all test sequences.
     """)
     return
 
@@ -264,47 +264,47 @@ def _(
 ):
     _run = family_runs[IN_CONTEXT]
     _n = len(PARENTS)
-    _labels = [-1] + list(LINKS)
     _tok = np.asarray(_run["inputs"])
     _R = _run["representation"]
-    _sets = [set(_s[_s < _n].tolist()) for _s in _tok]
-    _ok = [b for b, S in enumerate(_sets) if 0 in S and all(PARENTS[c] in S for c in S if c != 0)]
-    _b = max(_ok, key=lambda b: len(_sets[b]))                                # most people, connected through ego
-    _keep = _tok[_b] < _n
-    _X, _t = _R[_b][_keep], _tok[_b][_keep]
-    _people = sorted(_sets[_b])
-    _E = {p: _X[_t == p].mean(0) for p in _people}                           # each person's mean state in this sequence
-    _Xc = _X - _X.mean(0)
-    _P2 = np.linalg.svd(_Xc, full_matrices=False)[2][:2]
-    _XY = _Xc @ _P2.T
-    _mean_xy = {p: (_E[p] - _X.mean(0)) @ _P2.T for p in _people}
-    _fig, (_axm, _axa, _axg) = plt.subplots(1, 3, figsize=(16, 5.4), gridspec_kw=dict(width_ratios=[1.5, 1, 1], wspace=0.25))
-    _axm.scatter(*_XY.T, s=10, color="0.75", zorder=0)
-    for _c in _people:
-        _p = PARENTS[_c]
-        if _p >= 0:
-            _axm.plot(*zip(_mean_xy[_p], _mean_xy[_c]), color=LINK_COLORS[LINKS[_c - 1]], lw=2.2, zorder=1)
-    for _p in _people:
-        _axm.scatter(*_mean_xy[_p], s=36, color="k", zorder=2)
-        _axm.annotate(PEOPLE[_p], _mean_xy[_p], textcoords="offset points", xytext=(4, 3), fontsize=8)
-    _axm.set_xticks([]); _axm.set_yticks([])
-    _axm.set_title(f"representations in one sequence ({len(_t)} mentions, top two directions)", fontsize=11)
-    _axm.set_xlabel(" · ".join(PEOPLE[i] for i in _t[:9]) + " · …", fontsize=8)
-    _V = edge_vectors(family[IN_CONTEXT], PARENTS)                           # axes from the model's per-person codes
+    _V = edge_vectors(family[IN_CONTEXT], PARENTS)                           # the model's links, one per family link
     _x = _V[LINKS == 0].mean(0) - _V[LINKS == 2].mean(0); _x /= np.linalg.norm(_x)
     _y = _V[LINKS == 1].mean(0); _y -= (_y @ _x) * _x; _y /= np.linalg.norm(_y)
-    _links = [(PARENTS[c], c) for c in _people if PARENTS[c] >= 0]
-    _W = np.array([[(_E[c] - _E[p]) @ _x, (_E[c] - _E[p]) @ _y] for p, c in _links])
-    _W /= np.linalg.norm([_E[c] - _E[p] for p, c in _links], axis=1).mean()
-    for (_a, _bb), (_p, _c) in zip(_W, _links):
-        _axa.annotate("", (_a, _bb), (0, 0), arrowprops=dict(arrowstyle="-|>", color=LINK_COLORS[LINKS[_c - 1]], lw=1.6, alpha=0.8))
-    _axa.axhline(0, color="0.85", lw=0.6, zorder=0); _axa.axvline(0, color="0.85", lw=0.6, zorder=0)
-    _axa.set_xlim(-1.2, 1.2); _axa.set_ylim(-1.2, 1.2); _axa.set_aspect("equal"); _axa.set_xticks([]); _axa.set_yticks([])
-    _axa.set_xlabel("generation axis"); _axa.set_ylabel("sibling axis")
-    _axa.set_title("this sequence's links", fontsize=11)
+    _A = np.stack([_x, _y])                                                  # one projection for both panels
+    _unit = np.linalg.norm(_V, axis=1).mean()
+    _rel = {}                                                                # (a, b) -> type of the move from a to b
+    for _c, _p in enumerate(PARENTS):
+        if _p >= 0:
+            _l = LINKS[_c - 1]
+            _rel[(_p, _c)] = _l
+            _rel[(_c, _p)] = {0: 2, 2: 0, 1: 1}[_l]                          # read backwards: up <-> down
+    _b = max(range(len(_tok)), key=lambda b: sum((int(_tok[b, t]), int(_tok[b, t + 1])) in _rel for t in range(1, _tok.shape[1] - 1)))
+    _keep = _tok[_b] < _n
+    _X, _t = _R[_b][_keep], _tok[_b][_keep]
+    _Z = (_X - _X[0]) @ _A.T / _unit
+    _fig, (_axd, _axp, _axg) = plt.subplots(1, 3, figsize=(16.5, 5.4), gridspec_kw=dict(width_ratios=[1, 1.5, 1], wspace=0.25))
+    _W = _V @ _A.T / _unit
+    for (_a, _bb), _l in zip(_W, LINKS):
+        _axd.annotate("", (_a, _bb), (0, 0), arrowprops=dict(arrowstyle="-|>", color=LINK_COLORS[_l], lw=0.9, alpha=0.45))
+    for _l in range(3):
+        _a, _bb = _W[LINKS == _l].mean(0)
+        _axd.annotate("", (_a, _bb), (0, 0), arrowprops=dict(arrowstyle="-|>", color=LINK_COLORS[_l], lw=3, mutation_scale=16))
+    _axd.axhline(0, color="0.85", lw=0.6, zorder=0); _axd.axvline(0, color="0.85", lw=0.6, zorder=0)
+    _axd.set_xlim(-1.2, 1.2); _axd.set_ylim(-1.2, 1.2); _axd.set_aspect("equal"); _axd.set_xticks([]); _axd.set_yticks([])
+    _axd.set_xlabel("generation axis"); _axd.set_ylabel("sibling axis"); _axd.set_title("link directions (per-person codes)", fontsize=11)
+    for _s in range(len(_t) - 1):
+        _l = _rel.get((int(_t[_s]), int(_t[_s + 1])))
+        _axp.annotate("", _Z[_s + 1], _Z[_s], arrowprops=dict(arrowstyle="-|>", lw=2.2 if _l is not None else 0.8,
+                      color=LINK_COLORS[_l] if _l is not None else "0.75", zorder=2 if _l is not None else 1))
+    for _p in sorted(set(_t.tolist())):
+        _axp.annotate(PEOPLE[_p], _Z[_t == _p].mean(0), textcoords="offset points", xytext=(5, -3), fontsize=7.5, color="0.3")
+    _lo, _hi = _Z.min(0), _Z.max(0); _pad = 0.15 * (_hi - _lo).max()
+    _axp.set_xlim(_lo[0] - _pad, _hi[0] + _pad); _axp.set_ylim(_lo[1] - _pad, _hi[1] + _pad)
+    _axp.set_aspect("equal"); _axp.set_xticks([]); _axp.set_yticks([])
+    _axp.set_title(f"one sequence read mention by mention ({len(_t)} mentions)", fontsize=11)
+    _axp.set_xlabel(" · ".join(PEOPLE[i] for i in _t[:9]) + " · …", fontsize=8)
     link_gram(_axg, family[IN_CONTEXT]); _axg.set_title("link cosines, all test sequences", fontsize=11)
-    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in LINK_COLORS], LINK_TYPES, loc="upper center", ncol=3,
-                frameon=False, bbox_to_anchor=(0.5, 1.04))
+    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in LINK_COLORS] + [plt.Line2D([], [], color="0.75", lw=1)],
+                LINK_TYPES + ["unrelated"], loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 1.04))
     save_figure(_fig, figure_path(_run["config"], "in_context_parse"))
     return
 
@@ -366,15 +366,15 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Figure 3 — scope programs in the code
+    ## Figure 3 — a program read by the code
 
-    Left: the state at every position of one test program where no bound name is pending (gray trajectory, drawn at random among programs with six or
-    more blocks, three deep), on that program's top two principal directions; black points are the module and each block
-    (the state after its bound name), joined to the block that contains them, colored by kind. Titles give how often the
-    tree is decoded from the code alone (spanning tree of block-state distances, nearest kind prototype) over all test
-    programs. Middle: block-entry steps (code after the bound name minus code before the kind token; 300 drawn) on the
-    plane of the three kind means, centered on their average; thick = per-kind mean. Right: cosine between the mean
-    block-entry steps, one per (kind, name), sorted by kind then name.
+    Both panels of a row on one plane of the raw representation: the plane of the three kind means. Left: block-entry
+    steps (code after the bound name minus code before the kind token; 300 drawn), centered on their average; thick =
+    per-kind mean. Middle: the representation as one test program is read (drawn at random among programs with six or
+    more blocks, three deep), an arrow from each state to the next where no bound name is pending: entering a block colored
+    by kind, closing one dashed, statements faint; labels at the module and each block. Titles give how often the tree is
+    decoded from the code alone over all test programs. Right: cosine between the mean block-entry steps, one per (kind,
+    name), sorted by kind then name.
     """)
     return
 
@@ -401,12 +401,11 @@ def _(
     _rich = [b for b in _ok if len(_trees[b]) >= 6 and max(_depth(_trees[b], i) for i in range(len(_trees[b]))) >= 3]
     _b = int(np.random.default_rng(0).choice(_rich))                        # a random program with some nesting
     _tree = _trees[_b]
-    _parents = [p for _, p, _, _ in _tree]
-    _labels = [-1] + [_ds.kinds.index(k) for _, _, k, _ in _tree[1:]]
-    _names = ["module"] + [f"{k} {n}" for _, _, k, n in _tree[1:]]
     _keys = [(k, n) for k in _ds.kinds for n in _ds.names]
-    _fig, _axes = plt.subplots(len(scope_codes), 3, figsize=(16, 5.2 * len(scope_codes)),
-                               gridspec_kw=dict(width_ratios=[1.5, 1, 1], wspace=0.25, hspace=0.3))
+    _toks = ["<start>"] + [_ds.vocab[t] for t in _inp[_b][1:]]
+    _settled = [t for t in range(_T) if _toks[t] not in _ds.kinds]           # states with no bound name pending
+    _fig, _axes = plt.subplots(len(scope_codes), 3, figsize=(16.5, 5.3 * len(scope_codes)),
+                               gridspec_kw=dict(width_ratios=[1, 1.5, 1], wspace=0.25, hspace=0.32))
     for _i, (_m, _H) in enumerate(scope_codes.items()):
         _ent = _ds.block_entries(_inp, _H)
         _k = np.array([_ds.kinds.index(e[0]) for e in _ent]); _V = np.array([e[3] for e in _ent])
@@ -416,38 +415,36 @@ def _(
                             [p for _, p, _, _ in _trees[b]], [-1] + [_ds.kinds.index(k) for _, _, k, _ in _trees[b][1:]])
                 for b in _ok if len(_trees[b]) > 2]
         _mu, _ml = np.mean(_all, 0)
-        # the program's trajectory: every position's state on the program's top two directions
-        _settled = ~np.isin(_inp[_b, :_T], range(len(_ds.kinds)))           # skip states with a name pending
-        _Hb = _H[_b]
-        _mu_b = _Hb[_settled].mean(0)
-        _P2 = np.linalg.svd(_Hb[_settled] - _mu_b, full_matrices=False)[2][:2]
-        _Y = (_Hb - _mu_b) @ _P2.T
-        _ax = _axes[_i, 0]
-        _ax.plot(*_Y[_settled].T, color="0.8", lw=0.8, zorder=0)
-        _ax.scatter(*_Y[_settled].T, s=8, color="0.7", zorder=0)
-        _N = np.array([_Y[p] for p, *_ in _tree])
-        for _c in range(1, len(_tree)):
-            _ax.plot(*zip(_N[_parents[_c]], _N[_c]), color=_KIND_COLORS[_labels[_c]], lw=2.4, zorder=1)
-        _ax.scatter(*_N.T, s=36, color="k", zorder=2)
-        for _j, _nm in enumerate(_names):
-            _ax.annotate(_nm, _N[_j], textcoords="offset points", xytext=(4, 3), fontsize=8)
-        _ax.set_xticks([]); _ax.set_yticks([])
-        _ax.set_title(f"{_m}: one program's states (top two directions)\n{len(_all)} programs: tree decoded "
-                      f"{_mu:.0%} of links, {_ml:.0%} of kinds", fontsize=10)
-        # block-entry steps on the plane of the three kind means
-        _Mc = _protos - _protos.mean(0)
-        _B = np.linalg.svd(_Mc, full_matrices=False)[2][:2]
-        _scale = np.linalg.norm(_Mc, axis=1).max()
-        _ax = _axes[_i, 1]
+        _Mc = _protos - _protos.mean(0)                                       # the plane of the three kind means
+        _A = np.linalg.svd(_Mc, full_matrices=False)[2][:2]
+        _unit = np.linalg.norm(_Mc, axis=1).max()
+        _ax = _axes[_i, 0]                                                    # the directions: block entries, all programs
         for _r in np.random.default_rng(0).choice(len(_V), 300, replace=False):
-            _a, _c2 = (_V[_r] - _protos.mean(0)) @ _B.T / _scale
+            _a, _c2 = (_V[_r] - _protos.mean(0)) @ _A.T / _unit
             _ax.annotate("", (_a, _c2), (0, 0), arrowprops=dict(arrowstyle="-|>", color=_KIND_COLORS[_k[_r]], lw=0.6, alpha=0.3))
         for _l2 in range(len(_ds.kinds)):
-            _a, _c2 = _Mc[_l2] @ _B.T / _scale
+            _a, _c2 = _Mc[_l2] @ _A.T / _unit
             _ax.annotate("", (_a, _c2), (0, 0), arrowprops=dict(arrowstyle="-|>", color=_KIND_COLORS[_l2], lw=3, mutation_scale=16))
         _ax.axhline(0, color="0.85", lw=0.6, zorder=0); _ax.axvline(0, color="0.85", lw=0.6, zorder=0)
         _ax.set_xlim(-1.5, 1.5); _ax.set_ylim(-1.5, 1.5); _ax.set_aspect("equal"); _ax.set_xticks([]); _ax.set_yticks([])
-        _ax.set_title("block-entry steps, all programs", fontsize=10)
+        _ax.set_title(f"{_m}: block-entry directions", fontsize=10)
+        _Z = (_H[_b] - _H[_b, 0]) @ _A.T / _unit                              # the program as it is read, same plane
+        _ax = _axes[_i, 1]
+        for _s0, _s1 in zip(_settled[:-1], _settled[1:]):
+            _seen = _toks[_s0 + 1:_s1 + 1]
+            if _seen[0] in _ds.kinds:
+                _st = dict(color=_KIND_COLORS[_ds.kinds.index(_seen[0])], lw=2.4)
+            elif _seen[0] == "end":
+                _st = dict(color="0.45", lw=1.2, ls="--")
+            else:
+                _st = dict(color="0.8", lw=0.6)
+            _ax.annotate("", _Z[_s1], _Z[_s0], arrowprops=dict(arrowstyle="-|>", **_st))
+        for _p, _par, _kk, _nn in _tree:
+            _ax.annotate("module" if _kk is None else f"{_kk} {_nn}", _Z[_p], textcoords="offset points", xytext=(5, -3), fontsize=8, color="0.3")
+        _lo, _hi = _Z[_settled].min(0), _Z[_settled].max(0); _pad = 0.15 * (_hi - _lo).max()
+        _ax.set_xlim(_lo[0] - _pad, _hi[0] + _pad); _ax.set_ylim(_lo[1] - _pad, _hi[1] + _pad)
+        _ax.set_aspect("equal"); _ax.set_xticks([]); _ax.set_yticks([])
+        _ax.set_title(f"one program read token by token; {len(_all)} programs: tree decoded {_mu:.0%} of links, {_ml:.0%} of kinds", fontsize=10)
         _steps = {}
         for _kk, _n, _, _v in _ent:
             _steps.setdefault((_kk, _n), []).append(_v)
@@ -458,8 +455,8 @@ def _(
         _ticks = np.arange(len(_ds.kinds)) * len(_ds.names) + len(_ds.names) / 2 - 0.5
         _ax.set_xticks(_ticks, _ds.kinds); _ax.set_yticks(_ticks, _ds.kinds)
         _ax.set_title("cosine of mean steps per (kind, name)", fontsize=10)
-    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in _KIND_COLORS], _ds.kinds, loc="upper center", ncol=3,
-                frameon=False, bbox_to_anchor=(0.5, 0.97))
+    _fig.legend([plt.Line2D([], [], color=c, lw=3) for c in _KIND_COLORS] + [plt.Line2D([], [], color="0.45", lw=1.2, ls="--"), plt.Line2D([], [], color="0.8", lw=1)],
+                [f"enter {k}" for k in _ds.kinds] + ["end", "statement"], loc="upper center", ncol=5, frameon=False, bbox_to_anchor=(0.5, 0.97))
     save_figure(_fig, figure_path(scope_run["config"], "scope_tree_codes"))
     return
 

@@ -114,6 +114,16 @@ def tree_scores(decoded, parents, labels, reverse=None):
     return unlabeled, labeled / len(true)
 
 
+def tree_distances(parents):
+    """Path length between every pair of tree nodes, (n, n)."""
+    from scipy.sparse.csgraph import shortest_path
+    n = len(parents); A = np.zeros((n, n))
+    for c, p in enumerate(parents):
+        if p >= 0:
+            A[c, p] = A[p, c] = 1
+    return shortest_path(A, unweighted=True)
+
+
 def whiten(Z, tol=1e-10):
     """Predictive modes of binary features, u = z C^{-1/2} with C the covariance of z and
     the symmetric (pseudo-inverse) root, so mode k stays closest to feature k. Returns
