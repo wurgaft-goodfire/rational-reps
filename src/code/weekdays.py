@@ -28,13 +28,35 @@ def _two(A, B, wa):
 
 def _listing(days):
     names = [DAYS[d] for d in days]
-    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + ", or " + names[-1]
+    if len(names) <= 2:
+        return " or ".join(names)
+    return ", ".join(names[:-1]) + ", or " + names[-1]
 
 
-def all_prompts():
+HEADER = ("Each line says how likely each day is. The day that actually happens this week is drawn "
+          "from those odds.\n\n")
+
+
+def all_prompts(shots=0, seed=0):
     """[dict] with the sentence ``pre`` (ends at the period read as ``mark``), the answer slot
     ``post``, the stated ``weights`` (7,) and labels: family, level, A, B, sep (pairs), start, size
-    (sets), cont (continuation index)."""
+    (sets), cont (continuation index). With ``shots``, ``pre`` starts with HEADER and that many
+    completed lines from the prompt's family (other continuations), each ending in a day drawn from
+    its own stated weights: the prompt then describes a sampling process, so the model's prediction
+    at the answer slot should follow the stated odds."""
+    out = _sentences()
+    if not shots:
+        return out
+    rng = np.random.default_rng(seed)
+    for p in out:
+        pool = [x for x in out if x["family"] == p["family"] and x["cont"] != p["cont"]]
+        lines = [x["pre"] + x["post"] + " " + DAYS[rng.choice(7, p=x["weights"])] + "."
+                 for x in (pool[i] for i in rng.choice(len(pool), shots, replace=False))]
+        p["context"] = HEADER + "".join(l + "\n" for l in lines)
+    return [{**{k: v for k, v in p.items() if k != "context"}, "pre": p["context"] + p["pre"]} for p in out]
+
+
+def _sentences():
     out = []
     for c, cont in enumerate(CONTS):
         post, Cont = f" This week, {cont} on", cont[0].upper() + cont[1:]

@@ -60,28 +60,30 @@ def _(mo):
 
 @app.cell
 def _(all_prompts, np, pd):
-    P = all_prompts()
+    SHOTS = 8          # completed example lines before each sentence (0: the bare sentence)
+    P = all_prompts(shots=SHOTS, seed=0)
     df = pd.DataFrame([{k: v for k, v in p.items() if k not in ("weights",)} for p in P])
     df["A"] = df.A.fillna(0).astype(int); df["B"] = df.B.fillna(0).astype(int)
     df["sep"] = df.sep.fillna(0).astype(int); df["size"] = df["size"].fillna(0).astype(int)
     df["start"] = df.start.fillna(0).astype(int)
     W = np.stack([p["weights"] for p in P])
     for _f in ("adverb", "percent", "set"):
-        _p = P[df.index[df.family == _f][17]]; print(f"{_f:8s}", _p["pre"] + _p["post"])
+        _p = P[df.index[df.family == _f][17]]; print(f"--- {_f}\n" + _p["pre"] + _p["post"])
     print(len(P), "prompts")
-    return P, W, df
+    return P, SHOTS, W, df
 
 
 @app.cell
-def _(CACHE, P, np, read_prompts, torch):
-    READ_DIR = CACHE / "weekdays" / "llama-3.1-8b"; READ_DIR.mkdir(parents=True, exist_ok=True)
+def _(CACHE, P, SHOTS, np, read_prompts, torch):
+    READ_DIR = CACHE / "weekdays" / "llama-3.1-8b" / (f"shots{SHOTS}" if SHOTS else "")
+    READ_DIR.mkdir(parents=True, exist_ok=True)
     KEYS = ("mark", "answer", "q_mark", "q_answer")
     if not all((READ_DIR / f"{k}.npy").exists() for k in KEYS):          # the expensive step, cached
         from transformers import AutoModelForCausalLM, AutoTokenizer
         _tok = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
         _model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B", dtype=torch.bfloat16,
                                                       device_map="cuda").eval()
-        for _k, _v in read_prompts(_model, _tok, P, batch_size=32).items():
+        for _k, _v in read_prompts(_model, _tok, P, batch_size=16).items():
             np.save(READ_DIR / f"{_k}.npy", _v)
         del _model; torch.cuda.empty_cache()
     reads = {k: np.load(READ_DIR / f"{k}.npy", mmap_mode="r") for k in KEYS}   # (layers, N, d) / (N, 8)
@@ -94,10 +96,12 @@ def _(mo):
     mo.md(r"""
     ## What the model predicts
 
-    At the period almost no next-token mass is on a day; at the answer slot most of it is. The base
-    model barely follows the stated weights: "Always on Monday, never on Tuesday" splits much like
-    "sometimes / sometimes", and every percent level gives the first-named day about half. So we
-    predict from the measured distribution, not the wording. Sets spread mass over their days.
+    At the period almost no next-token mass is on a day; at the answer slot most of it is. With the
+    bare sentence (`SHOTS = 0`) the base model barely follows the stated weights ("Always on Monday,
+    never on Tuesday" splits like "sometimes / sometimes"). With eight completed example lines, each
+    ending in a day drawn from its stated odds, the prompt describes a sampling process: nearly all
+    mass goes to the stated days and the split follows the stated weights. We still predict positions
+    from the measured distribution, not the wording.
     """)
     return
 
@@ -171,9 +175,10 @@ def _(mo):
 
     Each two-day prompt drawn in the ring plane, rotated so the first-named day A is at the right and B
     lies counter-clockwise, `sep` days on. The ring is built as Spokes built it, from the "Always on A,
-    never on B" prompts (grey circle, radius 1). At the period the points stay near A's spoke (Spokes'
-    finding; the table below gives their radius dip at the uncertain levels). At the answer slot they sit
-    between the two days, nearer the centre the further apart the days are.
+    never on B" prompts (grey circle, radius 1). With the bare sentences (`SHOTS = 0`) the period points
+    stay near A's spoke, Spokes' finding; behind eight example lines the period holds little day
+    structure at all. At the answer slot the points run from A to B: along the arc for neighbouring
+    days, cutting in toward the centre for days three apart, their place set by the split.
     """)
     return
 
@@ -293,11 +298,11 @@ def _(by_layer):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## The angle against the measured split (the weak part)
+    ## The angle against the measured split
 
-    Position between the spokes (0 on A, 1 on B) against the model's share of the pair's mass on B. Where
-    the model leans clearly to one day the point sits on that day's spoke; across the middle the angle
-    tracks the split only loosely, while the log map predicts it should follow it.
+    Position between the spokes (0 on A, 1 on B) against the model's share of the pair's mass on B. With
+    the bare sentences the angle tracked the split only loosely; with the example lines it follows it,
+    close to the log map's prediction.
     """)
     return
 

@@ -36,8 +36,31 @@ def test_prompts_state_their_weights_and_end_the_sentence_before_the_answer_slot
     sets = [p for p in P if p["family"] == "set"]
     s = next(p for p in sets if p["size"] == 3 and p["start"] == 5 and p["cont"] == 0)
     assert "Saturday, Sunday, or Monday" in s["pre"]
+    s2 = next(p for p in sets if p["size"] == 2 and p["start"] == 4 and p["cont"] == 0)
+    assert s2["pre"] == "Her flight leaves on Friday or Saturday, each equally likely."
     assert np.allclose(s["weights"], np.array([1, 0, 0, 0, 0, 1, 1]) / 3)
     assert {p["size"] for p in sets} == set(range(1, 8))
+
+
+def test_few_shot_prompts_precede_each_sentence_with_examples_completed_by_a_day_drawn_from_their_odds():
+    """With ``shots``, every prompt starts with the header, then that many example lines from its own
+    family (other continuations), each completed with a day drawn from the example's stated weights,
+    then its own sentence; the labels and the answer slot are unchanged."""
+    from src.code.weekdays import HEADER
+    plain, fs = all_prompts(), all_prompts(shots=8, seed=0)
+    assert len(fs) == len(plain)
+    lines = {}
+    for p in plain:
+        lines.setdefault(p["family"], {})[p["pre"] + p["post"]] = p
+    for p, q in zip(plain[::211], fs[::211]):
+        assert q["pre"].startswith(HEADER) and q["pre"].endswith("\n" + p["pre"]) and q["post"] == p["post"]
+        shots = q["pre"][len(HEADER):-len(p["pre"]) - 1].split("\n")
+        assert len(shots) == 8
+        for s in shots:
+            stem, day = s[:-1].rsplit(" ", 1)
+            ex = lines[p["family"]][stem]
+            assert ex["cont"] != p["cont"] and ex["weights"][DAYS.index(day)] > 0
+    assert all_prompts(shots=8, seed=0)[5]["pre"] == fs[5]["pre"] != all_prompts(shots=8, seed=1)[5]["pre"]
 
 
 def test_day_token_ids_are_the_single_token_spellings(tok):
