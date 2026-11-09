@@ -15,6 +15,16 @@ from scipy.special import logsumexp
 _INTRO = ("Each question below gives one piece of information and asks you to predict "
                        "something from it. Give your best guess as a single number.\n")
 
+# Worked examples before every question, to fix the answer format for a base model: one number, never the
+# number in the question (zero-shot, Llama-3.1-8B puts about 10% of its answer mass on t itself), and nothing
+# about durations, so they say nothing about any domain's prior.
+SHOTS = [("A spider has how many legs?", "8"),
+         ("A box holds 6 rows of 4 eggs. How many eggs are in the box?", "24"),
+         ("How many minutes are in an hour?", "60"),
+         ("A bus has 12 passengers and 5 get off. How many are left on the bus?", "7"),
+         ("How many days are there in a leap year?", "366")]
+PREFIX = _INTRO + "".join(f"{q} Answer: {a}\n" for q, a in SHOTS)
+
 # Templates hold no digits besides {t}, and end on the space before the answer.
 DOMAINS = {
     "lifespan": {
@@ -101,7 +111,7 @@ def remaining_logcond(spec):
 
 def prompts(domain, question):
     """One list per template of ``(t, text)`` over the domain's t grid; ``question`` is 'remaining' or 'total'."""
-    return [[(t, _INTRO + tpl.format(t=t)) for t in DOMAINS[domain]["t"]]
+    return [[(t, PREFIX + tpl.format(t=t)) for t in DOMAINS[domain]["t"]]
             for tpl in DOMAINS[domain]["templates"][question]]
 
 
@@ -115,8 +125,10 @@ def number_tokens(tok):
 
 
 def encode(tok, text):
-    """``(ids, at)``: BOS plus the prompt's token ids, and the index of the token holding t (the text's only digits)."""
+    """``(ids, at)``: BOS plus the prompt's token ids, and the index of the token holding t (the only digits
+    on the prompt's last line, the question)."""
     enc = tok(text, add_special_tokens=False, return_offsets_mapping=True)
-    s = re.search(r"\d+", text).start()
+    line = text.rindex("\n") + 1
+    s = line + re.search(r"\d+", text[line:]).start()
     at = 1 + next(i for i, (a, b) in enumerate(enc["offset_mapping"]) if a <= s < b)
     return [tok.bos_token_id] + enc["input_ids"], at

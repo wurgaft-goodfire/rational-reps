@@ -32,8 +32,13 @@ def _(mo):
 
     ```
     Each question below gives one piece of information ... Give your best guess as a single number.
+    A spider has how many legs? Answer: 8
+    ... (five worked examples on unrelated questions, fixing the answer format)
     A pharaoh has been on the throne for 12 years. How many more years will his reign last? Years left: ␣
     ```
+
+    The examples matter for the base model: zero-shot, about 10% of its answer mass goes to t itself and 19%
+    of its total-question mass to totals below t; with them, 3% and 8%.
 
     Reads: the residual at the final token (the space before the answer) and at t's token, every layer, plus
     the next-token distribution over "0".."999" (all single tokens). Two paraphrases per question, averaged.
@@ -51,7 +56,7 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.everyday import DOMAINS, encode, number_tokens, prompts, remaining_logcond
+    from src.code.everyday import DOMAINS, PREFIX, encode, number_tokens, prompts, remaining_logcond
     from src.code.llm import read_prompts
     from src.code.geometry import predicted_geometry
     from src.code.analysis_utils import rsa
@@ -64,6 +69,7 @@ def _(mo):
         CACHE,
         DOMAINS,
         FAMILY_COLOR,
+        PREFIX,
         FIGURES,
         encode,
         np,
@@ -122,11 +128,11 @@ def _(
 
 
 @app.cell
-def _(CACHE, DOMAINS, encode, np, number_tokens, prompts, read_prompts, torch):
+def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prompts, read_prompts, torch):
     LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
     QUESTIONS = ("remaining", "total")
-    NUMBER = "Here is a number: {t}. Write the number again: "          # control: the same numbers, no domain
-    READ_DIR = CACHE / "everyday" / LLM_NAME; READ_DIR.mkdir(parents=True, exist_ok=True)
+    NUMBER = PREFIX + "Here is a number: {t}. Write the number again: "   # control: the same numbers, no domain
+    READ_DIR = CACHE / "everyday" / f"{LLM_NAME}_fewshot"; READ_DIR.mkdir(parents=True, exist_ok=True)
 
 
     def jobs():

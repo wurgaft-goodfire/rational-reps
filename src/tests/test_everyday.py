@@ -1,5 +1,7 @@
 """Everyday predictions (Griffiths & Tenenbaum 2006) asked as remaining time: the world-prior kernel
 log p(R | t), the prompts, and the reader that pulls Llama's states and answer distribution."""
+import re
+
 import numpy as np
 import pytest
 import torch
@@ -56,16 +58,20 @@ def test_medians_follow_the_three_prediction_rules():
 
 
 def test_prompts_end_before_the_answer_and_point_at_t():
-    """With Llama's tokenizer: ``at`` is the token of t's digits, the prompt ends on the space token
-    that precedes a number, and 0..999 are single tokens."""
+    """Worked examples on unrelated questions come first, one per line ('... Answer: 8'), and the question is
+    the last line. With Llama's tokenizer: ``at`` is the token of t's digits (not a digit in the examples),
+    the prompt ends on the space token that precedes a number, and 0..999 are single tokens."""
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(LLAMA)
     nums = number_tokens(tok)
     assert len(nums) == 1000 and len(set(nums)) == 1000
     for d in DOMAINS:
         for q in ("remaining", "total"):
-            for template in prompts(d, q):
+            for tpl, template in zip(DOMAINS[d]["templates"][q], prompts(d, q)):
                 for t, text in list(template)[:: 10]:
+                    lines = text.split("\n")
+                    assert lines[-1] == tpl.format(t=t)
+                    assert sum(re.fullmatch(r".+\? Answer: \d+", l) is not None for l in lines[:-1]) >= 3
                     ids, at = encode(tok, text)
                     assert ids[0] == tok.bos_token_id
                     assert tok.decode([ids[at]]) == str(t)
