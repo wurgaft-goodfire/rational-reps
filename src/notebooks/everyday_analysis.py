@@ -24,7 +24,7 @@ def _(mo):
     | Family | Domains | Prediction rule | Predicted code of t |
     |---|---|---|---|
     | Gaussian | life span, movie run time | T ≈ prior mean while t is small | a line, uniform in t |
-    | power law | movie grosses, poem lengths | T = 2^(1/γ) t | one-dimensional in log t |
+    | power law | movie grosses | T = 2^(1/γ) t | one-dimensional in log t |
     | Erlang | pharaohs' reigns, House terms | R = β ln 2 for every t | a single point (collapse) |
 
     The total-T question asks the same thing from the same prefix. It contrasts with the remaining-time
@@ -173,8 +173,8 @@ def _(mo):
     ## Behavior
 
     Median of Llama's answer distribution against t: remaining-time question (solid) and the total question
-    minus t (dashed), against the Bayes median from the world prior (black). Bayes medians for the placeholder
-    priors (run time, poems, House) only show the shape.
+    minus t (dashed), against the Bayes median from the world prior (black). Priors: G&T's fits (life span, grosses,
+    pharaohs) or refits from their sources (run time, House; `fit_everyday_priors.py`).
     """)
     return
 

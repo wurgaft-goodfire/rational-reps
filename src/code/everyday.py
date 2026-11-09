@@ -5,7 +5,8 @@ t up to scale: Gaussian, a line in t; power law, a function of log t (it depends
 single point (the prior's factor T cancels the 1/T likelihood, leaving one exponential for every t).
 
 Each domain's prior parameters only set the scale of the code and the behavioral reference medians, not
-its shape. Those marked G&T are from the paper; the rest are placeholders."""
+its shape. Those marked G&T are the paper's fits; the rest are refit by fit_everyday_priors.py from the
+current equivalents of G&T's sources. Poem lengths are left out: G&T's source no longer exists."""
 import re
 
 import numpy as np
@@ -29,7 +30,7 @@ DOMAINS = {
                       "You meet a man who is {t} years old. How old do you expect him to be when he dies? "
                       "Age at death: "]}},
     "runtime": {
-        "family": "gaussian", "prior": {"mu": 110, "sigma": 20},                      # placeholder
+        "family": "gaussian", "prior": {"mu": 116.8, "sigma": 23.2},                  # refit, fit_everyday_priors.py
         "t": range(10, 152, 2), "R_max": 200,
         "templates": {
             "remaining": ["You drop in on a friend who has been watching a movie for {t} minutes. "
@@ -52,18 +53,6 @@ DOMAINS = {
                       "dollars will it make in total? Answer in millions of dollars: ",
                       "So far a film has grossed {t} million dollars. What will its total gross be when it "
                       "leaves theaters? Total millions: "]}},
-    "poems": {
-        "family": "power", "prior": {"gamma": 1.71},                                   # placeholder
-        "t": range(2, 81), "R_max": 999,
-        "templates": {
-            "remaining": ["A friend reads you a line of poetry and says it is line {t} of the poem. How many "
-                          "more lines does the poem have after it? Answer in lines: ",
-                          "You open a poem at line {t}. How many lines of the poem come after this one? "
-                          "Lines left: "],
-            "total": ["A friend reads you a line of poetry and says it is line {t} of the poem. How many "
-                      "lines does the whole poem have? Answer in lines: ",
-                      "You open a poem at line {t}. How many lines does the poem have in total? "
-                      "Total lines: "]}},
     "pharaohs": {
         "family": "erlang", "prior": {"beta": 9.34},                                   # G&T
         "t": range(1, 41), "R_max": 150,
@@ -77,7 +66,7 @@ DOMAINS = {
                       "A pharaoh has been on the throne for {t} years. How many years will his reign last "
                       "in total? Total years: "]}},
     "house": {
-        "family": "erlang", "prior": {"beta": 7.0},                                    # placeholder
+        "family": "erlang", "prior": {"beta": 5.46},                                   # refit, fit_everyday_priors.py
         "t": range(1, 36), "R_max": 100,
         "templates": {
             "remaining": ["A member of the House of Representatives has served for {t} years so far. How many "
