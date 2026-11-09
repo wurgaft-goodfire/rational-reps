@@ -428,20 +428,17 @@ def _(mo):
     aggregate, even in probability coordinates — marginalizing over $z$ is the case of line and week. The
     Dirichlet-categorical is the control: its predictive $(1 + n_x)/(K + t)$ is itself a mean, so attention can write it
     directly, the start token taking the prior's share $K/(K + t)$. The MLP is left only the softmax's log, the same
-    for every coordinate. Three tests, each one ridge map pooled over positions, on all four worlds:
+    for every coordinate. Three tests on all four worlds, each one ridge map per position (mean over $t \geq 1$):
 
     1. the predictive probabilities from the state after attention;
-    2. that same linear readout, then a pointwise log (renormalized), against the log-predictive — what is left to
-       the MLP if all it does is the link;
+    2. that same linear readout, then a pointwise log, against the log-predictive — what is left to the MLP if all it
+       does is the link;
     3. the state after attention from the current token and the predictive probabilities alone — nothing more held.
 
-    The prediction was all three $\approx 1$ for the Dirichlet. It does not hold pooled, and the reason is the start
-    token: in every world, the Dirichlet too, attention averages uniformly over the start and $x_{1:t}$, the start
-    counting as $c \approx 1$ pseudo-count rather than the prior's $K$ (fitted below). So attention writes plain
-    frequencies $[n, 1]/(c + t)$ everywhere, and the Dirichlet's predictive is linear in that only at each position:
-    the MLP, which must apply the log anyway, absorbs the rescaling by $t$, and nothing favours $c = K$. The worlds part
-    at fixed position: there the predictive is linear in the state after attention for the Dirichlet, and short of it
-    where it is a marginal over $z$ (line, week).
+    Predicted: all three $\approx 1$ for the Dirichlet, short of 1 where the predictive is a marginal over $z$ (line,
+    week). Per position, not across: attention averages uniformly over the start and $x_{1:t}$ in every world, the
+    start counting as $c \approx 1$ pseudo-count rather than the prior's $K$ (last row), so it writes $[n, 1]/(c + t)$;
+    the rescaling by $t$ is the MLP's, alongside the log, and costs it nothing.
     """)
     return
 
@@ -453,30 +450,34 @@ def _(COMMON, T, data, heldout_decode_r2, load_run, np, runs, sites, targets):
     for _name, _run in controls.items():
         print(f"{_name}: KL(Bayes || model) {_run['loss']:.5f} at step {_run['step']}")
 
-    def interface(run, targets, sites, seed=0):
-        B = len(targets["counts"])
-        g = np.repeat(np.arange(B), T)
-        flat = lambda X: X.reshape(B * T, -1)
-        Ha, p, lp = flat(sites["after attention"]), flat(targets["predictive"]), flat(targets["log-predictive"])
-        tok = flat(np.eye(run["dataset"].n_outcomes + 1)[run["inputs"][:, :T]])
-        train = np.isin(g, np.random.default_rng(seed).permutation(B)[:int(0.6 * B)])   # held-out streams
-        X1 = np.c_[Ha, np.ones(len(Ha))]
+    def at_position(run, targets, sites, t, seed=0):
+        """The three tests at position t, one map each, scored on held-out streams."""
+        Ha, p, lp = sites["after attention"][:, t], targets["predictive"][:, t], targets["log-predictive"][:, t]
+        B = len(Ha)
+        tok = np.eye(run["dataset"].n_outcomes + 1)[run["inputs"][:, t]]
+        train = np.isin(np.arange(B), np.random.default_rng(seed).permutation(B)[:int(0.6 * B)])
+        X1 = np.c_[Ha, np.ones(B)]
         p_hat = np.clip(X1[~train] @ np.linalg.lstsq(X1[train], p[train], rcond=None)[0], 1e-4, None)
-        l_hat = np.log(p_hat / p_hat.sum(1, keepdims=True))
         centre = lambda L: L - L.mean(1, keepdims=True)
-        res, lc = centre(l_hat) - centre(lp[~train]), centre(lp[~train])
-        # attention with the start token as c pseudo-counts writes [n / (c + t), 1 / (c + t)]; c fitted on a grid
-        n, Ha3 = targets["counts"], sites["after attention"]
+        res, lc = centre(np.log(p_hat)) - centre(lp[~train]), centre(lp[~train])
+        return [heldout_decode_r2(Ha, p, np.arange(B)),
+                float(1 - (res ** 2).sum() / ((lc - lc.mean(0)) ** 2).sum()),
+                heldout_decode_r2(np.c_[tok, p], Ha, np.arange(B))]
+
+    def interface(run, targets, sites):
+        per_t = np.array([at_position(run, targets, sites, t) for t in range(1, T)]).mean(0)
+        # why one map across positions fails: attention writes [n, 1] / (c + t), the start as c pseudo-counts
+        B, n = len(targets["counts"]), targets["counts"]
+        flat = lambda X: X.reshape(B * T, -1)
+        tok = flat(np.eye(run["dataset"].n_outcomes + 1)[run["inputs"][:, :T]])
         sink = lambda c: flat(np.concatenate([n, np.ones_like(n[..., :1])], -1) / (c + n.sum(-1, keepdims=True)))
         cs = np.geomspace(0.25, 32, 22)
-        fits = [heldout_decode_r2(np.c_[tok, sink(c)], Ha, g) for c in cs]
-        per_t = [heldout_decode_r2(Ha3[:, t], targets["predictive"][:, t], np.arange(B)) for t in range(1, T)]
-        return {"1. predictive <- after attention": heldout_decode_r2(Ha, p, g),
-                "   same, one map per position (mean)": float(np.mean(per_t)),
-                "2. log of that readout vs log-predictive": float(1 - (res ** 2).sum() / ((lc - lc.mean(0)) ** 2).sum()),
-                "3. after attention <- [token, predictive]": heldout_decode_r2(np.c_[tok, p], Ha, g),
-                "   ... <- [token, n/(c+t), 1/(c+t)], best c": max(fits),
-                "   best c (Dirichlet theory: c = K)": float(cs[int(np.argmax(fits))])}
+        fits = [heldout_decode_r2(np.c_[tok, sink(c)], flat(sites["after attention"]), np.repeat(np.arange(B), T))
+                for c in cs]
+        return {"1. predictive <- after attention": per_t[0],
+                "2. log of that readout vs log-predictive": per_t[1],
+                "3. after attention <- [token, predictive]": per_t[2],
+                "start's pseudo-count c (pooled fit; Bayes: K)": float(cs[int(np.argmax(fits))])}
 
     _all = {**{_n: (runs[_n], *data[_n]) for _n in runs},
             **{_n: (_r, targets(_r), sites(_r)) for _n, _r in controls.items()}}
