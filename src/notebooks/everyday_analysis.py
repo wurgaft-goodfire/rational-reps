@@ -266,14 +266,15 @@ def _(mo):
 
 
 @app.cell
-def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, READS, np, plt, save_figure):
+def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, LLM_NAME, READS, np, plt, save_figure):
     def mean(P, grid):
         """Mean of each row's distribution: Llama's answers heap on round numbers, so its median jumps between
         them from one t to the next while its mean moves smoothly."""
         return (P / P.sum(1, keepdims=True)) @ grid
 
 
-    GOOD = ("lifespan", "pregnancy", "runtime", "grosses")                  # behave like world-prior Bayes (70B)
+    # where the model's remaining-time answers behave like world-prior Bayes (8B fails on run time and grosses)
+    GOOD = {"llama-3.1-8b": ("lifespan", "pregnancy")}.get(LLM_NAME, ("lifespan", "pregnancy", "runtime", "grosses"))
     _fig, _axes = plt.subplots(1, len(GOOD), figsize=(3 * len(GOOD), 2.8))
     _grid = np.arange(1000)
     for _ax, _d in zip(_axes, GOOD):
@@ -286,7 +287,7 @@ def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, READS, np, plt, save_figure):
     _axes[0].set_ylabel("mean remaining R"); _axes[0].legend(frameon=False, fontsize=7)
     _fig.tight_layout()
     save_figure(_fig, FIGURES / "everyday_behavior.png")
-    return (mean,)
+    return GOOD, mean
 
 
 @app.cell(hide_code=True)
@@ -451,8 +452,8 @@ def _(mo):
     mo.md(r"""
     ## Predicted against learned codes
 
-    Per domain with a world prior whose predicted code is not a single point (the Erlang domains predict a
-    collapse, which has no geometry to fit; books have no world prior): the code predicted from the world prior,
+    Per domain where the model behaves like world-prior Bayes (the behavior figure's domains; the Erlang domains
+    predict a collapse, which has no geometry to fit, and books have no world prior): the code predicted from the world prior,
     beside Llama's residual at the last token in the layer whose linear CKA with it is highest, searched up to
     three layers before the end (the last layers feed the readout). Top: top-2 PCA, colored by t. Bottom: Gram
     matrices, with the residual's CKA against the prediction.
@@ -461,12 +462,12 @@ def _(mo):
 
 
 @app.cell
-def _(DOMAINS, FIGURES, LLM_NAME, PRED, READS, cka, plot_utils, save_figure):
+def _(DOMAINS, FIGURES, GOOD, LLM_NAME, PRED, READS, cka, plot_utils, save_figure):
     import io
 
     MODEL_LABEL = {"llama-3.1-8b": "Llama-3.1-8B", "llama-3.1-70b": "Llama-3.1-70B (8-bit)",
                    "llama-3.1-70b-nf4": "Llama-3.1-70B (4-bit)"}[LLM_NAME]
-    CODE_DOMAINS = [d for d in PRED if DOMAINS[d]["family"] != "erlang"]
+    CODE_DOMAINS = GOOD                       # a world code that is not a point, where the model behaves like it
 
 
     def code_panel(d):
