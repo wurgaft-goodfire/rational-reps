@@ -109,14 +109,14 @@ def read_prompts(model, rows, nums, pad_id, batch_size=32):
         for r, (ids, _) in enumerate(chunk):
             x[r, :len(ids)] = torch.tensor(ids); mask[r, :len(ids)] = 1
         out = model(x, attention_mask=mask, output_hidden_states=True)
-        H = torch.stack(out["hidden_states"]).float()                       # (layers, b, T, d)
-        r = torch.arange(len(chunk), device=device)
-        end = torch.tensor([len(ids) - 1 for ids, _ in chunk], device=device)
-        at = torch.tensor([a for _, a in chunk], device=device)
-        last.append(H[:, r, end]); at_t.append(H[:, r, at])
-        logq.append(torch.log_softmax(out["logits"][r, end][:, nums].float(), -1))
-    return {"last": torch.cat(last, 1).cpu().numpy(), "at_t": torch.cat(at_t, 1).cpu().numpy(),
-            "logq": torch.cat(logq).cpu().numpy()}
+        r = torch.arange(len(chunk))
+        end = torch.tensor([len(ids) - 1 for ids, _ in chunk])
+        at = torch.tensor([a for _, a in chunk])
+        # two positions per layer, gathered before stacking: a model split across GPUs leaves layers on different devices
+        last.append(torch.stack([h[r, end].float().cpu() for h in out["hidden_states"]]))
+        at_t.append(torch.stack([h[r, at].float().cpu() for h in out["hidden_states"]]))
+        logq.append(torch.log_softmax(out["logits"][r, end][:, nums].float(), -1).cpu())
+    return {"last": torch.cat(last, 1).numpy(), "at_t": torch.cat(at_t, 1).numpy(), "logq": torch.cat(logq).numpy()}
 
 
 def triple_stream(dataset, B, K):

@@ -14,7 +14,7 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Everyday predictions as remaining time, read by Llama-3.1-8B
+    # Everyday predictions as remaining time, read by Llama-3.1
 
     Griffiths & Tenenbaum's tasks, but asking for the **remaining** amount R = T − t instead of the total T.
     The posterior is p(R | t) ∝ p(t + R) / (t + R): there is no support cut-off, and the prior is evaluated
@@ -41,7 +41,7 @@ def _(mo):
     of its total-question mass to totals below t. The total question gets the same situations answered as totals.
 
     Reads: the residual at the final token (the space before the answer) and at t's token, every layer, plus
-    the next-token distribution over "0".."999" (all single tokens). Two paraphrases per question, averaged.
+    the next-token distribution over "0".."999" (all single tokens). Five paraphrases per question, averaged.
     """)
     return
 
@@ -64,7 +64,8 @@ def _(mo):
     from src.code.plot_utils import save_figure
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
-    FIGURES = CACHE / "figures"; FIGURES.mkdir(parents=True, exist_ok=True)
+    LLM_NAME = os.environ.get("EVERYDAY_LLM", "llama-3.1-8b")                     # a key of LLMS below
+    FIGURES = CACHE / "figures" / "everyday" / LLM_NAME; FIGURES.mkdir(parents=True, exist_ok=True)
     FAMILY_COLOR = {"gaussian": "tab:blue", "power": "tab:orange", "erlang": "tab:green"}
     return (
         CACHE,
@@ -72,6 +73,7 @@ def _(mo):
         FAMILY_COLOR,
         PREFIX,
         FIGURES,
+        LLM_NAME,
         encode,
         fit_prior,
         log_prior,
@@ -132,8 +134,11 @@ def _(
 
 
 @app.cell
-def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prior_prompts, prompts, read_prompts, torch):
-    LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
+def _(CACHE, DOMAINS, LLM_NAME, PREFIX, encode, np, number_tokens, prior_prompts, prompts, read_prompts, torch):
+    # (path, load kwargs, batch size). 70B in bf16 (141 GB) does not fit on two A40s (92 GB); 8-bit does.
+    LLMS = {"llama-3.1-8b": ("meta-llama/Llama-3.1-8B", {"dtype": torch.bfloat16, "device_map": "cuda"}, 32),
+            "llama-3.1-70b": ("meta-llama/Llama-3.1-70B", {"device_map": "auto", "quantization_config": "8bit"}, 8)}
+    LLM_PATH, _load, _batch = LLMS[LLM_NAME]
     QUESTIONS = ("remaining", "total")
     NUMBER = PREFIX["remaining"] + "Here is a number: {t}. Write the number again: "   # control: the same numbers, no domain
     READ_DIR = CACHE / "everyday" / f"{LLM_NAME}_shots-everyday"; READ_DIR.mkdir(parents=True, exist_ok=True)
@@ -164,12 +169,15 @@ def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prior_prompts, prompts,
     _jobs = jobs()
     _missing = [s for s in _jobs if not (READ_DIR / f"{s}.npz").exists()]
     if _missing:                                                     # the expensive step, cached per prompt set
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         _tok = AutoTokenizer.from_pretrained(LLM_PATH)
-        _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, dtype=torch.bfloat16, device_map="cuda").eval()
+        if _load.get("quantization_config") == "8bit":
+            _load = {**_load, "quantization_config": BitsAndBytesConfig(load_in_8bit=True)}
+        _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, **_load).eval()
         _nums = number_tokens(_tok)
         for _s in _missing:
-            _out = read_prompts(_model, [row(_tok, t, text) for t, text in _jobs[_s]], _nums, pad_id=_tok.eos_token_id)
+            _out = read_prompts(_model, [row(_tok, t, text) for t, text in _jobs[_s]], _nums, pad_id=_tok.eos_token_id,
+                                batch_size=_batch)
             np.savez(READ_DIR / f"{_s}.npz", t=np.array([t for t, _ in _jobs[_s]]), **_out)
         del _model; torch.cuda.empty_cache()
 
@@ -196,7 +204,7 @@ def _(mo):
     ## Llama's own prior
 
     The t-free questions ("Think of a pharaoh of ancient Egypt. How many years did his reign last in total?")
-    give Llama's distribution over totals, averaged over two paraphrases. Its raw answers heap on round numbers,
+    give Llama's distribution over totals, averaged over five paraphrases. Its raw answers heap on round numbers,
     which a log prior would carry straight into the kernel, so each family is fit to it by weighted maximum
     likelihood (as G&T did with people's subjective priors) and the best fit is the second prediction: Bayes with
     Llama's prior. Gray: the elicited distribution; color: the best fit; black: the world prior.
@@ -232,8 +240,8 @@ def _(mo):
     mo.md(r"""
     ## Behavior
 
-    Median of Llama's answer distribution against t: remaining-time question (solid) and the total question
-    minus t (dashed), against the Bayes median from the world prior (black). Priors: G&T's fits (life span, grosses,
+    Mean of Llama's answer distribution against t: remaining-time question (solid) and the total question
+    minus t (dashed), against the Bayes mean from the world prior (black) and from Llama's prior (gray). Priors: G&T's fits (life span, grosses,
     pharaohs) or refits from their sources (run time, House; `fit_everyday_priors.py`).
     """)
     return
@@ -241,9 +249,10 @@ def _(mo):
 
 @app.cell
 def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, KERNELS_LLAMA, READS, np, plt, save_figure):
-    def median(P, grid):
-        P = P / P.sum(1, keepdims=True)
-        return grid[(np.cumsum(P, 1) < 0.5).sum(1)]
+    def mean(P, grid):
+        """Mean of each row's distribution: Llama's answers heap on round numbers, so its median jumps between
+        them from one t to the next while its mean moves smoothly."""
+        return (P / P.sum(1, keepdims=True)) @ grid
 
 
     _fig, _axes = plt.subplots(1, len(DOMAINS), figsize=(3 * len(DOMAINS), 2.8))
@@ -251,12 +260,12 @@ def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, KERNELS_LLAMA, READS, np, plt, sa
     for _ax, _d in zip(_axes, DOMAINS):
         _t, _R, _L = KERNELS[_d]
         _c = FAMILY_COLOR[DOMAINS[_d]["family"]]
-        _ax.plot(_t, median(np.exp(_L), _R), color="k", lw=1, label="Bayes, world prior")
-        _ax.plot(_t, median(np.exp(KERNELS_LLAMA[_d][2]), _R), color="0.5", lw=1.5, ls="-.", label="Bayes, Llama's prior")
-        _ax.plot(_t, median(READS[_d]["remaining"]["q"], _grid), color=_c, label="Llama: remaining")
-        _ax.plot(_t, median(READS[_d]["total"]["q"], _grid) - _t, "--", color=_c, label="Llama: total − t")
+        _ax.plot(_t, mean(np.exp(_L), _R), color="k", lw=1, label="Bayes, world prior")
+        _ax.plot(_t, mean(np.exp(KERNELS_LLAMA[_d][2]), _R), color="0.5", lw=1.5, ls="-.", label="Bayes, Llama's prior")
+        _ax.plot(_t, mean(READS[_d]["remaining"]["q"], _grid), color=_c, label="Llama: remaining")
+        _ax.plot(_t, mean(READS[_d]["total"]["q"], _grid) - _t, "--", color=_c, label="Llama: total − t")
         _ax.set_title(_d, fontsize=10); _ax.set_xlabel("t")
-    _axes[0].set_ylabel("median remaining R"); _axes[0].legend(frameon=False, fontsize=7)
+    _axes[0].set_ylabel("mean remaining R"); _axes[0].legend(frameon=False, fontsize=7)
     _fig.tight_layout()
     save_figure(_fig, FIGURES / "everyday_behavior.png")
     return

@@ -75,6 +75,7 @@ def test_prompts_end_before_the_answer_and_point_at_t():
     assert len(nums) == 1000 and len(set(nums)) == 1000
     for d in DOMAINS:
         for q in ("remaining", "total"):
+            assert len(DOMAINS[d]["templates"][q]) >= 5                    # answers averaged over paraphrases
             for tpl, template in zip(DOMAINS[d]["templates"][q], prompts(d, q)):
                 for t, text in list(template)[:: 10]:
                     lines = text.split("\n")
@@ -119,6 +120,6 @@ def test_prior_prompts_ask_for_a_total_with_no_t():
     ends on the space before the answer."""
     for d in DOMAINS:
         texts = prior_prompts(d)
-        assert len(texts) == len(DOMAINS[d]["templates"]["prior"]) >= 2
+        assert len(texts) == len(DOMAINS[d]["templates"]["prior"]) >= 5
         for text, tpl in zip(texts, DOMAINS[d]["templates"]["prior"]):
             assert text == PREFIX["total"] + tpl and not re.search(r"\d", tpl) and text.endswith(": ")
