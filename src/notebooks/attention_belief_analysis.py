@@ -70,11 +70,8 @@ def _(graph_overrides, load_run):
     # the hidden worlds of the inference notebook (13 temperatures read through 5 adjectives, 28 times of week through
     # 7 days); trained by src/scripts/train_next_token.sh. The Dirichlet-categorical is left out: with 3 tokens and 2
     # evidence modes any value vectors fit its evidence, so the token-level test below cannot fail there
-    # The reliability world breaks their symmetries (section 4): 21 positions read through 7 cues of unequal precision
     WORLDS = {"line": graph_overrides({"structure": "chain", "cooccurrence": "gaussian", "n": 13, "m": 5, "gamma": 0.02}),
-              "week": graph_overrides({"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 0.8}),
-              "reliability": graph_overrides({"structure": "chain", "cooccurrence": "gaussian", "n": 21, "m": 7,
-                                              "gamma": 0.2, "precision": [0.25, 0.25, 4, 2, 0.5, 4, 0.5]})}
+              "week": graph_overrides({"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 0.8})}
     T = 12
     COMMON = ["runner=transformer", "sample_mode=sequence", "++infer_latent=false",
               f"training_kwargs.context_length={T}", "training_kwargs.batch_size=256",
