@@ -173,99 +173,160 @@ def _(Q, day_span, df, fit_predict, harmonic_basis, np, off_plane, pair_position
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Two days: where the belief sits in every harmonic of the ring
+    ## Two days: on the ring, and what the ring cannot show
 
-    The seven day centroids come from the certain sentences ("Her flight leaves on Monday."). In
-    harmonic m day d sits at m·d sevenths of a turn (Monday up, clockwise), so harmonic 1 is the usual
-    ring, while in harmonic 2 Monday's neighbours are Thursday and Friday, and in harmonic 3 Wednesday and
-    Saturday. Each column: one separation, every pair turned so its first day is Monday (the second
-    clockwise), and averaged; the path runs over the stated percentages, 100/0 to 0/100 (large: 50/50).
-    Below: the model's distribution along that path.
+    Top: the ring (harmonic 1 of the day centroids, Monday up, clockwise). The centroids come from the
+    certain sentences ("Her flight leaves on Monday."), drawn over the prompts they average. Each column is
+    one separation: every pair turned so its first day is Monday (the second clockwise), every prompt drawn
+    faintly, and the mean per stated split traced from 100/0 to 0/100.
 
-    Between two days far apart on the ring, the first harmonic collapses toward the centre, which is all
-    a ring plot shows and what any spread-out belief would look like. The bimodality lives in the higher
-    harmonics: Monday-or-Thursday stays out at the ring in harmonic 2, where the two days are neighbours,
-    and Monday-or-Wednesday in harmonic 3.
+    Middle: the 50/50 prompts read back onto the days, one harmonic at a time,
+    $f(\theta) = \sum_{m \le M} \mathrm{Re}\, z_m e^{-i m \theta}$ (a certain day gives a bump at that day).
+    Harmonic 1 alone gives one broad bump between the two days, which is all the ring shows and what any
+    spread-out belief would give. Adding harmonics 2 and 3 splits it into the two days. Faint: each
+    prompt, all three harmonics. Bottom: the model's distribution for the same prompts.
     """)
     return
 
 
 @app.cell
-def _(DAYS, FIGURES, L_MAIN, PERCENTS, Q, SETS, canonical, df, fit_predict, harmonic_basis, harmonic_coords,
-      np, plot_utils, plt, reads, save_figure):
-    from matplotlib.lines import Line2D
+def _(DAYS, L_MAIN, PERCENTS, Q, SETS, canonical, df, fit_predict, harmonic_basis, harmonic_coords, np,
+      plot_utils, plt, reads):
     _H = np.asarray(reads["answer"][L_MAIN], np.float32)
-    _ref = ((df.family == "set") & (df["size"] == 1)).values
-    _mu, _B = harmonic_basis(np.stack([_H[_ref & (df.start.values == k)].mean(0) for k in range(7)]))
-    HZ = harmonic_coords(_H, _mu, _B)                                     # (N, 3) complex
+    REF1 = ((df.family == "set") & (df["size"] == 1)).values               # "Her flight leaves on Monday."
+    _mu, _B = harmonic_basis(np.stack([_H[REF1 & (df.start.values == k)].mean(0) for k in range(7)]))
+    HZ = harmonic_coords(_H, _mu, _B)                                     # (N, 3) complex, harmonics 1-3
     _real = np.concatenate([HZ.real, HZ.imag], 1)
     _p = fit_predict(Q[SETS], _real[SETS], Q, "log")
     HZ_LOG = _p[:, :3] + 1j * _p[:, 3:]                                   # predicted from the model's distribution
     HUE = plt.cm.twilight(np.arange(7) / 7)
-    INK3, PRED = "0.15", "#2a78d6"
-    _short = [d[:3] for d in DAYS]
-    _pct = (df.family == "percent").values
-    _rot = canonical(HZ, df.A.values, df.B.values, df.sep.values)
-    _rot_log = canonical(HZ_LOG, df.A.values, df.B.values, df.sep.values)
+    INK3 = "0.15"
+    SHORT = [d[:3] for d in DAYS]
+    PCT = (df.family == "percent").values
+    ROT = canonical(HZ, df.A.values, df.B.values, df.sep.values)          # first day at Monday, second clockwise
     _toward = np.where((df.B.values - df.A.values) % 7 == df.sep.values, 1, -1)
-    _Qc = Q[np.arange(len(df))[:, None], (df.A.values[:, None] + _toward[:, None] * np.arange(7)) % 7]   # canonical day order
+    QC = Q[np.arange(len(df))[:, None], (df.A.values[:, None] + _toward[:, None] * np.arange(7)) % 7]   # same day order
     _xy = lambda z: np.c_[np.abs(z) * np.sin(np.angle(z)), np.abs(z) * np.cos(np.angle(z))]          # Monday up, clockwise
-    _wB = 1 - np.array(PERCENTS) / 100
+    WB = 1 - np.array(PERCENTS) / 100                                     # stated chance of the second day, per level
 
 
-    def _plane(ax, m, sep):
+    def ring_plane(ax, m, sep):
+        """Harmonic m of the day centroids: certain prompts and centroids, every prompt for the pair
+        ``sep`` days apart, and its mean per stated split."""
         R, t = 1.75, np.linspace(0, 2 * np.pi, 200)
         ax.plot([-.95 * R, .95 * R], [0, 0], color="0.85", lw=.8); ax.plot([0, 0], [-.95 * R, .95 * R], color="0.85", lw=.8)
         ax.plot(np.cos(t), np.sin(t), ls=":", color="0.7", lw=1.1, zorder=0)
         for r in (.25, .5, .75):
             ax.plot(r * np.cos(t), r * np.sin(t), color="0.93", lw=.7, zorder=0)
         pos = _xy(np.exp(2j * np.pi * m * np.arange(7) / 7))
-        ax.scatter(*_xy(HZ[_ref, m - 1]).T, c=HUE[df.start.values[_ref]], s=14, alpha=.35, lw=0, zorder=2)   # certain prompts
-        ax.scatter(*pos.T, c=HUE, s=55, edgecolor="0.35", lw=.6, zorder=3)                                    # their centroids
+        ax.scatter(*_xy(HZ[REF1, m - 1]).T, c=HUE[df.start.values[REF1]], s=14, alpha=.35, lw=0, zorder=2)
+        ax.scatter(*pos.T, c=HUE, s=55, edgecolor="0.35", lw=.6, zorder=3)
         for d in range(7):
-            ax.annotate(_short[d], 1.3 * pos[d], ha="center", va="center", fontsize=14 if d in (0, sep) else 11,
+            ax.annotate(SHORT[d], 1.3 * pos[d], ha="center", va="center", fontsize=14 if d in (0, sep) else 11,
                         color=INK3 if d in (0, sep) else "0.6")
-        sel = _pct & (df.sep.values == sep)
-        _lv = df.level.values[sel]
-        _mix = (1 - _wB)[:, None] * HUE[0] + _wB[:, None] * HUE[sep]                       # colour by stated split
-        ax.scatter(*_xy(_rot[sel, m - 1]).T, c=_mix[_lv], s=6, alpha=.2, lw=0, zorder=1)  # every two-day prompt
-        obs, pre = ([z[sel & (df.level.values == l), m - 1].mean() for l in range(7)] for z in (_rot, _rot_log))
-        ax.plot(*_xy(np.array(pre)).T, ls=(0, (4, 3)), color=PRED, lw=1.6, zorder=4)
-        ax.plot(*_xy(np.array(obs)).T, color=INK3, lw=1.6, zorder=5)
-        ax.scatter(*_xy(np.array(obs)).T, c=_mix, s=30, edgecolor=INK3, lw=.8, zorder=6)
+        sel = PCT & (df.sep.values == sep)
+        mix = (1 - WB)[:, None] * HUE[0] + WB[:, None] * HUE[sep]          # colour by stated split
+        ax.scatter(*_xy(ROT[sel, m - 1]).T, c=mix[df.level.values[sel]], s=6, alpha=.2, lw=0, zorder=1)
+        obs = np.array([ROT[sel & (df.level.values == l), m - 1].mean() for l in range(7)])
+        ax.plot(*_xy(obs).T, color=INK3, lw=1.6, zorder=5)
+        ax.scatter(*_xy(obs).T, c=mix, s=30, edgecolor=INK3, lw=.8, zorder=6)
         ax.set_xlim(-R, R); ax.set_ylim(-R, R); ax.set_aspect("equal"); plot_utils.FIG.clean(ax)
 
+    return HUE, HZ, HZ_LOG, INK3, PCT, QC, ROT, SHORT, WB, ring_plane
 
+
+@app.cell
+def _(DAYS, FIGURES, HUE, INK3, L_MAIN, PCT, QC, ROT, SHORT, df, np, plot_utils, plt, ring_plane, save_figure):
+    _x = np.linspace(-2.5, 4.5, 400)                                      # one week, Monday at 0
+    _BLUES = ["#86b6ef", "#3987e5", "#0d366b"]                            # harmonics summed: 1, 1-2, 1-3
+
+
+    def _profile(z, M, x=_x):
+        """Read back onto the days: sum over harmonics m <= M of Re z_m exp(-i m theta)."""
+        th = 2 * np.pi * x / 7
+        return sum((z[..., m - 1, None] * np.exp(-1j * m * th)).real for m in range(1, M + 1))
+
+
+    _fig = plt.figure(figsize=(13, 10))
+    _gs = _fig.add_gridspec(3, 3, height_ratios=[1, .52, .26], hspace=.12, wspace=.22,
+                            left=.08, right=.98, top=.93, bottom=.06)
+    for _c, _sep in enumerate((1, 2, 3)):
+        _ax = _fig.add_subplot(_gs[0, _c]); ring_plane(_ax, 1, _sep)
+        _ax.set_title(f"Monday or {DAYS[_sep]}", fontsize=19, pad=4)
+        _even = PCT & (df.sep.values == _sep) & (df.level.values == 3)      # the 50/50 prompts
+        _ax = _fig.add_subplot(_gs[1, _c])
+        for _z in ROT[_even]:
+            _ax.plot(_x, _profile(_z, 3), color="0.6", lw=.6, alpha=.12)
+        _zm = ROT[_even].mean(0)
+        for _M in (1, 2, 3):
+            _f = _profile(_zm, _M)
+            _ax.plot(_x, _f, color=_BLUES[_M - 1], lw=2.4, label=["harmonic 1 (the ring)", "+ harmonic 2", "+ harmonic 3"][_M - 1])
+        for _d in (0, _sep):
+            _ax.axvline(_d, color=HUE[_d] if _d else "0.6", lw=1.2, ls=":", zorder=0)
+        _ax.axhline(0, color="0.8", lw=.8)
+        _ax.set(xlim=(-2.5, 4.5), ylim=(-2.2, 3.2), xticks=range(-2, 5))
+        _ax.tick_params(labelbottom=False)
+        _leg = _ax.get_legend_handles_labels()
+        if _c == 0:
+            _ax.set_ylabel("read back\nonto the days", fontsize=14)
+        plot_utils.FIG.style_axes(_ax)
+        _ax = _fig.add_subplot(_gs[2, _c])
+        _pm = QC[_even, :7].mean(0)
+        _days = np.arange(-2, 5)
+        _ax.bar(_days, _pm[_days % 7], width=.7, color=HUE[_days % 7], edgecolor="0.45", lw=.5)
+        _ax.set(xlim=(-2.5, 4.5), ylim=(0, .6), yticks=[0, .5], xticks=range(-2, 5), xticklabels=[SHORT[d % 7] for d in range(-2, 5)])
+        if _c == 0:
+            _ax.set_ylabel(r"$p(x \mid z)$", fontsize=14)
+        plot_utils.FIG.style_axes(_ax)
+    _fig.text(.5, .975, f"Two-day beliefs on the day ring, and read back onto the days (Llama-3.1-8B, layer {L_MAIN}, answer slot)",
+              ha="center", fontsize=17, color=INK3)
+    _fig.legend(*_leg, loc="lower center", bbox_to_anchor=(.5, _gs[1, :].get_position(_fig).y1 + .01), ncol=3, frameon=False, fontsize=13,
+                title="50/50 prompts read back onto the days, harmonics summed (faint: each prompt)", title_fontsize=12)
+    save_figure(_fig, str(FIGURES / "two_day_ring_profiles.png"))
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Appendix: every harmonic plane
+
+    In harmonic m day d sits at m·d sevenths of a turn, so in harmonic 2 Monday's neighbours are
+    Thursday and Friday, in harmonic 3 Wednesday and Saturday. Two days far apart on the ring collapse
+    in harmonic 1 but stay out at the ring in the harmonic where they are neighbours.
+    """)
+    return
+
+
+@app.cell
+def _(DAYS, FIGURES, HUE, INK3, L_MAIN, PCT, QC, SHORT, WB, df, np, plot_utils, plt, ring_plane, save_figure):
     _fig = plt.figure(figsize=(13, 19))
-    _gs = _fig.add_gridspec(4, 3, height_ratios=[1, 1, 1, .62], hspace=.08, wspace=.05, left=.07, right=.99, top=.925, bottom=.04)
+    _gs = _fig.add_gridspec(4, 3, height_ratios=[1, 1, 1, .62], hspace=.08, wspace=.05, left=.07, right=.99, top=.94, bottom=.04)
     _gb = _gs[3, :].subgridspec(1, 3, wspace=.28)
     for _c, _sep in enumerate((1, 2, 3)):
         for _m in (1, 2, 3):
-            _ax = _fig.add_subplot(_gs[_m - 1, _c]); _plane(_ax, _m, _sep)
+            _ax = _fig.add_subplot(_gs[_m - 1, _c]); ring_plane(_ax, _m, _sep)
             if _m == 1:
                 _ax.set_title(f"Monday or {DAYS[_sep]}", fontsize=19, pad=6)
             if _c == 0:
                 _ax.annotate(["harmonic 1 (the ring)", "harmonic 2", "harmonic 3"][_m - 1], (-.02, .5), xycoords="axes fraction",
                              rotation=90, ha="right", va="center", fontsize=16, color=INK3)
         _ax = _fig.add_subplot(_gb[_c])
-        _sel = _pct & (df.sep.values == _sep)
-        _Pm = np.stack([_Qc[_sel & (df.level.values == l), :7].mean(0) for l in range(7)])
+        _sel = PCT & (df.sep.values == _sep)
+        _Pm = np.stack([QC[_sel & (df.level.values == l), :7].mean(0) for l in range(7)])
         for _d in range(7):
-            _ax.plot(_wB, _Pm[:, _d], color=HUE[_d] if _d else "0.7", lw=2.2 if _d in (0, _sep) else 1.3, marker="o", ms=4)
+            _ax.plot(WB, _Pm[:, _d], color=HUE[_d] if _d else "0.7", lw=2.2 if _d in (0, _sep) else 1.3, marker="o", ms=4)
         _ax.annotate("Mon", (.02, _Pm[0, 0] - .02), ha="left", va="top", fontsize=13, color="0.5")
-        _ax.annotate(_short[_sep], (.98, _Pm[-1, _sep] - .02), ha="right", va="top", fontsize=13, color=HUE[_sep])
+        _ax.annotate(SHORT[_sep], (.98, _Pm[-1, _sep] - .02), ha="right", va="top", fontsize=13, color=HUE[_sep])
         _ax.annotate("other days", (.5, .04), ha="center", va="bottom", fontsize=11, color="0.6")
         _ax.set(xlim=(0, 1), ylim=(0, 1.02), xticks=[0, .5, 1], xticklabels=["0", "0.5", "1"], yticks=[0, .5, 1])
         _ax.set_xlabel(f"stated chance of {DAYS[_sep]}", fontsize=14)
         _ax.set_ylabel(r"$p(x \mid z)$", fontsize=16) if _c == 0 else _ax.set_yticklabels([])
         plot_utils.FIG.style_axes(_ax)
-    _fig.text(.5, .982, f"Where a two-day belief sits in each harmonic of the day ring (Llama-3.1-8B, layer {L_MAIN}, answer slot)",
+    _fig.text(.5, .975, f"Two-day beliefs in each harmonic of the day ring (Llama-3.1-8B, layer {L_MAIN}, answer slot)",
               ha="center", fontsize=17, color=INK3)
-    _fig.legend([Line2D([], [], color=INK3, lw=1.8, marker="o", mfc="white", mec=INK3), Line2D([], [], color=PRED, lw=1.6, ls=(0, (4, 3)))],
-                ["observed: mean per stated split, 100/0 to 0/100 (faint: every prompt)", "predicted from the model's distribution (log map, fitted on sets)"],
-                loc="upper center", bbox_to_anchor=(.53, .972), ncol=2, frameon=False, fontsize=12)
     save_figure(_fig, str(FIGURES / "two_day_harmonics.png"))
-    return HZ, HZ_LOG, Line2D
+    return
 
 
 @app.cell(hide_code=True)
@@ -280,7 +341,8 @@ def _(mo):
 
 
 @app.cell
-def _(FIGURES, HZ, HZ_LOG, Line2D, SETS, df, np, plot_utils, plt, save_figure):
+def _(FIGURES, HZ, HZ_LOG, SETS, df, np, plot_utils, plt, save_figure):
+    from matplotlib.lines import Line2D
     _HC = ["#2a78d6", "#eb6834", "#1baf7a"]
     _fig, _axes = plt.subplots(1, 2, figsize=(11, 4.4), sharey=True)
     _even = ((df.family == "percent") & (df.level == 3)).values
