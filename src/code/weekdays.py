@@ -124,12 +124,25 @@ def harmonic_basis(C):
     return mu, np.stack(B, 1)
 
 
-def ring_coords(H, mu, B):
-    """Angle (in days, 0-7) and radius in the first harmonic, scaled so the centroids sit at
-    radius 1 and angle d: least-squares coefficients on the Fourier vectors, times 7/2."""
+def harmonic_coords(H, mu, B):
+    """(N, 3) complex: each point's place in harmonics 1-3, the least-squares coefficients on the
+    Fourier vectors times 7/2, so that centroid d sits at exp(2 pi i m d / 7) in harmonic m."""
     c = (H - mu) @ np.linalg.pinv(B).T * 3.5
-    z = c[:, 0] + 1j * c[:, 1]
+    return c[:, 0::2] + 1j * c[:, 1::2]
+
+
+def ring_coords(H, mu, B):
+    """Angle (in days, 0-7) and radius in the first harmonic (centroids at radius 1, angle d)."""
+    z = harmonic_coords(H, mu, B)[:, 0]
     return np.mod(np.angle(z) * 7 / (2 * np.pi), 7), np.abs(z)
+
+
+def canonical(z, A, B, sep):
+    """Harmonic coordinates (N, 3) of pair prompts turned so that A sits at Monday's place and B
+    ``sep`` days clockwise of it: harmonic m rotated by -m*A, mirrored when B was named the other way."""
+    m = np.arange(1, 4)
+    rot = z * np.exp(-2j * np.pi * m * np.asarray(A)[:, None] / 7)
+    return np.where(((np.asarray(B) - A) % 7 == sep)[:, None], rot, np.conj(rot))
 
 
 def day_span(H, mu, B):

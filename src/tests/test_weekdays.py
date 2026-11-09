@@ -108,6 +108,31 @@ def test_harmonic_coordinates_put_any_seven_centroids_on_the_unit_circle_at_thei
     assert np.allclose(radius, 0)
 
 
+def test_harmonic_coordinates_put_day_d_at_angle_m_times_d_in_harmonic_m():
+    """Each harmonic m is a plane in which every centroid sits at radius 1 and day d at m*d (mod 7,
+    in days); a 50/50 mix of two centroids lands at |cos(m*pi*sep/7)| in plane m."""
+    from src.code.weekdays import harmonic_coords
+    C = np.random.default_rng(2).normal(size=(7, 12))
+    mu, B = harmonic_basis(C)
+    c = harmonic_coords(C, mu, B)
+    assert c.shape == (7, 3) and np.allclose(np.abs(c), 1)
+    for m in (1, 2, 3):
+        assert np.allclose(c[:, m - 1], np.exp(2j * np.pi * m * np.arange(7) / 7))
+    mix = harmonic_coords((C[0] + C[3])[None] / 2, mu, B)[0]
+    assert np.allclose(np.abs(mix), np.abs(np.cos(np.array([1, 2, 3]) * np.pi * 3 / 7)))
+
+
+def test_canonical_rotation_takes_A_to_monday_and_B_clockwise_of_it():
+    """Rotating harmonic m by -m*A (and mirroring when B was named counter-clockwise of A) sends A's
+    centroid to Monday's place and B's to day ``sep`` in every harmonic."""
+    from src.code.weekdays import canonical, harmonic_coords
+    C = np.random.default_rng(3).normal(size=(7, 12))
+    mu, B = harmonic_basis(C); c = harmonic_coords(C, mu, B)
+    A, Bd, sep = np.array([3, 3]), np.array([1, 5]), np.array([2, 2])
+    assert np.allclose(canonical(c[A], A, Bd, sep), c[[0, 0]])
+    assert np.allclose(canonical(c[Bd], A, Bd, sep), c[[2, 2]])
+
+
 def test_a_planted_log_code_is_recovered_from_certain_prompts_and_beats_the_alternatives():
     """If the representation is a linear image of the centred log-probabilities, the map fitted on
     near-certain prompts predicts two-day mixtures exactly; a map fitted on probabilities, and the
