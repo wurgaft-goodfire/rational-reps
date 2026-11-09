@@ -2,7 +2,7 @@
 (40 processes), encode it once into an id stream (same pool, Rust word tokenizer), and accumulate the
 full vocabulary x vocabulary window co-occurrence matrix on the GPU. Writes ``$CACHE_DIR/corpus/{tag}/``
 with ``ids.bin`` (uint16), ``doc_lengths.npy``, ``vocab.json``, ``freq.npy`` and
-``C_w{window}_{weighting}.npy``. Run: ``uv run python -m src.notebooks.build_corpus wikipedia [weighting]``."""
+``C_w{window}_{weighting}.npy`` with its row sums (``_rows.npy``). Run: ``uv run python -m src.notebooks.build_corpus wikipedia [weighting]``."""
 import json
 import os
 import sys
@@ -53,5 +53,7 @@ if __name__ == "__main__":
     docs = np.repeat(np.arange(len(lengths := np.load(out / "doc_lengths.npy")), dtype=np.int32), lengths)
     V = len(json.loads((out / "vocab.json").read_text()))
     C = cooccurrence_matrix(ids, docs, V, window=WINDOW, weighting=weighting)
-    np.save(out / f"C_w{WINDOW}_{weighting.replace('/', '')}.npy", C)
+    name = f"C_w{WINDOW}_{weighting.replace('/', '')}"
+    np.save(out / f"{name}.npy", C)
+    np.save(out / f"{name}_rows.npy", C.sum(1, dtype=np.float64))   # load_corpus's row sums, while C is in memory
     print(f"matrix {C.shape}, weighting {weighting}: {time.time() - t:.0f}s")
