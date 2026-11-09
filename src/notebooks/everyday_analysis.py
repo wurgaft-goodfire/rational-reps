@@ -62,6 +62,7 @@ def _(mo):
     from src.code.llm import read_prompts
     from src.code.geometry import predicted_geometry
     from src.code.analysis_utils import cka, rsa
+    from src.code import plot_utils
     from src.code.plot_utils import save_figure
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
@@ -76,6 +77,7 @@ def _(mo):
         FIGURES,
         LLM_NAME,
         cka,
+        plot_utils,
         encode,
         fit_prior,
         log_prior,
@@ -441,6 +443,46 @@ def _(DOMAINS, FIGURES, READS, cka, np, plt, predicted_geometry, save_figure):
     _axes[0].set_ylabel("linear CKA, last token"); _axes[0].legend(frameon=False, fontsize=7)
     _fig.tight_layout()
     save_figure(_fig, FIGURES / "everyday_own_cka.png")
+    return (own_code,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Predicted against learned codes
+
+    Per domain: the code predicted from Llama's own answers, the one predicted from the world prior (where there
+    is a world prior and it does not collapse to a point), and Llama's residual at the last token a quarter and
+    three quarters of the way through the network (before and after the switch to the own-answer code; the
+    final layers are left out, since the readout fixes them). Top: top-2 PCA, colored by t. Bottom: Gram
+    matrices, with each residual's linear CKA against the own-answer code.
+    """)
+    return
+
+
+@app.cell
+def _(DOMAINS, FIGURES, PRED, READS, cka, own_code, plot_utils, save_figure):
+    import io
+
+    def code_panel(d):
+        X = READS[d]["remaining"]["last"]; n_layers = len(X) - 1
+        E = own_code(d)
+        codes = {}
+        if d in PRED and DOMAINS[d]["family"] != "erlang":
+            codes["predicted\n(world prior)"] = PRED[d]
+        for frac in (0.25, 0.75):
+            l = round(frac * n_layers); codes[f"Llama L{l}"] = X[l]
+        fig = plot_utils.plot_embedding_panels(E, codes, None, cmap="magma", colors=READS[d]["remaining"]["t"],
+                                               scores={k: cka(v, E) for k, v in codes.items()},
+                                               first_name="predicted\n(own answers)")
+        return fig
+
+
+    _pngs = []
+    for _d in DOMAINS:
+        _fig = save_figure(code_panel(_d), FIGURES / f"everyday_codes_{_d}.png")
+        _buf = io.BytesIO(); _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight"); _pngs.append(_buf)
+    save_figure(plot_utils.merge_panels(_pngs, labels=[f"{d} ({DOMAINS[d]['family'] or 'no world prior'})" for d in DOMAINS]), FIGURES / "everyday_codes.png")
     return
 
 
