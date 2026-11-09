@@ -17,6 +17,7 @@ CONTS = ["her flight leaves", "his class meets", "the market opens", "their team
 ADVERBS = [("Always", "never", 1.0), ("Usually", "sometimes", .75), ("Sometimes", "sometimes", .5),
            ("Sometimes", "usually", .25), ("Never", "always", 0.0)]     # (A's, B's, weight on A)
 PERCENTS = [100, 90, 75, 50, 25, 10, 0]                                 # percent on A
+CONFIDENCE = [100, 90, 75, 50, 30, 14]                                  # percent on the one day (14: about uniform)
 PAIRS = [(a, (a + s) % 7, s) for a in range(7) for s in (1, 2, 3)]
 PAIRS += [(b, a, s) for a, b, s in PAIRS]                               # both naming orders: 42
 
@@ -67,6 +68,11 @@ def _sentences():
             out.append(dict(family="percent", level=l, A=A, B=B, sep=s, cont=c, weights=_two(A, B, pa / 100),
                             pre=f"{Cont} on {DAYS[A]} with {pa} percent probability and on {DAYS[B]} "
                                 f"with {100 - pa} percent probability.", post=post))
+        for A, (l, pa) in itertools.product(range(7), enumerate(CONFIDENCE)):
+            w = np.full(7, (1 - pa / 100) / 6); w[A] = pa / 100
+            out.append(dict(family="confidence", level=l, A=A, B=A, sep=0, cont=c, weights=w, post=post,
+                            pre=f"{Cont} on {DAYS[A]} with {pa} percent probability and otherwise on any "
+                                f"other day, each equally likely."))
         for size, start in itertools.product(range(1, 8), range(7)):
             days = [(start + i) % 7 for i in range(size)]
             w = np.zeros(7); w[days] = 1 / size

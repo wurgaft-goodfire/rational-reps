@@ -42,6 +42,19 @@ def test_prompts_state_their_weights_and_end_the_sentence_before_the_answer_slot
     assert {p["size"] for p in sets} == set(range(1, 8))
 
 
+def test_confidence_prompts_name_one_day_and_spread_the_rest_evenly():
+    """"{Cont} on {day} with {p} percent probability and otherwise on any other day, each equally
+    likely." for every day and p in CONFIDENCE: weight p on the day, the rest split over the other six."""
+    from src.code.weekdays import CONFIDENCE
+    conf = [p for p in all_prompts() if p["family"] == "confidence"]
+    assert len(conf) == 7 * len(CONFIDENCE) * 8 and CONFIDENCE[0] == 100
+    p = next(p for p in conf if p["A"] == 2 and p["level"] == 2 and p["cont"] == 0)
+    assert p["pre"] == ("Her flight leaves on Wednesday with 75 percent probability and otherwise on any "
+                        "other day, each equally likely.")
+    assert p["post"] == " This week, her flight leaves on"
+    assert np.allclose(p["weights"], np.r_[[.25 / 6] * 2, .75, [.25 / 6] * 4])
+
+
 def test_few_shot_prompts_precede_each_sentence_with_examples_completed_by_a_day_drawn_from_their_odds():
     """With ``shots``, every prompt starts with the header, then that many example lines from its own
     family (other continuations), each completed with a day drawn from the example's stated weights,

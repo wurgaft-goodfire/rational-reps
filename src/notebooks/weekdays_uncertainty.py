@@ -173,7 +173,7 @@ def _(Q, day_span, df, fit_predict, harmonic_basis, np, off_plane, pair_position
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Two days: on the ring, and what the ring cannot show
+    ## Two days: trading confidence, and what the ring cannot show
 
     Top: the ring (harmonic 1 of the day centroids, Monday up, clockwise). The centroids come from the
     certain sentences ("Her flight leaves on Monday."), drawn over the prompts they average. Each column is
@@ -184,7 +184,8 @@ def _(mo):
     $f(\theta) = \sum_{m \le M} \mathrm{Re}\, z_m e^{-i m \theta}$ (a certain day gives a bump at that day).
     Harmonic 1 alone gives one broad bump between the two days, which is all the ring shows and what any
     spread-out belief would give. Adding harmonics 2 and 3 splits it into the two days. Faint: each
-    prompt, all three harmonics. Bottom: the model's distribution for the same prompts.
+    prompt, all three harmonics. Bottom: the model's distribution as the stated split moves, mass
+    traded from Monday to the other day.
     """)
     return
 
@@ -232,7 +233,7 @@ def _(DAYS, L_MAIN, PERCENTS, Q, SETS, canonical, df, fit_predict, harmonic_basi
         ax.scatter(*_xy(obs).T, c=mix, s=30, edgecolor=INK3, lw=.8, zorder=6)
         ax.set_xlim(-R, R); ax.set_ylim(-R, R); ax.set_aspect("equal"); plot_utils.FIG.clean(ax)
 
-    return HUE, HZ, HZ_LOG, INK3, PCT, QC, ROT, SHORT, WB, ring_plane
+    return HUE, HZ, HZ_LOG, INK3, PCT, QC, REF1, ROT, SHORT, WB, ring_plane
 
 
 @app.cell
@@ -247,8 +248,8 @@ def _(DAYS, FIGURES, HUE, INK3, L_MAIN, PCT, QC, ROT, SHORT, df, np, plot_utils,
         return sum((z[..., m - 1, None] * np.exp(-1j * m * th)).real for m in range(1, M + 1))
 
 
-    _fig = plt.figure(figsize=(13, 10))
-    _gs = _fig.add_gridspec(3, 3, height_ratios=[1, .52, .26], hspace=.12, wspace=.22,
+    _fig = plt.figure(figsize=(13, 12))
+    _gs = _fig.add_gridspec(3, 3, height_ratios=[1, .5, .42], hspace=.26, wspace=.22,
                             left=.08, right=.98, top=.93, bottom=.06)
     for _c, _sep in enumerate((1, 2, 3)):
         _ax = _fig.add_subplot(_gs[0, _c]); ring_plane(_ax, 1, _sep)
@@ -264,25 +265,97 @@ def _(DAYS, FIGURES, HUE, INK3, L_MAIN, PCT, QC, ROT, SHORT, df, np, plot_utils,
         for _d in (0, _sep):
             _ax.axvline(_d, color=HUE[_d] if _d else "0.6", lw=1.2, ls=":", zorder=0)
         _ax.axhline(0, color="0.8", lw=.8)
-        _ax.set(xlim=(-2.5, 4.5), ylim=(-2.2, 3.2), xticks=range(-2, 5))
-        _ax.tick_params(labelbottom=False)
+        _ax.set(xlim=(-2.5, 4.5), ylim=(-2.2, 3.2), xticks=range(-2, 5), xticklabels=[SHORT[d % 7] for d in range(-2, 5)])
         _leg = _ax.get_legend_handles_labels()
         if _c == 0:
             _ax.set_ylabel("read back\nonto the days", fontsize=14)
         plot_utils.FIG.style_axes(_ax)
-        _ax = _fig.add_subplot(_gs[2, _c])
-        _pm = QC[_even, :7].mean(0)
-        _days = np.arange(-2, 5)
-        _ax.bar(_days, _pm[_days % 7], width=.7, color=HUE[_days % 7], edgecolor="0.45", lw=.5)
-        _ax.set(xlim=(-2.5, 4.5), ylim=(0, .6), yticks=[0, .5], xticks=range(-2, 5), xticklabels=[SHORT[d % 7] for d in range(-2, 5)])
-        if _c == 0:
-            _ax.set_ylabel(r"$p(x \mid z)$", fontsize=14)
+        _ax = _fig.add_subplot(_gs[2, _c])                                  # which output: mass traded between the two
+        _sel = PCT & (df.sep.values == _sep)
+        _Pm = np.stack([QC[_sel & (df.level.values == l), :7].mean(0) for l in range(7)])
+        for _d in range(7):
+            _ax.plot(WB, _Pm[:, _d], color=HUE[_d] if _d else "0.7", lw=2.2 if _d in (0, _sep) else 1.3, marker="o", ms=4)
+        _ax.annotate("Mon", (.02, _Pm[0, 0] - .03), ha="left", va="top", fontsize=13, color="0.5")
+        _ax.annotate(SHORT[_sep], (.98, _Pm[-1, _sep] - .03), ha="right", va="top", fontsize=13, color=HUE[_sep])
+        _ax.annotate("other days", (.5, .04), ha="center", va="bottom", fontsize=11, color="0.6")
+        _ax.set(xlim=(0, 1), ylim=(0, 1.02), xticks=[0, .5, 1], xticklabels=["0", "0.5", "1"], yticks=[0, .5, 1])
+        _ax.set_xlabel(f"stated chance of {DAYS[_sep]}", fontsize=14)
+        _ax.set_ylabel(r"$p(x \mid z)$", fontsize=14) if _c == 0 else _ax.set_yticklabels([])
         plot_utils.FIG.style_axes(_ax)
-    _fig.text(.5, .975, f"Two-day beliefs on the day ring, and read back onto the days (Llama-3.1-8B, layer {L_MAIN}, answer slot)",
+    _fig.text(.5, .975, f"Trading confidence between two days (Llama-3.1-8B, layer {L_MAIN}, answer slot)",
               ha="center", fontsize=17, color=INK3)
     _fig.legend(*_leg, loc="lower center", bbox_to_anchor=(.5, _gs[1, :].get_position(_fig).y1 + .01), ncol=3, frameon=False, fontsize=13,
                 title="50/50 prompts read back onto the days, harmonics summed (faint: each prompt)", title_fontsize=12)
     save_figure(_fig, str(FIGURES / "two_day_ring_profiles.png"))
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## One day: reducing confidence
+
+    "Her flight leaves on Monday with p percent probability and otherwise on any other day, each equally
+    likely", p from 100 to 14 (about uniform). Left: every prompt in the ring plane in its day's colour,
+    and each day's mean path as p falls: in along its own spoke, toward the centre. Middle: the model's
+    distribution, the named day falling while the other six rise together. Right: each harmonic's
+    radius, which falls in step: spreading the rest evenly removes certainty from every harmonic alike,
+    while trading between two days (above) keeps it in some harmonics and not others.
+    """)
+    return
+
+
+@app.cell
+def _(FIGURES, HUE, HZ, INK3, L_MAIN, Q, QC, REF1, SHORT, df, np, plot_utils, plt, save_figure):
+    from src.code.weekdays import CONFIDENCE
+    _conf = (df.family == "confidence").values
+    _p = np.array(CONFIDENCE) / 100
+    _xy = lambda z: np.c_[np.abs(z) * np.sin(np.angle(z)), np.abs(z) * np.cos(np.angle(z))]
+    _fig = plt.figure(figsize=(16, 5.6))
+    _gs = _fig.add_gridspec(1, 3, width_ratios=[1.15, 1, 1], wspace=.3, left=.02, right=.98, top=.86, bottom=.14)
+    _ax = _fig.add_subplot(_gs[0])
+    _R, _t = 1.55, np.linspace(0, 2 * np.pi, 200)
+    _ax.plot([-.95 * _R, .95 * _R], [0, 0], color="0.85", lw=.8); _ax.plot([0, 0], [-.95 * _R, .95 * _R], color="0.85", lw=.8)
+    _ax.plot(np.cos(_t), np.sin(_t), ls=":", color="0.7", lw=1.1, zorder=0)
+    for _r in (.25, .5, .75):
+        _ax.plot(_r * np.cos(_t), _r * np.sin(_t), color="0.93", lw=.7, zorder=0)
+    _ax.scatter(*_xy(HZ[_conf, 0]).T, c=HUE[df.A.values[_conf]], s=7, alpha=.25, lw=0, zorder=1)
+    _pos = _xy(np.exp(2j * np.pi * np.arange(7) / 7))
+    _ax.scatter(*_xy(HZ[REF1, 0]).T, c=HUE[df.start.values[REF1]], s=14, alpha=.35, lw=0, zorder=2)
+    _ax.scatter(*_pos.T, c=HUE, s=55, edgecolor="0.35", lw=.6, zorder=3)
+    for _d in range(7):
+        _ax.annotate(SHORT[_d], 1.28 * _pos[_d], ha="center", va="center", fontsize=13, color="0.35")
+        _path = np.array([HZ[_conf & (df.A.values == _d) & (df.level.values == l), 0].mean() for l in range(len(_p))])
+        _ax.plot(*_xy(_path).T, color=INK3, lw=1.5, zorder=4)
+        _ax.scatter(*_xy(_path).T, color=HUE[_d], s=28, edgecolor=INK3, lw=.8, zorder=5)
+    _ax.set_xlim(-_R, _R); _ax.set_ylim(-_R, _R); _ax.set_aspect("equal"); plot_utils.FIG.clean(_ax)
+    _ax.set_title("the ring", fontsize=17, pad=2)
+    # which output, the named day turned to Monday
+    _ax = _fig.add_subplot(_gs[1])
+    _Pm = np.stack([QC[_conf & (df.level.values == l), :7].mean(0) for l in range(len(_p))])
+    for _d in range(1, 7):
+        _ax.plot(_p, _Pm[:, _d], color="0.65", lw=1.2, marker="o", ms=3)
+    _ax.plot(_p, _Pm[:, 0], color=INK3, lw=2.4, marker="o", ms=5)
+    _ax.annotate("the named day", (.2, _Pm[-1, 0] + .04), ha="center", va="bottom", fontsize=13, color=INK3)
+    _ax.annotate("each other day", (.2, _Pm[-1, 1:].max() + .03), ha="center", va="bottom", fontsize=13, color="0.5")
+    _ax.axhline(1 / 7, color="0.8", lw=.8, ls=":")
+    _ax.set(xlim=(1.02, .1), ylim=(0, 1.02), xticks=[1, .75, .5, .25, 1 / 7], xticklabels=["1", ".75", ".5", ".25", "1/7"], yticks=[0, .5, 1])
+    _ax.set_xlabel("stated chance of the named day", fontsize=14); _ax.set_ylabel(r"$p(x \mid z)$", fontsize=15)
+    _ax.set_title("which output", fontsize=17)
+    plot_utils.FIG.style_axes(_ax)
+    # each harmonic's radius
+    _ax = _fig.add_subplot(_gs[2])
+    for _m, _c in zip((1, 2, 3), ("#86b6ef", "#3987e5", "#0d366b")):
+        _ax.plot(_p, [np.abs(HZ[_conf & (df.level.values == l), _m - 1]).mean() for l in range(len(_p))], "o-", color=_c, lw=2.2, ms=5,
+                 label=f"harmonic {_m}")
+    _ax.axhline(1, color="0.8", lw=.8, ls=":")
+    _ax.set(xlim=(1.02, .1), ylim=(0, 1.4), xticks=[1, .75, .5, .25, 1 / 7], xticklabels=["1", ".75", ".5", ".25", "1/7"])
+    _ax.set_xlabel("stated chance of the named day", fontsize=14); _ax.set_ylabel("radius (1 = a certain day)", fontsize=14)
+    _ax.set_title("certainty, per harmonic", fontsize=17)
+    _ax.legend(frameon=False, fontsize=12, loc="upper right")
+    plot_utils.FIG.style_axes(_ax)
+    _fig.text(.5, .955, f"Reducing confidence in one day (Llama-3.1-8B, layer {L_MAIN}, answer slot)", ha="center", fontsize=17, color=INK3)
+    save_figure(_fig, str(FIGURES / "one_day_confidence.png"))
     return
 
 
