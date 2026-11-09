@@ -81,14 +81,15 @@ def _(CACHE, np, read_words, splits, torch):
 
 @app.cell
 def _(LAYERS, TYPES, evaluate, np, prototypes, splits, train_probe, words):
-    results = []
+    results, probes = [], []
     for _k, _l in enumerate(LAYERS):
         _Xtr = np.asarray(words["train"][_k], dtype=np.float32)
         _probe = train_probe(_Xtr, splits["train"], TYPES, rank=128, epochs=30, lr=5e-3, lam=10.0, batch_size=200, seed=0)
-        _r = evaluate(_probe, prototypes(_probe, _Xtr, splits["train"]), np.asarray(words["test"][_k], dtype=np.float32), splits["test"])
-        results.append(_r)
+        _P = prototypes(_probe, _Xtr, splits["train"])
+        _r = evaluate(_probe, _P, np.asarray(words["test"][_k], dtype=np.float32), splits["test"])
+        results.append(_r); probes.append((_probe, _P))
         print(f"layer {_l:2d}: " + ", ".join(f"{k} {v:.3f}" for k, v in _r.items()), flush=True)
-    return (results,)
+    return probes, results
 
 
 @app.cell
@@ -99,6 +100,44 @@ def _(FIGURES, LAYERS, plt, results, save_figure):
     _ax.set_xlabel("layer"); _ax.set_ylabel("test score"); _ax.set_ylim(0, 1); _ax.legend(frameon=False, fontsize=8)
     _ax.set_title("Polar Probe on EWT, Llama-3.1-8B")
     save_figure(_fig, FIGURES / "syntax_replication_by_layer.png")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Probe space at the best layer
+
+    Their Figure 2: test edges (head minus dependent, in probe space) of the three commonest types projected on
+    their first two PCs, one arrow per edge from the origin; and the cosines between all type prototypes, the
+    commonest first.
+    """)
+    return
+
+
+@app.cell
+def _(FIGURES, LAYERS, TYPES, np, plt, probes, results, save_figure, splits, words):
+    from src.code.syntax_probe import sentence_index
+
+    _b = int(np.argmax([r["las"] for r in results])); _probe, _P = probes[_b]
+    _Z = ((np.asarray(words["test"][_b], dtype=np.float32) - _probe["mu"]) / _probe["sd"]) @ _probe["B"].T
+    _show = ["nsubj", "obj", "det"]
+    _edges = [(_Z[st + h] - _Z[st + j], r) for st, s in zip(sentence_index(splits["test"]), splits["test"])
+              for j, (h, r) in enumerate(zip(s["heads"], s["rels"])) if h >= 0 and r in _show]
+    _V = np.array([v for v, _ in _edges]); _lab = np.array([r for _, r in _edges])
+    _U, _S, _Wt = np.linalg.svd(_V - _V.mean(0), full_matrices=False); _pc = _V @ _Wt[:2].T
+    _fig, (_ax, _axg) = plt.subplots(1, 2, figsize=(11, 4.6))
+    for _r, _c in zip(_show, ("C0", "C1", "C2")):
+        _sel = np.flatnonzero(_lab == _r)[:300]
+        _ax.scatter(_pc[_sel, 0], _pc[_sel, 1], s=6, color=_c, alpha=0.5, label=_r)
+    _ax.axhline(0, color="0.8", lw=0.6); _ax.axvline(0, color="0.8", lw=0.6)
+    _ax.set_title(f"layer {LAYERS[_b]}: probed edges (head - dependent), PCs 1-2"); _ax.legend(frameon=False, markerscale=3)
+    _top = list(TYPES)[:12]; _ix = [TYPES[r] for r in _top]
+    _im = _axg.imshow(_P[_ix] @ _P[_ix].T, cmap="RdBu_r", vmin=-1, vmax=1)
+    _axg.set_xticks(range(len(_top)), _top, rotation=90, fontsize=8); _axg.set_yticks(range(len(_top)), _top, fontsize=8)
+    _axg.set_title("cosines between type prototypes"); _fig.colorbar(_im, ax=_axg, shrink=0.8)
+    _fig.tight_layout()
+    save_figure(_fig, FIGURES / "syntax_probe_space.png")
     return
 
 
