@@ -211,20 +211,23 @@ def _(DAYS, L_MAIN, PERCENTS, Q, SETS, canonical, df, fit_predict, harmonic_basi
     WB = 1 - np.array(PERCENTS) / 100                                     # stated chance of the second day, per level
 
 
-    def ring_plane(ax, m, sep):
+    def ring_plane(ax, m, sep, order=False):
         """Harmonic m of the day centroids: certain prompts and centroids, every prompt for the pair
-        ``sep`` days apart, and its mean per stated split."""
+        ``sep`` days apart, and its mean per stated split; ``order`` traces the days in calendar order
+        (in harmonic m each next day sits m places on)."""
         R, t = 1.75, np.linspace(0, 2 * np.pi, 200)
         ax.plot([-.95 * R, .95 * R], [0, 0], color="0.85", lw=.8); ax.plot([0, 0], [-.95 * R, .95 * R], color="0.85", lw=.8)
         ax.plot(np.cos(t), np.sin(t), ls=":", color="0.7", lw=1.1, zorder=0)
         for r in (.25, .5, .75):
             ax.plot(r * np.cos(t), r * np.sin(t), color="0.93", lw=.7, zorder=0)
         pos = _xy(np.exp(2j * np.pi * m * np.arange(7) / 7))
+        if order:
+            ax.plot(*pos[np.r_[np.arange(7), 0]].T, color="0.82", lw=1, zorder=0)
         ax.scatter(*_xy(HZ[REF1, m - 1]).T, c=HUE[df.start.values[REF1]], s=14, alpha=.35, lw=0, zorder=2)
         ax.scatter(*pos.T, c=HUE, s=55, edgecolor="0.35", lw=.6, zorder=3)
         for d in range(7):
-            ax.annotate(SHORT[d], 1.3 * pos[d], ha="center", va="center", fontsize=14 if d in (0, sep) else 11,
-                        color=INK3 if d in (0, sep) else "0.6")
+            ax.annotate(SHORT[d], 1.3 * pos[d], ha="center", va="center", fontsize=14 if d in (0, sep) else 12.5,
+                        color=INK3 if d in (0, sep) else "0.4")
         sel = PCT & (df.sep.values == sep)
         mix = (1 - WB)[:, None] * HUE[0] + WB[:, None] * HUE[sep]          # colour by stated split
         ax.scatter(*_xy(ROT[sel, m - 1]).T, c=mix[df.level.values[sel]], s=6, alpha=.2, lw=0, zorder=1)
@@ -367,16 +370,16 @@ def _(mo):
     Left, which output: confidence traded from Monday to a day one, two or three days on. On the ring
     (harmonic 1) far-apart days cut in toward the centre, but every pair has a harmonic in which its two
     days are neighbours (m · sep = ±1 mod 7): Tuesday in harmonic 1, Thursday in harmonic 2, Wednesday in
-    harmonic 3. Drawn there, turned so Monday is at the top and the other day one step clockwise, all
-    three trades run along the same short arc: in its own harmonic each two-day belief looks like a trade
-    between neighbours. Right, uncertainty: confidence in one day given away to the rest; each day's
+    harmonic 3. Drawn each in its own harmonic (day places m · d sevenths of a turn), every trade runs
+    along the short arc between the two neighbours. Right, uncertainty: confidence in one day given away to the rest; each day's
     belief moves in along its own spoke (harmonic 1). Faint: every prompt. Below, the model's distribution.
     """)
     return
 
 
 @app.cell
-def _(FIGURES, HUE, HZ, INK3, L_MAIN, PCT, QC, REF1, ROT, SHORT, WB, df, np, plot_utils, plt, save_figure):
+def _(DAYS, FIGURES, HUE, HZ, INK3, L_MAIN, PCT, QC, REF1, SHORT, WB, df, np, plot_utils, plt, ring_plane,
+      save_figure):
     from src.code.weekdays import CONFIDENCE as _CONF
     _conf = (df.family == "confidence").values
     _pc = np.array(_CONF) / 100
@@ -384,45 +387,34 @@ def _(FIGURES, HUE, HZ, INK3, L_MAIN, PCT, QC, REF1, ROT, SHORT, WB, df, np, plo
     _pos = _xy(np.exp(2j * np.pi * np.arange(7) / 7))
 
 
-    def _ring(ax, R=1.5, labels=True):
-        """The day ring; with ``labels`` the seven days (harmonic 1), else bare places for the
-        neighbour view, where each pair has its own harmonic."""
+    def _ring(ax, R=1.75):
+        """The day ring (harmonic 1): certain prompts and centroids, days labelled."""
         t = np.linspace(0, 2 * np.pi, 200)
         ax.plot([-.95 * R, .95 * R], [0, 0], color="0.85", lw=.8); ax.plot([0, 0], [-.95 * R, .95 * R], color="0.85", lw=.8)
         ax.plot(np.cos(t), np.sin(t), ls=":", color="0.7", lw=1.1, zorder=0)
         for r in (.25, .5, .75):
             ax.plot(r * np.cos(t), r * np.sin(t), color="0.93", lw=.7, zorder=0)
-        if labels:
-            ax.scatter(*_xy(HZ[REF1, 0]).T, c=HUE[df.start.values[REF1]], s=14, alpha=.35, lw=0, zorder=2)
-            ax.scatter(*_pos.T, c=HUE, s=60, edgecolor="0.35", lw=.6, zorder=3)
-            for d in range(7):
-                ax.annotate(SHORT[d], 1.25 * _pos[d], ha="center", va="center", fontsize=14, color="0.35")
-        else:
-            ax.scatter(*_pos.T, color="0.85", s=40, edgecolor="0.6", lw=.6, zorder=3)
-            ax.scatter(*_pos[[0, 1]].T, c=[HUE[0], "0.45"], s=60, edgecolor="0.35", lw=.6, zorder=3)
+        ax.scatter(*_xy(HZ[REF1, 0]).T, c=HUE[df.start.values[REF1]], s=14, alpha=.35, lw=0, zorder=2)
+        ax.plot(*_pos[np.r_[np.arange(7), 0]].T, color="0.82", lw=1, zorder=0)
+        ax.scatter(*_pos.T, c=HUE, s=55, edgecolor="0.35", lw=.6, zorder=3)
+        for d in range(7):
+            ax.annotate(SHORT[d], 1.3 * _pos[d], ha="center", va="center", fontsize=12.5, color="0.4")
         ax.set_xlim(-R, R); ax.set_ylim(-R, R); ax.set_aspect("equal"); plot_utils.FIG.clean(ax)
 
 
-    _fig = plt.figure(figsize=(13, 10.5))
-    _gs = _fig.add_gridspec(2, 2, height_ratios=[1, .5], hspace=.12, wspace=.18, left=.07, right=.98, top=.93, bottom=.07)
-    # which output: Monday traded for a day 1, 2, 3 on, each pair drawn in the harmonic where the two
-    # days are neighbours (m * sep = +-1 mod 7), turned so the other day sits one step clockwise
+    _fig = plt.figure(figsize=(17, 8.8))
+    _gs = _fig.add_gridspec(2, 2, width_ratios=[3, 1.1], height_ratios=[1, .82], hspace=.2, wspace=.1,
+                            left=.05, right=.98, top=.84, bottom=.08)
+    # which output: Monday traded for a day 1, 2, 3 on, each pair in the harmonic where its two days are
+    # neighbours (m * sep = +-1 mod 7), with that harmonic's own day places
     _NEAR = {1: 1, 2: 3, 3: 2}
-    _ax = _fig.add_subplot(_gs[0, 0]); _ring(_ax, labels=False)
-    for _sep, _m in _NEAR.items():
-        _sel = PCT & (df.sep.values == _sep)
-        _z = ROT[_sel, _m - 1]
-        _z = _z if (_m * _sep) % 7 == 1 else np.conj(_z)
-        _mix = (1 - WB)[:, None] * HUE[0] + WB[:, None] * HUE[_sep]
-        _ax.scatter(*_xy(_z).T, c=_mix[df.level.values[_sel]], s=5, alpha=.15, lw=0, zorder=1)
-        _path = np.array([_z[df.level.values[_sel] == l].mean() for l in range(7)])
-        _ax.plot(*_xy(_path).T, color=INK3, lw=1.6, zorder=5)
-        _ax.scatter(*_xy(_path).T, c=_mix, s=30, edgecolor=INK3, lw=.8, zorder=6)
-    _ax.annotate("Mon", 1.25 * _pos[0], ha="center", va="center", fontsize=15, color=INK3)
+    _top = _gs[0, 0].subgridspec(1, 3, wspace=.02)
     for _k, (_sep, _m) in enumerate(_NEAR.items()):
-        _ax.annotate(f"{SHORT[_sep]}  (harmonic {_m})", 1.18 * _pos[1] + np.array([.08, .14 - .14 * _k]), ha="left",
-                     va="center", fontsize=13, color=HUE[_sep] if _sep < 3 else HUE[3])
-    _ax.set_title("which output", fontsize=21, pad=2)
+        _ax = _fig.add_subplot(_top[_k]); ring_plane(_ax, _m, _sep, order=True)
+        _ax.set_title(f"Monday or {DAYS[_sep]}\nharmonic {_m}: each next day {_m} place{'s' if _m > 1 else ''} on",
+                      fontsize=13, pad=2, linespacing=1.1)
+    _bb = _top[1].get_position(_fig)
+    _fig.text(_bb.x0 + _bb.width / 2, .925, "which output", ha="center", fontsize=21)
     # uncertainty: one day's confidence given to the rest
     _ax = _fig.add_subplot(_gs[0, 1]); _ring(_ax)
     _ax.scatter(*_xy(HZ[_conf, 0]).T, c=HUE[df.A.values[_conf]], s=6, alpha=.22, lw=0, zorder=1)
@@ -430,7 +422,9 @@ def _(FIGURES, HUE, HZ, INK3, L_MAIN, PCT, QC, REF1, ROT, SHORT, WB, df, np, plo
         _path = np.array([HZ[_conf & (df.A.values == _d) & (df.level.values == l), 0].mean() for l in range(len(_pc))])
         _ax.plot(*_xy(_path).T, color=INK3, lw=1.5, zorder=4)
         _ax.scatter(*_xy(_path).T, color=HUE[_d], s=28, edgecolor=INK3, lw=.8, zorder=5)
-    _ax.set_title("uncertainty", fontsize=21, pad=2)
+    _ax.set_title("any day\nharmonic 1: each next day 1 place on", fontsize=13, pad=2, linespacing=1.1)
+    _bb = _gs[0, 1].get_position(_fig)
+    _fig.text(_bb.x0 + _bb.width / 2, .925, "uncertainty", ha="center", fontsize=21)
     # below: the model's distribution
     _ax = _fig.add_subplot(_gs[1, 0])
     for _sep in (1, 2, 3):
@@ -456,7 +450,7 @@ def _(FIGURES, HUE, HZ, INK3, L_MAIN, PCT, QC, REF1, ROT, SHORT, WB, df, np, plo
             yticks=[0, .5, 1], yticklabels=[])
     _ax.set_xlabel("stated chance of the named day", fontsize=14)
     plot_utils.FIG.style_axes(_ax)
-    _fig.text(.5, .97, f"Uncertainty on the day ring (Llama-3.1-8B, layer {L_MAIN}, answer slot)", ha="center", fontsize=17, color=INK3)
+    _fig.text(.5, .985, f"Uncertainty on the day ring (Llama-3.1-8B, layer {L_MAIN}, answer slot)", ha="center", fontsize=15, color="0.4")
     save_figure(_fig, str(FIGURES / "uncertainty_two_rings.png"))
     return
 
