@@ -195,8 +195,8 @@ src/scripts/
 *.out
 *.err
 
-# Default local cache_dir (used when CACHE_DIR is unset)
-outputs/
+# Default local cache_dir (used when CACHE_DIR is unset); a symlink to /scr on this machine
+outputs
 
 # bash scripts
 *.bash
@@ -212,3 +212,6 @@ data/
 
 # marimo's per-notebook session/output cache
 __marimo__/
+
+# Claude Code local docs and papers (not for the remote)
+.claude/
