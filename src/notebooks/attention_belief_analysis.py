@@ -491,7 +491,7 @@ def _(COMMON, T, data, graph_overrides, heldout_decode_r2, load_run, np, runs, s
     print(f"{'':46s}" + "".join(f"{_n:>14s}" for _n in interfaces))
     for _row in next(iter(interfaces.values())):
         print(f"{_row:46s}" + "".join(f"{_s[_row]:>14.4f}" for _s in interfaces.values()))
-    return
+    return (controls,)
 
 
 @app.cell(hide_code=True)
@@ -510,7 +510,7 @@ def _(mo):
 
 
 @app.cell
-def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figure):
+def _(FIG, FIGURES, T, controls, data, evidence, factor_logcond, np, plt, runs, save_figure, sites, targets):
     import io
     import matplotlib.patheffects as pe
     from matplotlib.patches import FancyBboxPatch
@@ -543,11 +543,18 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         d = dirs @ R.T
         return (np.diag([-1.0, 1.0]) @ R) if d[0, 0] * d[1, 1] - d[0, 1] * d[1, 0] > 0 else R
 
-    def sides(pred, trained, dirs):
+    def sides(pred, trained, dirs=None):
         """Both codes (N, r) and (N, k): the trained one rotated onto the prediction in the full space, then
-        both shown in the prediction's top-2 modes, in the gauge of ``dirs`` (K, 2) (token directions there)."""
+        both shown in the prediction's top-2 modes, in the gauge of ``dirs`` (K, 2) (token directions there;
+        None keeps the SVD frame)."""
         X = trained @ rigid_map(trained, pred)
-        G = gauge(dirs)
+        if pred.shape[1] == 1:                       # a rank-1 code: the second axis is zero on the predicted side and,
+            Tc = trained - trained.mean(0)           # on the trained side, its leftover variance's top direction
+            u = rigid_map(trained, pred)[:, 0]
+            res = Tc - np.outer(Tc @ u, u)
+            X = np.c_[X, res @ np.linalg.svd(res, full_matrices=False)[2][0]]
+            pred = np.c_[pred, np.zeros(len(pred))]
+        G = np.eye(2) if dirs is None else gauge(dirs)
         return pred[:, :2] @ G.T, X[:, :2] @ G.T
 
     STREAM_STYLES = [("0.1", "Greys"), ("#8C3B0E", "Oranges")]          # (line, dots light -> dark with t) per stream
@@ -563,19 +570,23 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         ax.set_xlim(lo[0] - pad, hi[0] + pad); ax.set_ylim(lo[1] - pad, hi[1] + pad)
         ax.set_aspect("equal"); FIG.clean(ax); ax.set_title(title, fontsize=FONT, pad=8)
 
-    def block(active, equation, pred, trained, rgb, reps, score, paths=(), dot=34):
+    def block(active, equation, pred, trained, rgb, reps, score, paths=(), dot=34, rank=None):
         """One stage: strip, the two planes, the two Grams. ``pred``/``trained`` (N, 2) shown; ``reps``
-        (pred, trained) the Gram rows; ``paths`` (index arrays into the rows) the highlighted streams."""
+        (pred, trained) the Gram rows; ``paths`` (index arrays into the rows) the highlighted streams; ``rank``
+        the predicted code's, in its title (the planes show its top two modes)."""
         fig = plt.figure(figsize=(7.6, 10.4))
         gs = fig.add_gridspec(3, 2, height_ratios=[0.32, 1.15, 1], hspace=0.22, wspace=0.25)
         stage_strip(fig.add_subplot(gs[0, :]), active, equation)
-        for _j, (_label, _pts) in enumerate([("predicted", pred), ("transformer", trained)]):
+        for _j, (_label, _pts) in enumerate([("predicted" + ("" if rank is None else f" (rank {rank})"), pred),
+                                             ("transformer", trained)]):
             panel(fig.add_subplot(gs[1, _j]), _label, _pts, rgb, [_pts[_p] for _p in paths], dot)
             _ax = fig.add_subplot(gs[2, _j])
             gram_heatmap(_ax, reps[_j], title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {score:.3f}")
             _ax.title.set_fontsize(FONT)
         buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=300, bbox_inches="tight"); plt.close(fig)
         buf.seek(0); return buf
+
+    CYCLIC = ("week", "keys")                                             # tokens evenly spaced on a ring
 
     def ring_rgb(p):
         """Colour of a belief over points evenly spaced on a ring (N, K): hue its circular mean on the cyclic
@@ -585,26 +596,54 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         sat = np.clip(np.abs(c) / np.quantile(np.abs(c), 0.99), 0, 1)[:, None]
         return 1 - sat * (1 - hue)
 
-    def latent_means(code, z):
-        """Mean code per true latent at every position, (n_z T, d): the Gram's rows."""
-        return np.stack([code[z == _k].mean(0) for _k in range(int(z.max()) + 1)]).reshape(-1, code.shape[-1])
+    def token_rgb(name, K):
+        """One colour per token, following the domain's structure: cyclic on a ring, ordered on a line (the
+        intervals' numbers, the subtrees' leaves in tree order), a 2-D blend on the rectangles' grid, and
+        categorical for the Dirichlet's unordered symbols."""
+        if name in CYCLIC:
+            return plt.cm.twilight(np.arange(K) / K)[:, :3]
+        if name == "rectangles":
+            s = int(round(np.sqrt(K)))
+            x, y = np.divmod(np.arange(K), s)
+            return (FIG.item_cmap(x / (s - 1))[:, :3] * (0.55 + 0.45 * (y / (s - 1)))[:, None]
+                    + (1 - (0.55 + 0.45 * (y / (s - 1))))[:, None])
+        if name.startswith("Dirichlet"):
+            return plt.cm.tab10(np.arange(K))[:, :3]
+        return FIG.item_cmap(np.linspace(0, 1, K))[:, :3]
 
-    def _figure(name):
-        run = runs[name]
-        targets_w, sites_w = data[name]
+    def belief_rgb(p, colors, gamma=3.0):
+        """A belief's colour (N, n): the colour mix under p ** gamma, renormalized — sharpened so that a broad
+        belief still shows where its mass leans rather than washing to grey."""
+        w = p ** gamma
+        return (w / w.sum(-1, keepdims=True)) @ colors
+
+    def latent_means(code, z):
+        """Mean code per true latent at every position, over the latents some stream drew, (n_z T, d)."""
+        return np.stack([code[z == _k].mean(0) for _k in np.unique(z)]).reshape(-1, code.shape[-1])
+
+    def rank(S, tol=1e-3):
+        return int((S > tol * S[0]).sum())
+
+    def _figure(name, run, targets_w, sites_w):
         ds = run["dataset"]
-        z = run["latents"][:, 0]
+        lat = run["latents"]
+        z = lat.argmax(-1) if lat.dtype.kind == "f" else lat[:, 0]       # the Dirichlet's continuous z: its likeliest token
         B, K = len(z), ds.n_outcomes
-        tok_rgb = plt.cm.twilight(np.arange(K) / K)[:, :3]
-        lat_rgb = plt.cm.twilight(np.arange(ds.n_items) / ds.n_items)[:, :3]
+        tok_rgb = token_rgb(name, K)
+        P = np.exp(ds.conditional)                                       # (n_z, K)
+        lat_rgb = plt.cm.twilight(np.arange(ds.n_items) / ds.n_items)[:, :3] if name in CYCLIC \
+            else belief_rgb(P, tok_rgb)                                  # a latent's colour: the tokens it emits
         flat = lambda X: X.reshape(B * T, -1)
+        cyc = name in CYCLIC
+        dot_a = 320 if K <= 12 else 90
 
         # (a) what each token writes
-        D = evidence(ds)                                                     # (K, 2)
+        D = evidence(ds)                                                     # (K, r)
+        r = D.shape[1]
         V = run["value_vectors"][:K]
-        Da, Va = sides(D - D.mean(0), V - V.mean(0), D)
+        Da, Va = sides(D - D.mean(0), V - V.mean(0), D[:, :2] if cyc else None)
         blk_a = block((0, 1), r"$v(x) \;\propto\; D(x)$, the token's log-likelihood over $z$",
-                      Da, Va, tok_rgb, (D - D.mean(0), V - V.mean(0)), cka(V, D), dot=320)
+                      Da, Va, tok_rgb, (D - D.mean(0), V - V.mean(0)), cka(V, D), dot=dot_a, rank=r)
 
         # (b) after attention: the mean of D over the start and x_1:t, coloured by the Bayes posterior over z
         n = targets_w["counts"]
@@ -612,10 +651,10 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         # what attention writes, centred per position: the start's share is the same for every stream at a
         # position, so this drops its offset (whose size the theory leaves free) and keeps the evidence
         centre_t = lambda X: X - X.mean(0, keepdims=True)
-        Eb = centre_t(n @ D * share)                                         # (B, T, 2)
+        Eb = centre_t(n @ D * share)                                         # (B, T, r)
         Hb = centre_t(sites_w["after attention"] - sites_w["embedding"])
         post = np.exp(targets_w["log-posterior over z"]); post /= post.sum(-1, keepdims=True)
-        Pb, Tb = sides(flat(Eb), flat(Hb), D)
+        Pb, Tb = sides(flat(Eb), flat(Hb), D[:, :2] if cyc else None)
         _end = Pb.reshape(B, T, 2)[:, -1]; _r = np.linalg.norm(_end, axis=1)
         _far = np.flatnonzero((_r > np.quantile(_r, 0.85)) & (_r < np.quantile(_r, 0.95)))
         _angle = lambda idx, a: idx[np.argmin(np.abs(np.angle(np.exp(1j * (np.angle(_end[idx] @ [1, 1j]) - a)))))]
@@ -625,21 +664,30 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         b_mid = int(_angle(_mid, -np.pi / 4))
         paths = [np.arange(_b * T, (_b + 1) * T) for _b in (b_far, b_mid)]
         blk_b = block((1, 2),r"$\bar D_t = \frac{1}{1+t}\sum_{i \leq t} D(x_i)$:  $\log p(z \mid x_{1:t})$ up to $t$",
-                      Pb, Tb, flat(post) @ lat_rgb, (latent_means(Eb, z), latent_means(Hb, z)), cka(flat(Hb), flat(Eb)), paths)
+                      Pb, Tb, flat(post) @ lat_rgb if cyc else belief_rgb(flat(post), lat_rgb, gamma=1.0),
+                      (latent_means(Eb, z), latent_means(Hb, z)), cka(flat(Hb), flat(Eb)), paths, rank=r)
 
         # (c) after the MLP: the log-predictive's top modes, coloured by the predictive over tokens
-        _, Ec, Dx, _ = factor_logcond(flat(targets_w["log-predictive"]))
+        _, Ec, Dx, Sx = factor_logcond(flat(targets_w["log-predictive"]))
         Ec, Dx = Ec[:, :K - 1], Dx[:K - 1]
         Hc = flat(sites_w["after MLP"])
-        Pc, Tc = sides(Ec, Hc, Dx[:2].T)
-        blk_c = block((2, 3),r"$\log p(x \mid x_{1:t}) = \log \sum_z p(x \mid z)\, p(z \mid x_{1:t})$",
-                      Pc, Tc, ring_rgb(flat(targets_w["predictive"])),
-                      (latent_means(Ec.reshape(B, T, -1), z), latent_means(Hc.reshape(B, T, -1), z)), cka(Hc, Ec), paths)
+        Pc, Tc = sides(Ec, Hc, Dx[:2].T if cyc else None)
+        pred = flat(targets_w["predictive"])
+        eq_c = (r"$\log p(x \mid x_{1:t}) = \log \frac{1 + n_x}{K + t}$: a log, no marginal"
+                if name.startswith("Dirichlet") else
+                r"$\log p(x \mid x_{1:t}) = \log \sum_z p(x \mid z)\, p(z \mid x_{1:t})$")
+        blk_c = block((2, 3), eq_c, Pc, Tc, ring_rgb(pred) if cyc else belief_rgb(pred, tok_rgb),
+                      (latent_means(Ec.reshape(B, T, -1), z), latent_means(Hc.reshape(B, T, -1), z)), cka(Hc, Ec), paths,
+                      rank=rank(Sx))
 
         fig_stages = merge_panels([blk_a, blk_b, blk_c], ncols=3, label_size=30)
-        save_figure(fig_stages, FIGURES / f"decomposition_{name}.png", dpi=200)
+        save_figure(fig_stages, FIGURES / f"decomposition_{name.replace(' ', '').replace('=', '')}.png", dpi=200)
 
-    _figure("week")
+    for _name in runs:
+        _figure(_name, runs[_name], *data[_name])
+    for _name, _run in controls.items():
+        if _name != "Dirichlet K=3":                                     # trained before value vectors were recorded; K=7 stands in
+            _figure(_name, _run, targets(_run), sites(_run))
 
 
 if __name__ == "__main__":
