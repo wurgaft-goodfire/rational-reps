@@ -618,7 +618,7 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         _far = np.flatnonzero((_r > np.quantile(_r, 0.85)) & (_r < np.quantile(_r, 0.95)))
         b = int(_far[np.argmin(np.abs(np.angle(_end[_far] @ [1, 1j]) - 3 * np.pi / 4))])   # a far stream heading up-left
         path = np.arange(b * T, (b + 1) * T)
-        blk_b = block(1, r"$\bar D_t = \frac{1}{1+t}\sum_{i \leq t} D(x_i)$:  $\log p(z \mid x_{1:t})$ up to $t$",
+        blk_b = block((1, 2),r"$\bar D_t = \frac{1}{1+t}\sum_{i \leq t} D(x_i)$:  $\log p(z \mid x_{1:t})$ up to $t$",
                       Pb, Tb, flat(post) @ lat_rgb, (latent_means(Eb, z), latent_means(Hb, z)), cka(flat(Hb), flat(Eb)), path)
 
         # (c) after the MLP: the log-predictive's top modes, coloured by the predictive over tokens
@@ -626,7 +626,7 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         Ec, Dx = Ec[:, :K - 1], Dx[:K - 1]
         Hc = flat(sites_w["after MLP"])
         Pc, Tc = sides(Ec, Hc, Dx[:2].T)
-        blk_c = block(2, r"$\log p(x \mid x_{1:t}) = \log \sum_z p(x \mid z)\, p(z \mid x_{1:t})$",
+        blk_c = block((2, 3),r"$\log p(x \mid x_{1:t}) = \log \sum_z p(x \mid z)\, p(z \mid x_{1:t})$",
                       Pc, Tc, ring_rgb(flat(targets_w["predictive"])),
                       (latent_means(Ec.reshape(B, T, -1), z), latent_means(Hc.reshape(B, T, -1), z)), cka(Hc, Ec), path)
 
