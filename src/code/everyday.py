@@ -15,15 +15,24 @@ from scipy.special import logsumexp
 _INTRO = ("Each question below gives one piece of information and asks you to predict "
                        "something from it. Give your best guess as a single number.\n")
 
-# Worked examples before every question, to fix the answer format for a base model: one number, never the
-# number in the question (zero-shot, Llama-3.1-8B puts about 10% of its answer mass on t itself), and nothing
-# about durations, so they say nothing about any domain's prior.
-SHOTS = [("A spider has how many legs?", "8"),
-         ("A box holds 6 rows of 4 eggs. How many eggs are in the box?", "24"),
-         ("How many minutes are in an hour?", "60"),
-         ("A bus has 12 passengers and 5 get off. How many are left on the bus?", "7"),
-         ("How many days are there in a leap year?", "366")]
-PREFIX = _INTRO + "".join(f"{q} Answer: {a}\n" for q, a in SHOTS)
+# Worked examples before every question, asked the same way as it (how much more, or how much in total) and
+# answered accordingly. They come from held-out domains with mixed prediction rules (a fixed length, Gaussian-
+# like, roughly memoryless, power-law-like), so they teach the answer format and what each question asks for
+# without favouring one rule. Answers are never the number in the question: zero-shot, Llama-3.1-8B puts about
+# 10% of its answer mass on t itself.
+# (situation, how-much-more question, answer, in-total question, answer)
+SHOTS = [("A soccer match has been going for 30 minutes.", "How many more minutes will it last?", 60,
+          "How many minutes will it last in total?", 90),
+         ("A woman is 12 weeks pregnant.", "How many more weeks until she gives birth?", 28,
+          "How many weeks will her pregnancy last in total?", 40),
+         ("You have been waiting at a bus stop for 4 minutes.", "How many more minutes until the bus comes?", 7,
+          "How many minutes will you wait in total?", 11),
+         ("A fantasy book series has 3 books out so far.", "How many more books will it have?", 2,
+          "How many books will it have in total?", 5),
+         ("A sitcom episode has been on for 9 minutes.", "How many more minutes will it run?", 13,
+          "How many minutes will it run in total?", 22)]
+PREFIX = {"remaining": _INTRO + "".join(f"{s} {q} Answer: {a}\n" for s, q, a, _, _ in SHOTS),
+          "total": _INTRO + "".join(f"{s} {q} Answer: {a}\n" for s, _, _, q, a in SHOTS)}
 
 # Templates hold no digits besides {t}, and end on the space before the answer.
 DOMAINS = {
@@ -111,7 +120,7 @@ def remaining_logcond(spec):
 
 def prompts(domain, question):
     """One list per template of ``(t, text)`` over the domain's t grid; ``question`` is 'remaining' or 'total'."""
-    return [[(t, PREFIX + tpl.format(t=t)) for t in DOMAINS[domain]["t"]]
+    return [[(t, PREFIX[question] + tpl.format(t=t)) for t in DOMAINS[domain]["t"]]
             for tpl in DOMAINS[domain]["templates"][question]]
 
 

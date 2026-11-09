@@ -58,9 +58,16 @@ def test_medians_follow_the_three_prediction_rules():
 
 
 def test_prompts_end_before_the_answer_and_point_at_t():
-    """Worked examples on unrelated questions come first, one per line ('... Answer: 8'), and the question is
-    the last line. With Llama's tokenizer: ``at`` is the token of t's digits (not a digit in the examples),
-    the prompt ends on the space token that precedes a number, and 0..999 are single tokens."""
+    """Worked examples come first, one per line ('... Answer: 60'): everyday predictions from held-out domains,
+    asked the same way as the question (how much more, or how much in total) and answered accordingly, so the
+    remaining-time and total prompts share the examples' situations but not their answers. The question is the
+    last line. With Llama's tokenizer: ``at`` is the token of t's digits (not a digit in the examples), the
+    prompt ends on the space token that precedes a number, and 0..999 are single tokens."""
+    shots = {q: [l for l in prompts("lifespan", q)[0][0][1].split("\n") if re.fullmatch(r".+\? Answer: \d+", l)]
+             for q in ("remaining", "total")}
+    assert len(shots["remaining"]) == len(shots["total"]) >= 3
+    for r, t in zip(shots["remaining"], shots["total"]):
+        assert "more" in r and "total" in t and r.split(" Answer: ")[1] != t.split(" Answer: ")[1]
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(LLAMA)
     nums = number_tokens(tok)

@@ -32,13 +32,13 @@ def _(mo):
 
     ```
     Each question below gives one piece of information ... Give your best guess as a single number.
-    A spider has how many legs? Answer: 8
-    ... (five worked examples on unrelated questions, fixing the answer format)
+    A soccer match has been going for 30 minutes. How many more minutes will it last? Answer: 60
+    ... (five worked examples from held-out domains with mixed rules, asked the same way as the question)
     A pharaoh has been on the throne for 12 years. How many more years will his reign last? Years left: ␣
     ```
 
     The examples matter for the base model: zero-shot, about 10% of its answer mass goes to t itself and 19%
-    of its total-question mass to totals below t; with them, 3% and 8%.
+    of its total-question mass to totals below t. The total question gets the same situations answered as totals.
 
     Reads: the residual at the final token (the space before the answer) and at t's token, every layer, plus
     the next-token distribution over "0".."999" (all single tokens). Two paraphrases per question, averaged.
@@ -131,8 +131,8 @@ def _(
 def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prompts, read_prompts, torch):
     LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
     QUESTIONS = ("remaining", "total")
-    NUMBER = PREFIX + "Here is a number: {t}. Write the number again: "   # control: the same numbers, no domain
-    READ_DIR = CACHE / "everyday" / f"{LLM_NAME}_fewshot"; READ_DIR.mkdir(parents=True, exist_ok=True)
+    NUMBER = PREFIX["remaining"] + "Here is a number: {t}. Write the number again: "   # control: the same numbers, no domain
+    READ_DIR = CACHE / "everyday" / f"{LLM_NAME}_shots-everyday"; READ_DIR.mkdir(parents=True, exist_ok=True)
 
 
     def jobs():
