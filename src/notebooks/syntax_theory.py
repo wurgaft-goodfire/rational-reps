@@ -77,11 +77,12 @@ def _(CACHE, Counter, np, parse_conllu, prototypes, train_probe):
     Xte = np.asarray(np.load(_f("test"), mmap_mode="r")[LAYERS.index(LAYER)], dtype=np.float32)
     _counts = Counter(r for s in tr for r in s["rels"] if r != "root")
     TYPES = {r: i for i, (r, _) in enumerate(_counts.most_common())}
-    COMMON = [r for r, _ in _counts.most_common(14) if r != "punct"]          # the relations analysed
+    COMMON = [r for r, _ in _counts.most_common(13)]                          # the relations analysed, punctuation included
     probe = train_probe(Xtr, tr, TYPES, rank=128, epochs=30, lr=5e-3, lam=10.0, batch_size=200, seed=0)
     P = prototypes(probe, Xtr, tr)
+    structural = train_probe(Xtr, tr, TYPES, rank=128, epochs=30, lr=5e-3, lam=0.0, batch_size=200, seed=0)
     print("relations analysed:", COMMON)
-    return COMMON, P, TYPES, Xte, probe, te, tr
+    return COMMON, P, TYPES, Xte, Xtr, probe, structural, te, tr
 
 
 @app.cell(hide_code=True)
@@ -209,6 +210,55 @@ def _(
         _ax.set_xticks(range(len(types)), types, rotation=90, fontsize=7); _ax.set_yticks(range(len(types)), types, fontsize=7)
     _fig.tight_layout()
     save_figure(_fig, FIGURES / "syntax_type_angles.png")
+    _c = lambda V: cos(V - V.mean(0))                                          # centred over relations, as the raw type means
+    Gc_kern = _c(np.array([kern[t] for t in types])); Gc_pos = _c(np.array([np.mean(_pos[t], 0) for t in types]))
+    return Gc_kern, Gc_pos, types
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Their Figure 2C, and the raw type means
+
+    Top: cosine between individual test edges (50 per relation, sorted by relation), with no probe (raw
+    hidden-state differences), the structural probe, and the polar probe. Bottom: the target the theory should
+    predict without any probe shaping it, the cosines between relations' mean raw edge vectors (training
+    edges), beside the kernel prediction and the part-of-speech control, all centred over relations.
+    """)
+    return
+
+
+@app.cell
+def _(FIGURES, Gc_kern, Gc_pos, Xte, Xtr, np, plt, probe, save_figure, sentence_index, spearmanr, structural, te, tr, types):
+    def edges(X, sents, keep):
+        return [(X[k + h] - X[k + j], r) for k, s in zip(sentence_index(sents), sents)
+                for j, (h, r) in enumerate(zip(s["heads"], s["rels"])) if h >= 0 and r in keep]
+
+
+    _rng = np.random.default_rng(0)
+    _all = edges(Xte, te, types)
+    _pick = np.concatenate([_rng.permutation([i for i, (_, r) in enumerate(_all) if r == t])[:50] for t in types])
+    _V = np.array([_all[i][0] for i in _pick]); _lab = [_all[i][1] for i in _pick]
+    _unit = lambda V: V / (np.linalg.norm(V, axis=1, keepdims=True) + 1e-12)
+    _views = {"no probe (raw)": _V, "structural probe": _V @ structural["B"].T, "polar probe": _V @ probe["B"].T}
+    _tr = edges(Xtr, tr, types)
+    _means = np.array([np.mean([v for v, r in _tr if r == t], 0) for t in types])
+    G_raw = _unit(_means - _means.mean(0)) @ _unit(_means - _means.mean(0)).T                 # centred over relations
+    _iu = np.triu_indices(len(types), 1)
+    _part = lambda a, b, z: spearmanr(a - np.polyval(np.polyfit(z, a, 1), z), b - np.polyval(np.polyfit(z, b, 1), z))[0]
+    print(f"raw type-mean cosines (all centred over relations) vs kernel prediction: Spearman {spearmanr(Gc_kern[_iu], G_raw[_iu])[0]:.2f} | "
+          f"vs part of speech only {spearmanr(Gc_pos[_iu], G_raw[_iu])[0]:.2f} | kernel beyond part of speech {_part(Gc_kern[_iu], G_raw[_iu], Gc_pos[_iu]):.2f}")
+    _fig, _axes = plt.subplots(2, 3, figsize=(15, 9.6))
+    _ticks = [i * 50 + 25 for i in range(len(types))]
+    for _ax, (_t, _W) in zip(_axes[0], _views.items()):
+        _ax.imshow(_unit(_W) @ _unit(_W).T, cmap="RdBu_r", vmin=-1, vmax=1); _ax.set_title(f"edge cosines: {_t}", fontsize=10)
+        _ax.set_xticks(_ticks, types, rotation=90, fontsize=7); _ax.set_yticks(_ticks, types, fontsize=7)
+    for _ax, (_t, _G) in zip(_axes[1], {"raw type means (Llama layer 14)": G_raw, "predicted: context kernel": Gc_kern,
+                                         "control: part of speech": Gc_pos}.items()):
+        _ax.imshow(_G, cmap="RdBu_r", vmin=-1, vmax=1); _ax.set_title(_t, fontsize=10)
+        _ax.set_xticks(range(len(types)), types, rotation=90, fontsize=7); _ax.set_yticks(range(len(types)), types, fontsize=7)
+    _fig.tight_layout()
+    save_figure(_fig, FIGURES / "syntax_fig2c_and_type_means.png")
     return
 
 

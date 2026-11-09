@@ -88,3 +88,17 @@ def test_context_kernel_counts_classes_at_relative_paths():
     assert C[r, cols.index(("up", "VERB"))] == 1
     assert C[r, cols.index((("down", "det"), "DET"))] == 1
     assert C[rows.index(("nsubj", "det")), cols.index((("down", "det"), "none"))] == 1
+
+
+def test_typed_path_counts_follow_every_path_up_to_length():
+    """From the subject 'cat': up its nsubj edge to the verb; down its det edge to 'The'; up then down obj to
+    'mouse'. Steps are labelled by the relation crossed."""
+    from src.code.treebank import typed_path_counts
+    s = {"heads": [1, 2, -1, 4, 2, 2], "rels": ["det", "nsubj", "root", "det", "obj", "punct"],
+         "upos": ["DET", "NOUN", "VERB", "DET", "NOUN", "PUNCT"]}
+    counts = typed_path_counts([s], max_len=2)
+    cat = counts[("nsubj",)]
+    assert cat[(("u", "nsubj"),), "VERB"] == 1
+    assert cat[(("d", "det"),), "DET"] == 1
+    assert cat[(("u", "nsubj"), ("d", "obj")), "NOUN"] == 1
+    assert (("u", "nsubj"), ("d", "nsubj")) not in {p for p, _ in cat}           # no stepping back down to itself

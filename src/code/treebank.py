@@ -65,6 +65,31 @@ def context_counts(sentences, child_types, classes):
     return np.array(counts), rows, cols
 
 
+def typed_path_counts(sentences, max_len):
+    """``{root path: Counter{(typed path, class): count}}``: from every word, every path through its tree of
+    up to ``max_len`` steps without revisiting a word, and the part of speech at its end. A step up is
+    ("u", relation of the word left), a step down ("d", relation of the child reached)."""
+    from collections import Counter
+    out = {}
+    for s in sentences:
+        heads, rels, upos = s["heads"], s["rels"], s["upos"]
+        nbrs = [[] for _ in heads]
+        for j, h in enumerate(heads):
+            if h >= 0:
+                nbrs[j].append((h, ("u", rels[j]))); nbrs[h].append((j, ("d", rels[j])))
+        for i, rp in enumerate(root_paths(s)):
+            c = out.setdefault(rp, Counter())
+            frontier = [(i, (), {i})]
+            for _ in range(max_len):
+                nxt = []
+                for node, path, seen in frontier:
+                    for k, step in nbrs[node]:
+                        if k not in seen:
+                            p = path + (step,); c[p, upos[k]] += 1; nxt.append((k, p, seen | {k}))
+                frontier = nxt
+    return out
+
+
 def tree_distances(heads):
     """Path lengths between every pair of words in the dependency tree."""
     n = len(heads); D = np.full((n, n), n, dtype=int); np.fill_diagonal(D, 0)
