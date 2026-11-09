@@ -80,7 +80,7 @@ def _(graph_overrides, load_run):
     runs = {_name: load_run(_ov + COMMON, project=False) for _name, _ov in WORLDS.items()}
     for _name, _run in runs.items():
         print(f"{_name}: KL(Bayes || model) {_run['loss']:.4f} at step {_run['step']}")
-    return T, runs
+    return COMMON, T, runs
 
 
 @app.cell
@@ -104,7 +104,7 @@ def _(T, np, runs):
                 "after MLP": run["hidden_states"][-1][:, :T]}
 
     data = {_name: (targets(_run), sites(_run)) for _name, _run in runs.items()}
-    return (data,)
+    return data, sites, targets
 
 
 @app.cell(hide_code=True)
@@ -416,6 +416,74 @@ def _(coords, keeps, overlap, runs, stages):
     for _row in next(iter(table.values())):
         print(f"{_row:50s}" + "".join(f"{_v:>18.4f}" if isinstance(_v, float) else f"{_v:>18s}"
                                       for _v in (table[_n][_row] for _n in table)))
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 6. When no belief is needed: the Dirichlet-categorical
+
+    A belief distinct from the predictive is needed when the predictive is not a linear image of what attention can
+    aggregate, even in probability coordinates — marginalizing over $z$ is the case of line and week. The
+    Dirichlet-categorical is the control: its predictive $(1 + n_x)/(K + t)$ is itself a mean, so attention can write it
+    directly, the start token taking the prior's share $K/(K + t)$. The MLP is left only the softmax's log, the same
+    for every coordinate. Three tests, each one ridge map pooled over positions, on all four worlds:
+
+    1. the predictive probabilities from the state after attention;
+    2. that same linear readout, then a pointwise log (renormalized), against the log-predictive — what is left to
+       the MLP if all it does is the link;
+    3. the state after attention from the current token and the predictive probabilities alone — nothing more held.
+
+    The prediction was all three $\approx 1$ for the Dirichlet. It does not hold pooled, and the reason is the start
+    token: in every world, the Dirichlet too, attention averages uniformly over the start and $x_{1:t}$, the start
+    counting as $c \approx 1$ pseudo-count rather than the prior's $K$ (fitted below). So attention writes plain
+    frequencies $[n, 1]/(c + t)$ everywhere, and the Dirichlet's predictive is linear in that only at each position:
+    the MLP, which must apply the log anyway, absorbs the rescaling by $t$, and nothing favours $c = K$. The worlds part
+    at fixed position: there the predictive is linear in the state after attention for the Dirichlet, and short of it
+    where it is a marginal over $z$ (line, week).
+    """)
+    return
+
+
+@app.cell
+def _(COMMON, T, data, heldout_decode_r2, load_run, np, runs, sites, targets):
+    controls = {"Dirichlet K=3": load_run(["setting=dirichlet"] + COMMON, project=False),
+                "Dirichlet K=7": load_run(["setting=dirichlet", "n_outcomes=7", "lattice=14"] + COMMON, project=False)}
+    for _name, _run in controls.items():
+        print(f"{_name}: KL(Bayes || model) {_run['loss']:.5f} at step {_run['step']}")
+
+    def interface(run, targets, sites, seed=0):
+        B = len(targets["counts"])
+        g = np.repeat(np.arange(B), T)
+        flat = lambda X: X.reshape(B * T, -1)
+        Ha, p, lp = flat(sites["after attention"]), flat(targets["predictive"]), flat(targets["log-predictive"])
+        tok = flat(np.eye(run["dataset"].n_outcomes + 1)[run["inputs"][:, :T]])
+        train = np.isin(g, np.random.default_rng(seed).permutation(B)[:int(0.6 * B)])   # held-out streams
+        X1 = np.c_[Ha, np.ones(len(Ha))]
+        p_hat = np.clip(X1[~train] @ np.linalg.lstsq(X1[train], p[train], rcond=None)[0], 1e-4, None)
+        l_hat = np.log(p_hat / p_hat.sum(1, keepdims=True))
+        centre = lambda L: L - L.mean(1, keepdims=True)
+        res, lc = centre(l_hat) - centre(lp[~train]), centre(lp[~train])
+        # attention with the start token as c pseudo-counts writes [n / (c + t), 1 / (c + t)]; c fitted on a grid
+        n, Ha3 = targets["counts"], sites["after attention"]
+        sink = lambda c: flat(np.concatenate([n, np.ones_like(n[..., :1])], -1) / (c + n.sum(-1, keepdims=True)))
+        cs = np.geomspace(0.25, 32, 22)
+        fits = [heldout_decode_r2(np.c_[tok, sink(c)], Ha, g) for c in cs]
+        per_t = [heldout_decode_r2(Ha3[:, t], targets["predictive"][:, t], np.arange(B)) for t in range(1, T)]
+        return {"1. predictive <- after attention": heldout_decode_r2(Ha, p, g),
+                "   same, one map per position (mean)": float(np.mean(per_t)),
+                "2. log of that readout vs log-predictive": float(1 - (res ** 2).sum() / ((lc - lc.mean(0)) ** 2).sum()),
+                "3. after attention <- [token, predictive]": heldout_decode_r2(np.c_[tok, p], Ha, g),
+                "   ... <- [token, n/(c+t), 1/(c+t)], best c": max(fits),
+                "   best c (Dirichlet theory: c = K)": float(cs[int(np.argmax(fits))])}
+
+    _all = {**{_n: (runs[_n], *data[_n]) for _n in runs},
+            **{_n: (_r, targets(_r), sites(_r)) for _n, _r in controls.items()}}
+    interfaces = {_n: interface(*_v) for _n, _v in _all.items()}
+    print(f"{'':46s}" + "".join(f"{_n:>15s}" for _n in interfaces))
+    for _row in next(iter(interfaces.values())):
+        print(f"{_row:46s}" + "".join(f"{_s[_row]:>15.4f}" for _s in interfaces.values()))
     return
 
 
