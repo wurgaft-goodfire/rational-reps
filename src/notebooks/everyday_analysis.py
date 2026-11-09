@@ -23,9 +23,10 @@ def _(mo):
 
     | Family | Domains | Prediction rule | Predicted code of t |
     |---|---|---|---|
-    | Gaussian | life span, movie run time | T ≈ prior mean while t is small | a line, uniform in t |
+    | Gaussian | life span, movie run time, pregnancy | T ≈ prior mean while t is small | a line, uniform in t |
     | power law | movie grosses | T = 2^(1/γ) t | one-dimensional in log t |
-    | Erlang | pharaohs' reigns, House terms | R = β ln 2 for every t | a single point (collapse) |
+    | Erlang (memoryless) | pharaohs' reigns, House terms, dice (rolls to a six), companies | R = β ln 2 for every t | a single point (collapse) |
+    | none | books in print (no world data) | only Llama's own conditional | from Llama's answers |
 
     The total-T question asks the same thing from the same prefix. It contrasts with the remaining-time
     question: it shares the prompt up to the question, but its answer moves with t in every family.
@@ -60,13 +61,13 @@ def _(mo):
                                    prompts, remaining_logcond)
     from src.code.llm import read_prompts
     from src.code.geometry import predicted_geometry
-    from src.code.analysis_utils import rsa
+    from src.code.analysis_utils import cka, rsa
     from src.code.plot_utils import save_figure
 
     CACHE = Path(os.environ.get("CACHE_DIR", ROOT / "outputs"))
     LLM_NAME = os.environ.get("EVERYDAY_LLM", "llama-3.1-8b")                     # a key of LLMS below
     FIGURES = CACHE / "figures" / "everyday" / LLM_NAME; FIGURES.mkdir(parents=True, exist_ok=True)
-    FAMILY_COLOR = {"gaussian": "tab:blue", "power": "tab:orange", "erlang": "tab:green"}
+    FAMILY_COLOR = {"gaussian": "tab:blue", "power": "tab:orange", "erlang": "tab:green", None: "tab:purple"}  # None: no world prior
     return (
         CACHE,
         DOMAINS,
@@ -74,6 +75,7 @@ def _(mo):
         PREFIX,
         FIGURES,
         LLM_NAME,
+        cka,
         encode,
         fit_prior,
         log_prior,
@@ -113,7 +115,7 @@ def _(
     remaining_logcond,
     save_figure,
 ):
-    KERNELS = {d: remaining_logcond(spec) for d, spec in DOMAINS.items()}          # (t, R, L)
+    KERNELS = {d: remaining_logcond(spec) for d, spec in DOMAINS.items() if spec["family"]}   # (t, R, L); world prior only
     PRED = {d: predicted_geometry(L) for d, (t, R, L) in KERNELS.items()}
 
 
@@ -123,7 +125,7 @@ def _(
         return U[:, 0] * S[0] * np.sign(U[-1, 0] - U[0, 0] + 1e-12)
 
 
-    _fig, _axes = plt.subplots(1, len(DOMAINS), figsize=(3 * len(DOMAINS), 2.6))
+    _fig, _axes = plt.subplots(1, len(PRED), figsize=(3 * len(PRED), 2.6))
     for _ax, (_d, _E) in zip(_axes, PRED.items()):
         _ax.plot(KERNELS[_d][0], pc1(_E), color=FAMILY_COLOR[DOMAINS[_d]["family"]])
         _ax.set_title(f"{_d} ({DOMAINS[_d]['family']})", fontsize=10); _ax.set_xlabel("t")
@@ -144,7 +146,10 @@ def _(CACHE, DOMAINS, LLM_NAME, PREFIX, encode, np, number_tokens, prior_prompts
     LLM_PATH, _load, _batch = LLMS[LLM_NAME]
     QUESTIONS = ("remaining", "total")
     NUMBER = PREFIX["remaining"] + "Here is a number: {t}. Write the number again: "   # control: the same numbers, no domain
-    READ_DIR = CACHE / "everyday" / f"{LLM_NAME}_shots-everyday"; READ_DIR.mkdir(parents=True, exist_ok=True)
+    import hashlib
+    # cached per prompt set: the directory is keyed by the worked examples, which every prompt starts with
+    _shots = hashlib.sha1((PREFIX["remaining"] + PREFIX["total"]).encode()).hexdigest()[:8]
+    READ_DIR = CACHE / "everyday" / f"{LLM_NAME}_shots-{_shots}"; READ_DIR.mkdir(parents=True, exist_ok=True)
 
 
     def jobs():
@@ -232,7 +237,8 @@ def _(DOMAINS, FAMILY_COLOR, FIGURES, PRIOR_Q, fit_prior, log_prior, np, plt, pr
               + "  ".join(f"loglik {f} {v['loglik']:.3f}" for f, v in _fits.items()))
         _hi = int(np.searchsorted(np.cumsum(PRIOR_Q[_d][1:]) / PRIOR_Q[_d][1:].sum(), 0.99)) + 10
         _ax.bar(_T[:_hi], PRIOR_Q[_d][1:_hi + 1] / PRIOR_Q[_d][1:].sum(), color="0.8", width=1)
-        for _spec, _style in ((LLAMA_SPEC[_d], dict(color=FAMILY_COLOR[_best])), (DOMAINS[_d], dict(color="k", lw=1))):
+        _specs = [(LLAMA_SPEC[_d], dict(color=FAMILY_COLOR[_best]))] + [(DOMAINS[_d], dict(color="k", lw=1))] * bool(DOMAINS[_d]["family"])
+        for _spec, _style in _specs:
             _lp = log_prior(_spec, _T); _p = np.exp(_lp - _lp.max()); _ax.plot(_T[:_hi], (_p / _p.sum())[:_hi], **_style)
         _ax.set_title(f"{_d}: Llama {_best}", fontsize=10); _ax.set_xlabel("total T")
     _fig.tight_layout()
@@ -265,10 +271,12 @@ def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, KERNELS_LLAMA, READS, np, plt, sa
     _fig, _axes = plt.subplots(1, len(DOMAINS), figsize=(3 * len(DOMAINS), 2.8))
     _grid = np.arange(1000)
     for _ax, _d in zip(_axes, DOMAINS):
-        _t, _R, _L = KERNELS[_d]
         _c = FAMILY_COLOR[DOMAINS[_d]["family"]]
-        _ax.plot(_t, mean(np.exp(_L), _R), color="k", lw=1, label="Bayes, world prior")
-        _ax.plot(_t, mean(np.exp(KERNELS_LLAMA[_d][2]), _R), color="0.5", lw=1.5, ls="-.", label="Bayes, Llama's prior")
+        if _d in KERNELS:
+            _t, _R, _L = KERNELS[_d]
+            _ax.plot(_t, mean(np.exp(_L), _R), color="k", lw=1, label="Bayes, world prior")
+        _t, _R, _L = KERNELS_LLAMA[_d]
+        _ax.plot(_t, mean(np.exp(_L), _R), color="0.5", lw=1.5, ls="-.", label="Bayes, Llama's prior")
         _ax.plot(_t, mean(READS[_d]["remaining"]["q"], _grid), color=_c, label="Llama: remaining")
         _ax.plot(_t, mean(READS[_d]["total"]["q"], _grid) - _t, "--", color=_c, label="Llama: total − t")
         _ax.set_title(_d, fontsize=10); _ax.set_xlabel("t")
@@ -301,7 +309,8 @@ def _(DOMAINS, FIGURES, LLAMA_SPEC, PRED, PRED_LLAMA, READS, np, plt, rsa, save_
     SCORES = {}
     for _d in DOMAINS:
         _r = READS[_d]; _t = _r["remaining"]["t"].astype(float)[:, None]
-        SCORES[_d] = {"predicted": layer_rsa(_r["remaining"]["last"], PRED[_d]) if DOMAINS[_d]["family"] != "erlang" else None,
+        SCORES[_d] = {"predicted": (layer_rsa(_r["remaining"]["last"], PRED[_d])
+                                    if DOMAINS[_d]["family"] not in ("erlang", None) else None),
                       "predicted, Llama's prior": (layer_rsa(_r["remaining"]["last"], PRED_LLAMA[_d])
                                                    if LLAMA_SPEC[_d]["family"] != "erlang" else None),
                       "t": layer_rsa(_r["remaining"]["last"], _t), "log t": layer_rsa(_r["remaining"]["last"], np.log(_t)),
@@ -355,6 +364,48 @@ def _(DOMAINS, FAMILY_COLOR, FIGURES, READS, np, plt, save_figure):
     _ax.legend(frameon=False, fontsize=7)
     _fig.tight_layout()
     save_figure(_fig, FIGURES / "everyday_collapse.png")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## The code predicted from Llama's own answers
+
+    The theory's claim is about the model's own conditional, whether or not it matches the world's. Per domain,
+    Llama's answer distribution q(R | t) (paraphrase-averaged, on the domain's R grid) goes through the same
+    balanced factor as the world kernel, and the residual at the last token is compared with it, and with t and
+    log t, by linear CKA (distance-sensitive, unlike rank RSA, which every code monotone in t passes alike).
+    The final layers feed the readout, so a match there is partly built in; the test is in the middle-to-late layers.
+    """)
+    return
+
+
+@app.cell
+def _(DOMAINS, FIGURES, READS, cka, np, plt, predicted_geometry, save_figure):
+    from scipy.special import logsumexp
+
+    def own_code(d):
+        """Balanced factor of Llama's own row-normalized log q(R | t) on the domain's R grid."""
+        R = np.arange(DOMAINS[d].get("R_min", 0), DOMAINS[d]["R_max"] + 1)
+        L = np.log(READS[d]["remaining"]["q"][:, R]); L -= logsumexp(L, 1, keepdims=True)
+        return predicted_geometry(L)
+
+
+    OWN = {}
+    for _d in DOMAINS:
+        _X = READS[_d]["remaining"]["last"]; _t = READS[_d]["remaining"]["t"].astype(float)[:, None]
+        OWN[_d] = {k: np.array([cka(Xl, Y) for Xl in _X])
+                   for k, Y in (("own answers", own_code(_d)), ("t", _t), ("log t", np.log(_t)))}
+    _fig, _axes = plt.subplots(1, len(DOMAINS), figsize=(3 * len(DOMAINS), 2.8), sharey=True)
+    _style = {"own answers": "k", "t": "tab:blue", "log t": "tab:orange"}
+    for _ax, _d in zip(_axes, DOMAINS):
+        for _k, _s in OWN[_d].items():
+            _ax.plot(_s, color=_style[_k], label=_k)
+        _ax.set_title(f"{_d} ({DOMAINS[_d]['family']})", fontsize=10); _ax.set_xlabel("layer"); _ax.set_ylim(0, 1)
+    _axes[0].set_ylabel("linear CKA, last token"); _axes[0].legend(frameon=False, fontsize=7)
+    _fig.tight_layout()
+    save_figure(_fig, FIGURES / "everyday_own_cka.png")
     return
 
 

@@ -24,12 +24,12 @@ _INTRO = ("Each question below gives one piece of information and asks you to pr
 # (situation, how-much-more question, answer, in-total question, answer)
 SHOTS = [("A soccer match has been going for 30 minutes.", "How many more minutes will it last?", 60,
           "How many minutes will it last in total?", 90),
-         ("A woman is 12 weeks pregnant.", "How many more weeks until she gives birth?", 28,
-          "How many weeks will her pregnancy last in total?", 40),
+         ("A cake has been baking for 20 minutes.", "How many more minutes until it is done?", 25,
+          "How many minutes will it bake in total?", 45),
          ("You have been waiting at a bus stop for 4 minutes.", "How many more minutes until the bus comes?", 7,
           "How many minutes will you wait in total?", 11),
-         ("A fantasy book series has 3 books out so far.", "How many more books will it have?", 2,
-          "How many books will it have in total?", 5),
+         ("A TV series has aired 3 seasons so far.", "How many more seasons will it have?", 2,
+          "How many seasons will it have in total?", 5),
          ("A sitcom episode has been on for 9 minutes.", "How many more minutes will it run?", 13,
           "How many minutes will it run in total?", 22)]
 PREFIX = {"remaining": _INTRO + "".join(f"{s} {q} Answer: {a}\n" for s, q, a, _, _ in SHOTS),
@@ -202,6 +202,133 @@ DOMAINS = {
                       "Total years: ",
                       "A House member has left office. How long was their whole time in the House? "
                       "Total years: "]}},
+    "pregnancy": {
+        "family": "gaussian", "prior": {"mu": 39.11, "sigma": 1.57},                 # refit, fit_everyday_priors.py
+        "t": range(4, 43), "R_max": 45,
+        "templates": {
+            "remaining": ["A woman is {t} weeks pregnant. How many more weeks until she gives birth? Answer in weeks: ",
+                          "My sister is {t} weeks into her pregnancy. How many more weeks until the baby arrives? "
+                          "Weeks left: ",
+                          "A midwife sees a patient who is {t} weeks pregnant. How many weeks does she have left "
+                          "before delivery? Answer in weeks: ",
+                          "An expecting mother has been pregnant for {t} weeks. How many more weeks will her "
+                          "pregnancy last? Weeks left: ",
+                          "A pregnancy has lasted {t} weeks so far. How many more weeks until the birth? "
+                          "Remaining weeks: "],
+            "total": ["A woman is {t} weeks pregnant. How many weeks will her pregnancy last in total? "
+                      "Answer in weeks: ",
+                      "My sister is {t} weeks into her pregnancy. How long will her whole pregnancy be? "
+                      "Total weeks: ",
+                      "A midwife sees a patient who is {t} weeks pregnant. At how many weeks will she deliver? "
+                      "Answer in weeks: ",
+                      "An expecting mother has been pregnant for {t} weeks. How many weeks will her pregnancy last "
+                      "in total? Total weeks: ",
+                      "A pregnancy has lasted {t} weeks so far. How many weeks long will it be in total? "
+                      "Total weeks: "],
+            "prior": ["A woman has just given birth. How many weeks did her pregnancy last in total? "
+                      "Answer in weeks: ",
+                      "My sister just had her baby. How long was her whole pregnancy? Total weeks: ",
+                      "A midwife delivers a baby. At how many weeks was the baby born? Answer in weeks: ",
+                      "A new mother looks back on her pregnancy. How many weeks did it last in total? "
+                      "Total weeks: ",
+                      "A pregnancy has ended in a birth. How many weeks long was it in total? Total weeks: "]}},
+    # Memoryless by mechanism: after t rolls with no six, the rolls left (counting the six) are geometric with
+    # p = 1/6 for every t. That is the Erlang kernel exp(-R / beta) with beta = 1 / ln(6/5), on R >= 1.
+    "dice": {
+        "family": "erlang", "prior": {"beta": 1 / np.log(6 / 5)},                     # exact
+        "t": range(1, 41), "R_min": 1, "R_max": 60,
+        "templates": {
+            "remaining": ["Someone has rolled a fair die {t} times in a row without getting a six. How many more "
+                          "rolls until they get a six? Answer in rolls: ",
+                          "You keep rolling a die until a six comes up. You have rolled {t} times so far with no six. "
+                          "How many more rolls do you expect to need? Rolls left: ",
+                          "In a board game you need a six to start. You have thrown the die {t} times without one. "
+                          "How many more throws until you get it? Answer in throws: ",
+                          "A child rolls a die over and over, waiting for a six. After {t} rolls there has been no "
+                          "six. How many more rolls will it take? Rolls left: ",
+                          "A gambler has thrown a die {t} times and has not seen a six. How many more throws until "
+                          "the first six? Remaining throws: "],
+            "total": ["Someone has rolled a fair die {t} times in a row without getting a six. How many rolls will "
+                      "it take in total to get a six? Answer in rolls: ",
+                      "You keep rolling a die until a six comes up. You have rolled {t} times so far with no six. "
+                      "How many rolls will you need in total? Total rolls: ",
+                      "In a board game you need a six to start. You have thrown the die {t} times without one. How "
+                      "many throws will it take in total? Answer in throws: ",
+                      "A child rolls a die over and over, waiting for a six. After {t} rolls there has been no six. "
+                      "How many rolls will it take altogether? Total rolls: ",
+                      "A gambler has thrown a die {t} times and has not seen a six. On which throw will the first "
+                      "six come? Throw number: "],
+            "prior": ["Someone rolled a fair die until they got a six. How many rolls did it take in total? "
+                      "Answer in rolls: ",
+                      "You rolled a die until a six came up. How many rolls did you need in total? Total rolls: ",
+                      "In a board game you needed a six to start. How many throws did it take in total? "
+                      "Answer in throws: ",
+                      "A child rolled a die over and over until a six came up. How many rolls did it take "
+                      "altogether? Total rolls: ",
+                      "A gambler threw a die until the first six. On which throw did it come? Throw number: "]}},
+    # No public source for how long books stay in print: only Llama's own conditional predicts the code.
+    "books": {
+        "family": None, "prior": None,
+        "t": range(1, 101, 3), "R_max": 500,
+        "templates": {
+            "remaining": ["A book has been in print for {t} years. How many more years will it stay in print? "
+                          "Answer in years: ",
+                          "A novel was first published {t} years ago and people still buy it. For how many more "
+                          "years will it be in print? Years left: ",
+                          "A publisher has kept a title on sale for {t} years. How many more years will it keep "
+                          "selling it? Answer in years: ",
+                          "A bookshop has stocked the same classic for {t} years. For how many more years will "
+                          "it stay in print? Years left: ",
+                          "A cookbook has been in print for {t} years. How many more years until it goes out of "
+                          "print? Remaining years: "],
+            "total": ["A book has been in print for {t} years. How many years will it stay in print in total? "
+                      "Answer in years: ",
+                      "A novel was first published {t} years ago and people still buy it. How many years will it "
+                      "be in print altogether? Total years: ",
+                      "A publisher has kept a title on sale for {t} years. How many years will it sell it in "
+                      "total? Answer in years: ",
+                      "A bookshop has stocked the same classic for {t} years. How many years will it be in print "
+                      "in total? Total years: ",
+                      "A cookbook has been in print for {t} years. How long will its whole time in print be? "
+                      "Total years: "],
+            "prior": ["A book has gone out of print. How many years was it in print in total? Answer in years: ",
+                      "A novel is no longer sold. How many years was it in print altogether? Total years: ",
+                      "A publisher has stopped selling a title. How many years did it sell it in total? "
+                      "Answer in years: ",
+                      "A classic finally went out of print. How many years was it in print in total? "
+                      "Total years: ",
+                      "A cookbook went out of print. How long was its whole time in print? Total years: "]}},
+    # Publicly traded firms have an age-independent hazard (Daepp et al. 2015): memoryless, like the pharaohs.
+    "company": {
+        "family": "erlang", "prior": {"beta": 15.1},                                   # Daepp et al., fit_everyday_priors.py
+        "t": range(1, 101, 3), "R_max": 300,
+        "templates": {
+            "remaining": ["A company has been in business for {t} years. How many more years will it stay in "
+                          "business? Answer in years: ",
+                          "A family firm was founded {t} years ago and is still trading. How many more years will "
+                          "it last? Years left: ",
+                          "A listed company went public {t} years ago and still exists. How many more years until "
+                          "it disappears? Answer in years: ",
+                          "A local business has been open for {t} years. For how many more years will it stay "
+                          "open? Years left: ",
+                          "A manufacturer has been operating for {t} years. How many more years will it keep "
+                          "operating? Remaining years: "],
+            "total": ["A company has been in business for {t} years. How many years will it be in business in "
+                      "total? Answer in years: ",
+                      "A family firm was founded {t} years ago and is still trading. How many years will it last "
+                      "altogether? Total years: ",
+                      "A listed company went public {t} years ago and still exists. How many years will it exist "
+                      "in total? Answer in years: ",
+                      "A local business has been open for {t} years. How many years will it be open in total? "
+                      "Total years: ",
+                      "A manufacturer has been operating for {t} years. How long will it operate in total? "
+                      "Total years: "],
+            "prior": ["A company has gone out of business. How many years was it in business in total? "
+                      "Answer in years: ",
+                      "A family firm has closed down. How many years did it last altogether? Total years: ",
+                      "A listed company has disappeared. How many years did it exist in total? Answer in years: ",
+                      "A local business has closed for good. How many years was it open in total? Total years: ",
+                      "A manufacturer has stopped operating. How long did it operate in total? Total years: "]}},
 }
 
 
@@ -212,13 +339,15 @@ def log_prior(spec, T):
         return -(T - p["mu"]) ** 2 / (2 * p["sigma"] ** 2)
     if family == "power":
         return -p["gamma"] * np.log(T)
-    return np.log(T) - T / p["beta"]                                       # Erlang, shape 2
+    if family == "erlang":                                                 # shape 2
+        return np.log(T) - T / p["beta"]
+    raise ValueError(f"no world prior for family {family!r}")
 
 
 def remaining_logcond(spec):
     """``(t, R, L)`` for a domain spec (an entry of DOMAINS, or one with another family's prior swapped in):
-    ``L[i, j] = log p(R_j | t_i)`` normalized over the grid ``R = 0..R_max``."""
-    t, R = np.array(spec["t"]), np.arange(spec["R_max"] + 1)
+    ``L[i, j] = log p(R_j | t_i)`` normalized over the grid ``R = R_min..R_max`` (R_min 0 unless the spec sets it)."""
+    t, R = np.array(spec["t"]), np.arange(spec.get("R_min", 0), spec["R_max"] + 1)
     T = t[:, None] + R[None, :]
     L = log_prior(spec, T) - np.log(T)
     return t, R, L - logsumexp(L, 1, keepdims=True)

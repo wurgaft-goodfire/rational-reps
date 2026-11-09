@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from src.code.everyday import (DOMAINS, PREFIX, encode, fit_prior, log_prior, number_tokens, prior_prompts, prompts,
+from src.code.everyday import (DOMAINS, PREFIX, SHOTS, encode, fit_prior, log_prior, number_tokens, prior_prompts, prompts,
                                remaining_logcond)
 from src.code.llm import read_prompts
 from src.code.geometry import predicted_geometry
@@ -21,8 +21,11 @@ def _median(L, R):
 
 
 def test_erlang_kernel_is_the_same_for_every_t_so_the_code_collapses():
-    """The Erlang prior's factor T cancels the 1/T likelihood: p(R | t) is one exponential for every t."""
-    for d in ("pharaohs", "house"):
+    """The Erlang prior's factor T cancels the 1/T likelihood: p(R | t) is one exponential for every t. Dice
+    (rolls until a six, after t rolls without one) and company lifetimes (a constant yearly hazard) are memoryless
+    too, and written the same way."""
+    assert {d for d in DOMAINS if DOMAINS[d]["family"] == "erlang"} == {"pharaohs", "house", "dice", "company"}
+    for d in ("pharaohs", "house", "dice", "company"):
         t, R, L = remaining_logcond(DOMAINS[d])
         assert np.allclose(L, L[0], atol=1e-9)
         E = predicted_geometry(L)
@@ -38,6 +41,11 @@ def test_gaussian_and_power_law_codes_are_one_dimensional_in_t_and_log_t():
     assert S[0] ** 2 / (S ** 2).sum() > 0.95
     step = np.linalg.norm(np.diff(E, axis=0), axis=1)
     assert step.max() / step.min() < 2.0
+
+    t, R, L = remaining_logcond(DOMAINS["pregnancy"])
+    E = predicted_geometry(L)
+    S = np.linalg.svd(E - E.mean(0), compute_uv=False)
+    assert S[0] ** 2 / (S ** 2).sum() > 0.95
 
     t, R, L = remaining_logcond(DOMAINS["grosses"])
     E = predicted_geometry(L); at = {v: E[i] for i, v in enumerate(t)}
@@ -123,3 +131,22 @@ def test_prior_prompts_ask_for_a_total_with_no_t():
         assert len(texts) == len(DOMAINS[d]["templates"]["prior"]) >= 5
         for text, tpl in zip(texts, DOMAINS[d]["templates"]["prior"]):
             assert text == PREFIX["total"] + tpl and not re.search(r"\d", tpl) and text.endswith(": ")
+
+
+def test_dice_counts_the_rolls_left_including_the_six():
+    """After t rolls with no six, the rolls left (counting the six) are geometric with p = 1/6: none is zero and the
+    mean is 6, whatever t is."""
+    t, R, L = remaining_logcond(DOMAINS["dice"])
+    assert R[0] == 1
+    assert np.allclose(np.exp(L) @ R, 6, atol=0.01)
+
+
+def test_no_worked_example_comes_from_a_question_domain():
+    """The examples teach the format; one from a question's own domain would hand Llama that domain's answer."""
+    assert not any(w in s.lower() for s, *_ in SHOTS for w in ("pregnan", "die ", "book", "company"))
+
+
+def test_a_domain_without_a_world_prior_has_no_world_kernel():
+    """Books in print have no public source for the distribution of print runs: only Llama's own conditional
+    predicts their code."""
+    assert DOMAINS["books"]["family"] is None
