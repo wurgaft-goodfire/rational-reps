@@ -550,25 +550,27 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         G = gauge(dirs)
         return pred[:, :2] @ G.T, X[:, :2] @ G.T
 
-    def panel(ax, title, pts, rgb, path=None, dot=34):
+    STREAM_STYLES = [("0.1", "Greys"), ("#8C3B0E", "Oranges")]          # (line, dots light -> dark with t) per stream
+
+    def panel(ax, title, pts, rgb, paths=(), dot=34):
         ax.scatter(*pts.T, s=dot, color=rgb, alpha=0.6, lw=0, zorder=2)
-        if path is not None:
-            ax.plot(*path.T, color="0.1", lw=1.8, zorder=4,
+        for path, (line, dots) in zip(paths, STREAM_STYLES):
+            ax.plot(*path.T, color=line, lw=1.8, zorder=4,
                     path_effects=[pe.Stroke(linewidth=4.0, foreground="white"), pe.Normal()])
-            ax.scatter(*path.T, c=np.linspace(0.25, 1.0, len(path)), cmap="Greys", vmin=0, vmax=1,
-                       s=70, zorder=5, edgecolor="0.1", lw=0.9)
+            ax.scatter(*path.T, c=np.linspace(0.25, 1.0, len(path)), cmap=dots, vmin=0, vmax=1,
+                       s=70, zorder=5, edgecolor=line, lw=0.9)
         lo, hi = pts.min(0), pts.max(0); pad = 0.08 * (hi - lo).max()
         ax.set_xlim(lo[0] - pad, hi[0] + pad); ax.set_ylim(lo[1] - pad, hi[1] + pad)
         ax.set_aspect("equal"); FIG.clean(ax); ax.set_title(title, fontsize=FONT, pad=8)
 
-    def block(active, equation, pred, trained, rgb, reps, score, path=None, dot=34):
+    def block(active, equation, pred, trained, rgb, reps, score, paths=(), dot=34):
         """One stage: strip, the two planes, the two Grams. ``pred``/``trained`` (N, 2) shown; ``reps``
-        (pred, trained) the Gram rows; ``path`` (index array into the rows) the highlighted stream."""
+        (pred, trained) the Gram rows; ``paths`` (index arrays into the rows) the highlighted streams."""
         fig = plt.figure(figsize=(7.6, 10.4))
         gs = fig.add_gridspec(3, 2, height_ratios=[0.32, 1.15, 1], hspace=0.22, wspace=0.25)
         stage_strip(fig.add_subplot(gs[0, :]), active, equation)
         for _j, (_label, _pts) in enumerate([("predicted", pred), ("transformer", trained)]):
-            panel(fig.add_subplot(gs[1, _j]), _label, _pts, rgb, None if path is None else _pts[path], dot)
+            panel(fig.add_subplot(gs[1, _j]), _label, _pts, rgb, [_pts[_p] for _p in paths], dot)
             _ax = fig.add_subplot(gs[2, _j])
             gram_heatmap(_ax, reps[_j], title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {score:.3f}")
             _ax.title.set_fontsize(FONT)
@@ -616,10 +618,14 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         Pb, Tb = sides(flat(Eb), flat(Hb), D)
         _end = Pb.reshape(B, T, 2)[:, -1]; _r = np.linalg.norm(_end, axis=1)
         _far = np.flatnonzero((_r > np.quantile(_r, 0.85)) & (_r < np.quantile(_r, 0.95)))
-        b = int(_far[np.argmin(np.abs(np.angle(_end[_far] @ [1, 1j]) - 3 * np.pi / 4))])   # a far stream heading up-left
-        path = np.arange(b * T, (b + 1) * T)
+        _angle = lambda idx, a: idx[np.argmin(np.abs(np.angle(np.exp(1j * (np.angle(_end[idx] @ [1, 1j]) - a)))))]
+        b_far = int(_angle(_far, 3 * np.pi / 4))                          # an agreeing stream, out to the rim, heading up-left
+        # a typical stream: ends at the median radius (its tokens partly disagree), heading down-right
+        _mid = np.flatnonzero(np.abs(_r - np.median(_r)) < 0.02 * np.ptp(_r))
+        b_mid = int(_angle(_mid, -np.pi / 4))
+        paths = [np.arange(_b * T, (_b + 1) * T) for _b in (b_far, b_mid)]
         blk_b = block((1, 2),r"$\bar D_t = \frac{1}{1+t}\sum_{i \leq t} D(x_i)$:  $\log p(z \mid x_{1:t})$ up to $t$",
-                      Pb, Tb, flat(post) @ lat_rgb, (latent_means(Eb, z), latent_means(Hb, z)), cka(flat(Hb), flat(Eb)), path)
+                      Pb, Tb, flat(post) @ lat_rgb, (latent_means(Eb, z), latent_means(Hb, z)), cka(flat(Hb), flat(Eb)), paths)
 
         # (c) after the MLP: the log-predictive's top modes, coloured by the predictive over tokens
         _, Ec, Dx, _ = factor_logcond(flat(targets_w["log-predictive"]))
@@ -628,7 +634,7 @@ def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figur
         Pc, Tc = sides(Ec, Hc, Dx[:2].T)
         blk_c = block((2, 3),r"$\log p(x \mid x_{1:t}) = \log \sum_z p(x \mid z)\, p(z \mid x_{1:t})$",
                       Pc, Tc, ring_rgb(flat(targets_w["predictive"])),
-                      (latent_means(Ec.reshape(B, T, -1), z), latent_means(Hc.reshape(B, T, -1), z)), cka(Hc, Ec), path)
+                      (latent_means(Ec.reshape(B, T, -1), z), latent_means(Hc.reshape(B, T, -1), z)), cka(Hc, Ec), paths)
 
         fig_stages = merge_panels([blk_a, blk_b, blk_c], ncols=3, label_size=30)
         save_figure(fig_stages, FIGURES / f"decomposition_{name}.png", dpi=200)
