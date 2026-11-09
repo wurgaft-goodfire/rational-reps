@@ -64,8 +64,10 @@ def _(mo):
 
 @app.cell
 def _(KING, graph_distances, incidence, king_description, king_graph, np):
+    import os as _os
     N_ENTITIES = {"ordinality": 7, "spatial": 5}
-    SPLITS = {"train": (30, 20), "test": (50, 30)}                    # (graphs, descriptions per graph)
+    _train = tuple(int(x) for x in _os.environ.get("KING_TRAIN", "30x20").split("x"))   # their 30 x 20 by default
+    SPLITS = {"train": _train, "test": (50, 30)}                       # (graphs, descriptions per graph)
     SEED = 0
 
 
@@ -160,7 +162,7 @@ def _(KING, MODELS, N_ENTITIES, data, evaluate, np, reads, train_probes):
 
 
 @app.cell
-def _(FIGURES, N_ENTITIES, ceilings, np, plt, save_figure, scores):
+def _(FIGURES, N_ENTITIES, SPLITS, ceilings, np, plt, save_figure, scores):
     _fig, _axes = plt.subplots(1, len(N_ENTITIES), figsize=(10, 3.4), sharey=True)
     for _ax, _d in zip(_axes, N_ENTITIES):
         for _k, _c in ((0, "C0"), (1, "C1")):
@@ -169,7 +171,7 @@ def _(FIGURES, N_ENTITIES, ceilings, np, plt, save_figure, scores):
         _ax.axhline(ceilings[_d][1], color="C1", ls=":", lw=1, label="type, exact code")
         _ax.set_title(_d); _ax.set_xlabel("layer"); _ax.set_ylim(-0.1, 1)
     _axes[0].set_ylabel("Spearman (test)"); _axes[0].legend(frameon=False, fontsize=7)
-    save_figure(_fig, FIGURES / "king_replication_by_layer.png")
+    save_figure(_fig, FIGURES / f"king_replication_by_layer_train{SPLITS['train'][0]}x{SPLITS['train'][1]}.png")
     return
 
 

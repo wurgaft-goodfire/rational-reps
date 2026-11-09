@@ -36,13 +36,12 @@ def _losses(B, P, H, D, M, tau):
 
 def train_probes(H, D, M, rank=512, epochs=100, lr=1e-5, lam=5.0, batch_size=32, tau=0.1, seed=0, device=None):
     """One probe per layer, trained together (independent parameters, so each trains exactly as alone).
-    ``H`` (L, S, n, d), one description per sample; ``D`` (S, n, n); ``M`` (S, n, n, T). Features are
-    standardised per layer over the training set. Returns [{"B", "P", "mu", "sd"}] (numpy), one per layer."""
+    ``H`` (L, S, n, d), one description per sample; ``D`` (S, n, n); ``M`` (S, n, n, T). Features are used raw. Returns [{"B", "P", "mu", "sd"}] (numpy), one per layer."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     g = torch.Generator().manual_seed(seed)
     H = torch.as_tensor(np.asarray(H), dtype=torch.float32, device=device)
-    mu, sd = H.mean((1, 2), keepdim=True), H.std((1, 2), keepdim=True) + 1e-6
-    H = (H - mu) / sd
+    mu, sd = torch.zeros_like(H[:, :1, :1]), torch.ones_like(H[:, :1, :1])   # raw features: per-dimension
+    # standardisation inflates Llama's many near-constant dimensions and drowns the probe
     D = torch.as_tensor(np.asarray(D), dtype=torch.float32, device=device)
     M = torch.as_tensor(np.asarray(M), dtype=torch.float32, device=device)
     L, d, T = H.shape[0], H.shape[-1], M.shape[-1]
