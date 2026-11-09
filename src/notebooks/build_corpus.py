@@ -23,6 +23,8 @@ CORPORA = {  # repo, shard prefix, text column, article filter (min words), line
                "join": 100, "tag": "babylm_100M"},              # BabyLM 100M: one utterance per row, joined into passages
     "gutenberg": {"repo": "sedthh/gutenberg_english", "prefix": "data/train-", "column": "TEXT", "min_words": 200,
                   "join": 1, "tag": "gutenberg_en"},            # Project Gutenberg English books, one book per row
+    "fineweb": {"repo": "HuggingFaceFW/fineweb-edu", "prefix": "sample/10BT/", "column": "text", "min_words": 200,
+                "join": 1, "tag": "fineweb_edu_10bt"},          # FineWeb-Edu 10B-token sample, one web page per row
 }
 
 

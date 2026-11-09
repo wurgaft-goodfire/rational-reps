@@ -127,10 +127,14 @@ def leverage(W):
 
 def cka(X, Y):
     """Linear CKA between two representations (rows = items). Invariant to rotation/scale.
-    <Kx, Ky> / (|Kx| |Ky|) over the item Grams, computed from the feature cross-covariance:
-    |X'Y|^2 / (|X'X| |Y'Y|), so the cost is linear in the number of rows."""
+    <Kx, Ky> / (|Kx| |Ky|) over the item Grams; the same number from the feature cross-covariance,
+    |X'Y|^2 / (|X'X| |Y'Y|), when there are more items than features, so the cost is always the smaller side."""
     X = np.asarray(X, dtype=np.float64); Y = np.asarray(Y, dtype=np.float64)
     X = X - X.mean(0); Y = Y - Y.mean(0)
+    if len(X) < max(X.shape[1], Y.shape[1]):
+        Kx, Ky = X @ X.T, Y @ Y.T
+        denom = np.linalg.norm(Kx) * np.linalg.norm(Ky)
+        return float((Kx * Ky).sum() / denom) if denom > 0 else 0.0
     denom = np.linalg.norm(X.T @ X) * np.linalg.norm(Y.T @ Y)
     return float(np.linalg.norm(X.T @ Y) ** 2 / denom) if denom > 0 else 0.0
 
@@ -205,6 +209,17 @@ def rsa(X, Y):
     rx = rx - rx.mean(); ry = ry - ry.mean()
     denom = np.sqrt((rx ** 2).sum() * (ry ** 2).sum())
     return float((rx * ry).sum() / denom) if denom > 0 else 0.0
+
+
+def pair_auc(X, positive):
+    """Are the item pairs flagged in the boolean (n, n) ``positive`` closer in ``X`` than the rest? The
+    probability that a random flagged pair's distance is below a random unflagged pair's (ties count half):
+    0.5 = no relation, 1 = every flagged pair is closer than every unflagged one."""
+    iu = np.triu_indices(len(X), 1)
+    d, pos = _sqdist(np.asarray(X, dtype=np.float64))[iu], np.asarray(positive, dtype=bool)[iu]
+    ranks = _rankdata(d) + 1                                  # Mann-Whitney wants 1-based average ranks
+    n_neg = (~pos).sum()
+    return float((ranks[~pos].sum() - n_neg * (n_neg + 1) / 2) / (pos.sum() * n_neg))
 
 
 def rigid_map(X, ref):

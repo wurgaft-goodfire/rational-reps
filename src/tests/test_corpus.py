@@ -88,17 +88,20 @@ def test_query_reaches_the_api():
     assert r["count"] > 1_000_000
 
 
-def test_pmi_is_zero_under_independence_and_counts_an_empty_cell_as_one_cooccurrence():
-    """log(P_ij / (P_i P_j)) with P from the matrix itself: a matrix C = r r^T / Z has independent words
-    and PMI 0 everywhere; a cell at twice its expectation scores log 2; an empty cell is scored as if
-    it held one co-occurrence of weight 1, so nothing is -inf."""
-    from src.code.corpus import pmi
-    r = np.random.default_rng(0).integers(100, 1000, size=6).astype(float); Z = r.sum()
-    C = np.outer(r, r) / Z                                         # row sums of C are exactly r; every cell > 1
-    assert np.allclose(pmi(C[:3], r[:3], r, Z), 0)
-    C[0, 1] *= 2; C[0, 2] = 0
-    M = pmi(C[:1], r[:1], r, Z)
-    assert np.isclose(M[0, 1], np.log(2)) and np.isclose(M[0, 2], np.log(Z / (r[0] * r[2]))) and np.isfinite(M).all()
+def test_log_conditional_is_the_skip_gram_log_probability_with_an_empty_cell_as_one_cooccurrence():
+    """log P(j | i) = log(C_ij / r_i) with r_i the row's total weight: each row exponentiates to a
+    distribution over the vocabulary; an empty cell is scored as one co-occurrence of weight 1, so
+    nothing is -inf; a block keeps the full row total, not the block's."""
+    from src.code.corpus import log_conditional
+    C = np.random.default_rng(0).integers(2, 50, size=(4, 6)).astype(float)
+    r = C.sum(1)
+    L = log_conditional(C, r)
+    assert np.allclose(np.exp(L).sum(1), 1) and np.allclose(L, np.log(C) - np.log(r)[:, None])
+    C[0, 2] = 0
+    L = log_conditional(C[:1], r[:1])
+    assert np.isclose(L[0, 2], -np.log(r[0])) and np.isfinite(L).all()
+    block = log_conditional(C[:2, :3], r[:2])                       # a block: same r, so exp sums to the block's share
+    assert np.allclose(np.exp(block).sum(1), np.maximum(C[:2, :3], 1).sum(1) / r[:2])
 
 
 def test_load_corpus_memory_maps_the_matrix_and_caches_its_row_sums(tmp_path):
@@ -124,3 +127,177 @@ def test_encode_corpus_batches_by_characters_without_changing_the_stream():
     for chars in (1, 40, 10**9):                                   # every text alone; some pairs; everything at once
         ids_c, lengths_c = encode_corpus(SHARDS, list, tok, workers=2, chars=chars)
         assert np.array_equal(ids_c, ids) and np.array_equal(lengths_c, lengths)
+
+
+def test_collapse_phrases_replaces_each_in_document_occurrence_with_one_new_id():
+    """A phrase's tokens, consecutive and in the same document, become the single id V + p; a phrase
+    straddling a document boundary is left alone; longer phrases win over their prefixes."""
+    from src.code.corpus import collapse_phrases
+    ids = np.array([3, 1, 2, 5, 1, 2, 9, 1, 2, 9, 7], dtype=np.uint16)
+    docs = np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1], dtype=np.int32)
+    ids2, docs2 = collapse_phrases(ids, docs, [[1, 2], [1, 2, 9]], V=10)
+    assert ids2.tolist() == [3, 10, 5, 1, 2, 9, 11, 7] and docs2.tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
+
+
+TREE = [["organism"], ["plant", "animal"], ["flower", "tree", "bird", "fish"],
+        ["rose", "tulip", "oak", "pine", "robin", "crow", "trout", "shark"]]        # levels of a perfect binary tree
+
+
+def test_tree_splits_are_the_haar_vectors_of_the_tree_coarse_to_fine():
+    """One vector per internal node: +1 on the nodes under its first child, -1 under its second, 0 elsewhere,
+    ordered root first; they are orthogonal and there are 2^depth - 1 of them over 2^(depth+1) - 1 nodes."""
+    from src.code.corpus import tree_splits
+    S = tree_splits(TREE)
+    nodes = [w for level in TREE for w in level]
+    assert S.shape == (7, 15) and np.allclose(S @ S.T, np.diag((S ** 2).sum(1)))
+    root = dict(zip(nodes, S[0]))
+    assert root["organism"] == 0 and root["plant"] == root["rose"] == 1 and root["animal"] == root["shark"] == -1
+
+
+def test_coarse_to_fine_and_orthogonality_are_perfect_for_a_code_built_from_the_splits():
+    """A code whose columns are the tree's split vectors with decreasing scale has top-k PCs spanning the
+    k coarsest splits (alignment 1 at k = 1, 3, 7) and every child's offset from its parent orthogonal to
+    the parent (mean |cos| 0); a shuffled code does neither."""
+    from src.code.corpus import coarse_to_fine, orthogonality, tree_splits
+    S = tree_splits(TREE)
+    E = (S * (2.0 ** -np.arange(7))[:, None]).T                          # (15 nodes, 7), coarse splits largest
+    assert np.allclose([coarse_to_fine(E, TREE, k) for k in (1, 3, 7)], 1)
+    assert abs(orthogonality(E, TREE)) < 1e-9
+    rng = np.random.default_rng(0)
+    Es = E[np.r_[0, 1 + rng.permutation(14)]]                         # root fixed: its vector is 0 in this code
+    assert coarse_to_fine(Es, TREE, 3) < 0.9 and orthogonality(Es, TREE) > 0.1
+
+
+KIDS = {"r": ["a", "b", "c"], "a": ["a1", "a2", "a3"], "b": ["b1", "b2"], "c": ["c1", "c2"]}   # 3+3+1 = 7 depth-2 trees
+
+
+def test_binary_subtrees_enumerates_every_distinct_full_tree():
+    """Depth-2 trees under a toy children map: each internal node has two distinct children of its own,
+    children in sorted order, and asking for more trees than exist returns exactly the 7 structures."""
+    from src.code.corpus import binary_subtrees
+    trees = binary_subtrees(KIDS.get, "r", depth=2, n=20, seed=0)
+    assert len(trees) == 7 and len({tuple(map(tuple, t)) for t in trees}) == 7
+    for t in trees:
+        assert [len(l) for l in t] == [1, 2, 4]
+        for level, nxt in zip(t[:-1], t[1:]):
+            for i, parent in enumerate(level):
+                pair = nxt[2 * i:2 * i + 2]
+                assert set(pair) <= set(KIDS[parent]) and pair[0] < pair[1]
+
+
+def test_binary_subtrees_samples_uniformly_over_structures_not_child_pairs():
+    """The pair {b, c} heads 1 of the 7 depth-2 trees, so uniform sampling draws it 1/7 of the time (100
+    of 700 seeds); drawing child pairs uniformly would give 1/3 (233)."""
+    from src.code.corpus import binary_subtrees
+    hits = sum(binary_subtrees(KIDS.get, "r", depth=2, n=1, seed=s)[0][1] == ["b", "c"] for s in range(700))
+    assert 70 <= hits <= 130, hits
+
+
+def test_wordnet_hierarchy_names_synsets_by_vocabulary_words_and_contracts_unnamed_nodes():
+    """A word names its most-tagged noun sense when that sense holds most of the word's WordNet tags
+    ("young", mostly an adjective, names nothing; untagged "conch" names nothing; "it" and "amon" match only
+    the capitalised lemmas IT and Amon); a synset takes its first eligible word in vocabulary order (person
+    before someone); a synset's parent is its deepest hypernym (person under organism, not causal agent)
+    contracted to the nearest named ancestor (bird under animal, skipping chordate and vertebrate; owl under
+    bird, skipping bird of prey)."""
+    from nltk.corpus import wordnet as wn
+    from src.code.corpus import wordnet_hierarchy
+    children, word = wordnet_hierarchy(["it", "organism", "person", "someone", "animal", "young", "bird", "owl", "amon", "conch"])
+    assert sorted(word.values()) == ["animal", "bird", "organism", "owl", "person"]
+    assert word[wn.synset("bird.n.01")] == "bird" and wn.synset("bird.n.02") not in word
+    assert {wn.synset("animal.n.01"), wn.synset("person.n.01")} <= set(children[wn.synset("organism.n.01")])
+    assert children[wn.synset("animal.n.01")] == [wn.synset("bird.n.01")]
+    assert children[wn.synset("bird.n.01")] == [wn.synset("owl.n.01")]
+
+
+def test_concept_rows_match_the_window_counter_around_each_concept_occurrence():
+    """Flat counts of every id within ``window`` positions of each occurrence of a concept, same document
+    only, both sides; agrees with ``window_counts`` on the same tokens."""
+    from src.code.corpus import concept_rows
+    words, _ = vocabulary(SHARDS, list, 11, workers=2)
+    ids, lengths = encode_corpus(SHARDS, list, word_tokenizer(words), workers=2)
+    docs = np.repeat(np.arange(len(lengths), dtype=np.int32), lengths)
+    concepts = [list(words).index("cat"), list(words).index("dog")]
+    R = concept_rows(ids, docs, concepts, n_ids=len(words), window=3)
+    counts, _ = window_counts(TEXTS, ["cat", "dog"], window=3)
+    expected = np.array([[counts[c].get(w, 0) for w in words] for c in ("cat", "dog")])
+    assert R.shape == (2, len(words)) and np.array_equal(R, expected)
+
+
+def _toy_counts(V=7, seed=0):
+    rng = np.random.default_rng(seed)
+    C = rng.integers(0, 40, size=(V, V)).astype(np.float32)
+    C[0, 3] = C[3, 0] = 0                                                  # an empty cell
+    return (C + C.T) / 2
+
+
+def test_full_embedding_factors_the_bounded_pmi_and_log_ratio_targets_by_their_top_eigenmodes():
+    """``m`` = P_ij / (P_i P_j), ``mstar`` = 2 (P_ij - P_i P_j) / (P_ij + P_i P_j) and ``logm`` = log(P_ij / (P_i P_j) + eps)
+    over the top-V block, with P the block's own joint and marginal probabilities; the embedding is U sqrt(lambda)
+    over the d largest eigenvalues, largest first, so W W^T reproduces the target's positive part when d = V."""
+    from src.code.corpus import full_embedding
+    C = _toy_counts(); V = len(C)
+    P = C / C.sum(); p = P.sum(1); pp = np.outer(p, p)
+    for target, T in [("m", P / pp), ("mstar", 2 * (P - pp) / (P + pp)), ("logm", np.log(P / pp + 0.01))]:
+        W = full_embedding(C, V, target, d=V, device="cpu")
+        lam, U = np.linalg.eigh(T)
+        keep = lam > 0
+        assert W.shape == (V, keep.sum()) and np.allclose(W @ W.T, (U[:, keep] * lam[keep]) @ U[:, keep].T, atol=1e-4)
+        assert np.all(np.diff((W ** 2).sum(0)) <= 1e-6)                    # columns ordered by eigenvalue, largest first
+    assert full_embedding(C, V, "mstar", d=2, device="cpu").shape == (V, 2)
+    idx = np.array([0, 2, 5])                                              # a word subset instead of the top-V block
+    assert np.allclose(full_embedding(C, idx, "mstar", d=3, device="cpu"), full_embedding(C[np.ix_(idx, idx)], 3, "mstar", d=3, device="cpu"))
+    W = full_embedding(C, V, "mstar", device="cpu")                        # d=None: every positive mode; rows: a subset of them
+    assert W.shape[1] == keep.sum() and np.allclose(full_embedding(C, V, "mstar", device="cpu", rows=[1, 4]), W[[1, 4]])
+
+
+def test_full_embedding_logcond_is_the_balanced_factor_of_the_row_centred_log_conditional():
+    """``logcond`` equals ``predicted_geometry(log_conditional(...))`` on the block, column signs aside."""
+    from src.code.corpus import full_embedding, log_conditional
+    from src.code.geometry import predicted_geometry
+    C = _toy_counts(); V = len(C)
+    W = full_embedding(C, V, "logcond", d=4, device="cpu")
+    E = predicted_geometry(log_conditional(C, C.sum(1)))[:, :4]
+    assert W.shape == (V, 4) and np.allclose(np.abs(W.T @ E), np.diag(np.abs(np.diag(W.T @ E))), atol=1e-4)
+    assert np.allclose((W ** 2).sum(0), (E ** 2).sum(0), atol=1e-4)
+
+
+def test_read_analogies_groups_questions_by_family_keeping_the_case(tmp_path):
+    from src.code.corpus import read_analogies
+    p = tmp_path / "q.txt"
+    p.write_text(": capital-common-countries\nAthens Greece Baghdad Iraq\n: gram8-plural\nbanana bananas bird birds\ncar cars cat cats\n")
+    q = read_analogies(p)
+    assert q == {"capital-common-countries": [("Athens", "Greece", "Baghdad", "Iraq")],
+                 "gram8-plural": [("banana", "bananas", "bird", "birds"), ("car", "cars", "cat", "cats")]}
+
+
+def _cube_analogies():
+    """16 words = every sign pattern of 4 attributes; a:b::c:d flips the same attribute in both pairs."""
+    import itertools
+    words = ["".join("+-"[b] for b in bits) for bits in itertools.product((0, 1), repeat=4)]
+    E = np.array([[1.0 if ch == "+" else -1.0 for ch in w] for w in words])
+    flip = lambda w, k: w[:k] + "+-"[w[k] == "+"] + w[k + 1:]
+    questions = [(a, flip(a, k), c, flip(c, k)) for k in range(4) for a in words for c in words if a != c and a[k] == c[k]]
+    return words, E, questions
+
+
+def test_analogy_accuracy_is_exact_on_the_attribute_cube_and_chance_when_rows_are_shuffled():
+    """Cosine 3CosAdd (nearest word to b - a + c, excluding a, b, c) recovers every parallelogram of a +-1
+    attribute code; shuffling the code's rows leaves accuracy near chance (1 of 13 candidates)."""
+    from src.code.corpus import analogy_accuracy
+    words, E, questions = _cube_analogies()
+    index = {w: i for i, w in enumerate(words)}
+    assert analogy_accuracy(E, index, questions, device="cpu") == 1.0
+    assert analogy_accuracy(E, index, questions, metric="euclidean", device="cpu") == 1.0
+    shuffled = analogy_accuracy(E[np.random.default_rng(0).permutation(len(words))], index, questions, device="cpu")
+    assert shuffled < 0.2, shuffled
+
+
+def test_analogy_accuracy_excludes_the_query_words_from_the_candidates():
+    """With a duplicated row (E_b = E_a) the target b - a + c is c itself; c is excluded, so d is found only when
+    it is the next nearest, and never when queries may answer."""
+    from src.code.corpus import analogy_accuracy
+    E = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.1, 1.0]])
+    index = {"a": 0, "b": 1, "c": 2, "d": 3}
+    assert analogy_accuracy(E, index, [("a", "b", "c", "d")], device="cpu") == 1.0
+    assert analogy_accuracy(E, index, [("a", "b", "c", "d")], exclude_queries=False, device="cpu") == 0.0

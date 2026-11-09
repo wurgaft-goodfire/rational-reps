@@ -141,11 +141,216 @@ def load_corpus(path, window=16, weighting="1/d", chunk=5000):
     return C, vocab, np.load(path / "freq.npy"), np.load(rows_file)
 
 
-def pmi(C_ij, r_i, r_j, Z, floor=1.0):
-    """log(P_ij / (P_i P_j)) for a (k, m) block of the matrix, with P_ij = C_ij / Z and the marginals
-    P_i = r_i / Z from its row sums; 0 under independence. A cell below ``floor`` co-occurrence weight
-    is scored as ``floor`` (one co-occurrence), so an empty cell is finite."""
-    return np.log(np.maximum(np.asarray(C_ij, dtype=np.float64), floor) * Z / np.outer(r_i, r_j))
+def log_conditional(C_ij, r_i, floor=1.0):
+    """log P(j | i) = log(C_ij / r_i) for a (k, m) block of the matrix, with r_i the rows' full totals.
+    A cell below ``floor`` co-occurrence weight is scored as ``floor`` (one co-occurrence), so an empty
+    cell is finite."""
+    return np.log(np.maximum(np.asarray(C_ij, dtype=np.float64), floor)) - np.log(np.asarray(r_i, dtype=np.float64))[:, None]
+
+
+def full_embedding(C, V, target, d=None, device="cuda", eps=0.01, rows=None):
+    """(V, d) word embedding from a block of the count matrix ``C`` (its top ``V`` words, or the words at the
+    indices ``V``): the target matrix's d largest eigenmodes as U sqrt(lambda), largest first (the word2vec-style
+    factor of Karkada et al.); ``d=None`` keeps every positive mode, ``rows`` returns only those rows. With P the
+    block's joint probabilities and p its marginals, ``"m"`` is P / p p^T, ``"mstar"`` is 2 (P - p p^T) / (P + p p^T),
+    ``"logm"`` is log(P / p p^T + eps), and ``"logcond"`` is the row-centred log P(j | i) (one-co-occurrence
+    floor), whose balanced SVD factor U sqrt(S) comes from the eigenmodes of its Gram."""
+    import torch
+    block = np.arange(V) if isinstance(V, (int, np.integer)) else np.asarray(V)
+    X = torch.as_tensor(np.asarray(C[block][:, block] if len(block) < len(C) else C, dtype=np.float32), device=device).double()
+    if target == "logcond":
+        L = torch.log(X.clamp(min=1.0)); L = L - L.mean(1, keepdim=True)
+        G, power = L @ L.T, 0.25                                          # G = U S^2 U^T, so U (S^2)^(1/4) = U sqrt(S)
+    else:
+        P = X / X.sum(); pp = torch.outer(P.sum(1), P.sum(1))
+        G = {"m": lambda: P / pp, "mstar": lambda: 2 * (P - pp) / (P + pp), "logm": lambda: torch.log(P / pp + eps)}[target]()
+        power = 0.5
+    lam, U = torch.linalg.eigh(G)
+    lam, U = lam.flip(0), U.flip(1)                                        # largest first
+    k = int((lam > 0).sum()) if d is None else min(d, int((lam > 0).sum()))
+    if rows is not None:
+        U = U[torch.as_tensor(np.asarray(rows), device=device)]
+    return (U[:, :k] * lam[:k] ** power).cpu().numpy()
+
+
+def collapse_phrases(ids, docs, phrases, V):
+    """The id stream with every in-document occurrence of ``phrases[p]`` (a list of ids) replaced by the single
+    id ``V + p``; longer phrases take precedence over their prefixes, occurrences never overlap. Returns
+    ``(ids, docs)`` of the shorter stream."""
+    ids = np.asarray(ids); docs = np.asarray(docs)
+    out = ids.astype(np.uint16 if V + len(phrases) < 2 ** 16 else np.int32)
+    taken = np.zeros(len(ids), dtype=bool)
+    for p in sorted(range(len(phrases)), key=lambda p: -len(phrases[p])):
+        phrase, k = phrases[p], len(phrases[p])
+        n = len(ids) - k + 1
+        match = np.ones(n, dtype=bool)
+        for t, tok in enumerate(phrase):
+            match &= ids[t:t + n] == tok
+        match &= docs[:n] == docs[k - 1:k - 1 + n]
+        last = -k
+        for s in np.flatnonzero(match):
+            if s < last + k or taken[s:s + k].any():
+                continue
+            out[s] = V + p; taken[s + 1:s + k] = True; last = s
+    return out[~taken], docs[~taken]
+
+
+def concept_rows(ids, docs, concepts, n_ids, window=16):
+    """(len(concepts), n_ids): flat window counts of every id within ``window`` positions, same document, of
+    each occurrence of each concept id; the rows of the co-occurrence matrix for those concepts only."""
+    ids = np.asarray(ids); docs = np.asarray(docs)
+    which = np.full(n_ids, -1, dtype=np.int64); which[list(concepts)] = np.arange(len(concepts))
+    pos = np.flatnonzero(which[ids] >= 0)
+    row = which[ids[pos]]
+    R = np.zeros(len(concepts) * n_ids, dtype=np.float64)
+    for d in range(1, window + 1):
+        for q in (pos - d, pos + d):
+            ok = (q >= 0) & (q < len(ids))
+            ok[ok] &= docs[q[ok]] == docs[pos[ok]]
+            R += np.bincount(row[ok] * n_ids + ids[q[ok]].astype(np.int64), minlength=len(R))
+    return R.reshape(len(concepts), n_ids)
+
+
+def tree_splits(tree):
+    """(2^depth - 1, nodes) split vectors of a perfect binary tree given as levels of words: one row per
+    internal node, root first, +1 on the nodes under its first child, -1 under its second, 0 elsewhere."""
+    nodes = [w for level in tree for w in level]
+    pos = {w: i for i, w in enumerate(nodes)}
+    depth = len(tree) - 1
+
+    def under(level, i):                                      # every node in the subtree headed by tree[level][i]
+        return [w for l in range(level, depth + 1) for w in tree[l][i * 2 ** (l - level):(i + 1) * 2 ** (l - level)]]
+
+    S = np.zeros((2 ** depth - 1, len(nodes)))
+    row = 0
+    for level in range(depth):
+        for i in range(len(tree[level])):
+            for sign, child in ((1, 2 * i), (-1, 2 * i + 1)):
+                S[row, [pos[w] for w in under(level + 1, child)]] = sign
+            row += 1
+    return S
+
+
+def coarse_to_fine(E, tree, k):
+    """Alignment (1/k) ||U_k^T V_k||_F^2 in [0, 1] between the top-k PCs of the tree's node code ``E`` (nodes in
+    level order) and the k coarsest split vectors: 1 when the code's leading PCs are exactly the tree's splits,
+    root split first."""
+    E = np.asarray(E, dtype=np.float64); E = E - E.mean(0)
+    U = np.linalg.svd(E, full_matrices=False)[0][:, :k]
+    S = tree_splits(tree)[:k]
+    V = np.linalg.qr(S.T)[0]
+    return float(np.linalg.norm(U.T @ V) ** 2 / k)
+
+
+def orthogonality(E, tree):
+    """Mean |cos| between each child's offset from its parent and the parent's own vector, over every parent
+    below the root, in the node-centred code ``E``: 0 when the hierarchy is encoded orthogonally."""
+    E = np.asarray(E, dtype=np.float64); E = E - E.mean(0)
+    nodes = [w for level in tree for w in level]
+    pos = {w: i for i, w in enumerate(nodes)}
+    cos = []
+    for level in range(1, len(tree) - 1):
+        for i, parent in enumerate(tree[level]):
+            p = E[pos[parent]]
+            for child in tree[level + 1][2 * i:2 * i + 2]:
+                d = E[pos[child]] - p
+                cos.append(abs(d @ p) / (np.linalg.norm(d) * np.linalg.norm(p)))
+    return float(np.mean(cos))
+
+
+def binary_subtrees(children, root, depth, n, seed=0):
+    """Up to ``n`` distinct perfect binary subtrees of ``depth`` levels below ``root`` in the tree ``children(node)``,
+    as levels of nodes (each node's children in sorted order), drawn uniformly over the valid structures: with
+    N(u, d) the number of depth-d trees at u, a child pair (a, b) is chosen with weight N(a, d-1) N(b, d-1)."""
+    from functools import cache
+    rng = np.random.default_rng(seed)
+
+    @cache
+    def count(node, d):
+        return 1 if d == 0 else sum(w for _, w in pairs(node, d))
+
+    def pairs(node, d):
+        kids = sorted(children(node) or [], key=str)
+        return [((a, b), count(a, d - 1) * count(b, d - 1)) for i, a in enumerate(kids) for b in kids[i + 1:]
+                if count(a, d - 1) * count(b, d - 1) > 0]
+
+    def grow(node, d):
+        if d == 0:
+            return [[node]]
+        opts, weights = zip(*pairs(node, d))
+        a, b = opts[rng.choice(len(opts), p=np.array(weights, float) / sum(weights))]
+        return [[node]] + [l + r for l, r in zip(grow(a, d - 1), grow(b, d - 1))]
+
+    trees, seen = [], set()
+    for _ in range(50 * n if count(root, depth) else 0):
+        t = grow(root, depth)
+        nodes = tuple(w for level in t for w in level)
+        if nodes not in seen:
+            seen.add(nodes); trees.append(t)
+        if len(trees) == n:
+            break
+    return trees
+
+
+def wordnet_hierarchy(vocab):
+    """WordNet's noun hyponymy contracted to the synsets named by ``vocab`` (words, most frequent first):
+    ({synset: [child synsets]}, {synset: word}). A word names its most-tagged noun sense when that sense holds
+    at least half of the word's WordNet tags (so at least one); a synset takes its first eligible word; a synset's
+    parent is its deepest hypernym, contracted to the nearest named ancestor. Lemmas must be spelled exactly as
+    the word, so capitalised proper nouns and acronyms ("Amon", "IT") never name a synset."""
+    from nltk.corpus import wordnet as wn
+    word = {}
+    for w in vocab:
+        if not (w.isalpha() and w.islower()):
+            continue
+        lemmas = [l for l in wn.lemmas(w) if l.name() == w]
+        nouns = [l for l in lemmas if l.synset().pos() == "n"]
+        if not nouns:
+            continue
+        top = max(nouns, key=lambda l: l.count())
+        if top.count() and top.count() / sum(l.count() for l in lemmas) >= 0.5:
+            word.setdefault(top.synset(), w)
+
+    def parent(s):                                          # deepest hypernym, ties by name
+        hyper = s.hypernyms()
+        return min(hyper, key=lambda h: (-h.max_depth(), h.name())) if hyper else None
+
+    children = {s: [] for s in word}
+    for s in word:
+        p = parent(s)
+        while p is not None and p not in word:
+            p = parent(p)
+        if p is not None:
+            children[p].append(s)
+    return children, word
+
+
+def read_analogies(path):
+    """Mikolov's questions-words file as {family: [(a, b, c, d), ...]}, words in the file's own case."""
+    out, family = {}, None
+    for line in Path(path).read_text().splitlines():
+        if line.startswith(":"):
+            family = line[1:].strip(); out[family] = []
+        elif line.strip():
+            out[family].append(tuple(line.split()))
+    return out
+
+
+def analogy_accuracy(E, index, questions, exclude_queries=True, metric="cosine", device="cuda"):
+    """Top-1 accuracy of the code ``E`` (rows indexed by ``index`` {word: row}) on ``questions`` [(a, b, c, d)]:
+    the fraction whose nearest row to E_b - E_a + E_c, among all rows but a, b, c, is d. ``"cosine"`` on unit
+    rows (3CosAdd) or ``"euclidean"`` on the raw rows (Korchinski et al.). The search runs on ``device``."""
+    import torch
+    U = torch.as_tensor(np.asarray(E, dtype=np.float32), device=device)
+    if metric == "cosine":
+        U = U / U.norm(dim=1, keepdim=True)
+    q = torch.as_tensor(np.array([[index[w] for w in question] for question in questions]), device=device)
+    sims = (U[q[:, 1]] - U[q[:, 0]] + U[q[:, 2]]) @ U.T
+    if metric == "euclidean":
+        sims = sims - 0.5 * (U ** 2).sum(1)                                  # argmax of x.u - |u|^2/2 = argmin |x - u|
+    if exclude_queries:
+        sims.scatter_(1, q[:, :3], float("-inf"))
+    return float((sims.argmax(1) == q[:, 3]).float().mean())
 
 
 def parquet_texts(paths, column="text", batch=4096):

@@ -140,3 +140,17 @@ def test_cka_matches_the_gram_form_and_scales_with_rows_not_rows_squared():
     import tracemalloc
     tracemalloc.start(); cka(rng.normal(size=(20000, 3)), rng.normal(size=(20000, 4))); _, peak = tracemalloc.get_traced_memory(); tracemalloc.stop()
     assert peak < 50e6                                           # a 20k x 20k Gram alone would be 3.2 GB
+
+
+def test_cka_uses_the_item_grams_when_items_are_fewer_than_features():
+    """With 15 items in 3000 and 4000 dimensions the same number comes from the 15 x 15 Grams, so the cost is
+    O(N^2 d) and never touches a d x d cross-covariance (which would be 72 MB and 100 MB here)."""
+    from src.code.analysis_utils import cka
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(15, 3000)); Y = X @ rng.normal(size=(3000, 4000)) / 50 + rng.normal(size=(15, 4000))
+    Xc, Yc = X - X.mean(0), Y - Y.mean(0)
+    Kx, Ky = Xc @ Xc.T, Yc @ Yc.T
+    gram = (Kx * Ky).sum() / (np.linalg.norm(Kx) * np.linalg.norm(Ky))
+    import tracemalloc
+    tracemalloc.start(); value = cka(X, Y); _, peak = tracemalloc.get_traced_memory(); tracemalloc.stop()
+    assert abs(value - gram) < 1e-12 and peak < 5e6
