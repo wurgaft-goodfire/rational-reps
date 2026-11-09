@@ -436,7 +436,8 @@ def _(mo):
     3. the state after attention from the current token and the predictive probabilities alone — nothing more held.
 
     Predicted: all three $\approx 1$ for the Dirichlet, short of 1 where the predictive is a marginal over $z$ (line,
-    week). Per position, not across: attention averages uniformly over the start and $x_{1:t}$ in every world, the
+    week, and Tenenbaum's hypothesis spaces — intervals, subtrees, keys, rectangles — where the marginal is over
+    sets under the size principle and the belief is of full rank $K - 1$, as the Dirichlet's). Per position, not across: attention averages uniformly over the start and $x_{1:t}$ in every world, the
     start counting as $c \approx 1$ pseudo-count rather than the prior's $K$ (last row), so it writes $[n, 1]/(c + t)$;
     the rescaling by $t$ is the MLP's, alongside the log, and costs it nothing.
     """)
@@ -444,9 +445,13 @@ def _(mo):
 
 
 @app.cell
-def _(COMMON, T, data, heldout_decode_r2, load_run, np, runs, sites, targets):
+def _(COMMON, T, data, graph_overrides, heldout_decode_r2, load_run, np, runs, sites, targets):
+    # the controls, and Tenenbaum's hypothesis spaces (size principle; evidence and predictive both of rank K - 1, so
+    # the frequencies are already minimal and the worlds differ from the Dirichlet only past attention)
     controls = {"Dirichlet K=3": load_run(["setting=dirichlet"] + COMMON, project=False),
-                "Dirichlet K=7": load_run(["setting=dirichlet", "n_outcomes=7", "lattice=14"] + COMMON, project=False)}
+                "Dirichlet K=7": load_run(["setting=dirichlet", "n_outcomes=7", "lattice=14"] + COMMON, project=False),
+                **{_s: load_run(graph_overrides({"structure": _s}) + COMMON, project=False)
+                   for _s in ("intervals", "subtrees", "keys", "rectangles")}}
     for _name, _run in controls.items():
         print(f"{_name}: KL(Bayes || model) {_run['loss']:.5f} at step {_run['step']}")
 
@@ -482,9 +487,9 @@ def _(COMMON, T, data, heldout_decode_r2, load_run, np, runs, sites, targets):
     _all = {**{_n: (runs[_n], *data[_n]) for _n in runs},
             **{_n: (_r, targets(_r), sites(_r)) for _n, _r in controls.items()}}
     interfaces = {_n: interface(*_v) for _n, _v in _all.items()}
-    print(f"{'':46s}" + "".join(f"{_n:>15s}" for _n in interfaces))
+    print(f"{'':46s}" + "".join(f"{_n:>14s}" for _n in interfaces))
     for _row in next(iter(interfaces.values())):
-        print(f"{_row:46s}" + "".join(f"{_s[_row]:>15.4f}" for _s in interfaces.values()))
+        print(f"{_row:46s}" + "".join(f"{_s[_row]:>14.4f}" for _s in interfaces.values()))
     return
 
 
