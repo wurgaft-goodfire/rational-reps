@@ -9,7 +9,6 @@ its shape. Those marked G&T are from the paper; the rest are placeholders."""
 import re
 
 import numpy as np
-import torch
 from scipy.special import logsumexp
 
 _INTRO = ("Each question below gives one piece of information and asks you to predict "
@@ -132,26 +131,3 @@ def encode(tok, text):
     s = re.search(r"\d+", text).start()
     at = 1 + next(i for i, (a, b) in enumerate(enc["offset_mapping"]) if a <= s < b)
     return [tok.bos_token_id] + enc["input_ids"], at
-
-
-@torch.no_grad()
-def read_prompts(model, rows, nums, pad_id, batch_size=32):
-    """Forward each ``(ids, at)`` in ``rows``. Returns ``last`` and ``at_t`` (layers, n, d), the residual at
-    the final token and at t's token, and ``logq`` (n, len(nums)), the final token's log-softmax over ``nums``."""
-    device = next(model.parameters()).device
-    last, at_t, logq = [], [], []
-    for b in range(0, len(rows), batch_size):
-        chunk = rows[b:b + batch_size]
-        x = torch.full((len(chunk), max(len(ids) for ids, _ in chunk)), pad_id, device=device)
-        mask = torch.zeros_like(x)
-        for r, (ids, _) in enumerate(chunk):
-            x[r, :len(ids)] = torch.tensor(ids); mask[r, :len(ids)] = 1
-        out = model(x, attention_mask=mask, output_hidden_states=True)
-        H = torch.stack(out["hidden_states"]).float()                       # (layers, b, T, d)
-        r = torch.arange(len(chunk), device=device)
-        end = torch.tensor([len(ids) - 1 for ids, _ in chunk], device=device)
-        at = torch.tensor([a for _, a in chunk], device=device)
-        last.append(H[:, r, end]); at_t.append(H[:, r, at])
-        logq.append(torch.log_softmax(out["logits"][r, end][:, nums].float(), -1))
-    return {"last": torch.cat(last, 1).cpu().numpy(), "at_t": torch.cat(at_t, 1).cpu().numpy(),
-            "logq": torch.cat(logq).cpu().numpy()}

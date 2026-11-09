@@ -96,6 +96,29 @@ def word_means(model, words, templates, at_end=False):
     return torch.stack(out, 1).cpu().numpy()
 
 
+@torch.no_grad()
+def read_prompts(model, rows, nums, pad_id, batch_size=32):
+    """Forward each prompt ``(ids, at)`` in ``rows`` (``at`` a position to read besides the last). Returns ``last`` and ``at_t`` (layers, n, d), the residual at
+    the final token and at t's token, and ``logq`` (n, len(nums)), the final token's log-softmax over ``nums``."""
+    device = next(model.parameters()).device
+    last, at_t, logq = [], [], []
+    for b in range(0, len(rows), batch_size):
+        chunk = rows[b:b + batch_size]
+        x = torch.full((len(chunk), max(len(ids) for ids, _ in chunk)), pad_id, device=device)
+        mask = torch.zeros_like(x)
+        for r, (ids, _) in enumerate(chunk):
+            x[r, :len(ids)] = torch.tensor(ids); mask[r, :len(ids)] = 1
+        out = model(x, attention_mask=mask, output_hidden_states=True)
+        H = torch.stack(out["hidden_states"]).float()                       # (layers, b, T, d)
+        r = torch.arange(len(chunk), device=device)
+        end = torch.tensor([len(ids) - 1 for ids, _ in chunk], device=device)
+        at = torch.tensor([a for _, a in chunk], device=device)
+        last.append(H[:, r, end]); at_t.append(H[:, r, at])
+        logq.append(torch.log_softmax(out["logits"][r, end][:, nums].float(), -1))
+    return {"last": torch.cat(last, 1).cpu().numpy(), "at_t": torch.cat(at_t, 1).cpu().numpy(),
+            "logq": torch.cat(logq).cpu().numpy()}
+
+
 def triple_stream(dataset, B, K):
     """(B, K, 3) triples ``(a, b, c)`` from a relational dataset's pointwise rows (every pair
     enumerated, an outcome drawn per row), permuted into ``B`` streams; ``c`` indexes the outcome

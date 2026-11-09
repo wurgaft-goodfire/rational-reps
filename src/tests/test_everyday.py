@@ -3,11 +3,10 @@ log p(R | t), the prompts, and the reader that pulls Llama's states and answer d
 import numpy as np
 import pytest
 import torch
-from transformers import GPTNeoXConfig
 
-from src.code.everyday import DOMAINS, encode, number_tokens, prompts, read_prompts, remaining_logcond
+from src.code.everyday import DOMAINS, encode, number_tokens, prompts, remaining_logcond
+from src.code.llm import read_prompts
 from src.code.geometry import predicted_geometry
-from src.code.models import TransformerModel
 
 LLAMA = "meta-llama/Llama-3.1-8B"
 
@@ -71,29 +70,6 @@ def test_prompts_end_before_the_answer_and_point_at_t():
                     assert ids[0] == tok.bos_token_id
                     assert tok.decode([ids[at]]) == str(t)
                     assert tok.decode([ids[-1]]) == " "
-
-
-def _tiny():
-    torch.manual_seed(0)
-    return TransformerModel(GPTNeoXConfig(vocab_size=13, hidden_size=16, num_hidden_layers=2,
-                                          num_attention_heads=2, intermediate_size=32,
-                                          max_position_embeddings=32)).eval()
-
-
-def test_read_prompts_matches_a_brute_force_pass():
-    """Per prompt and layer: the residual at the last token and at t's token, and the log-softmax of
-    the last token's logits over the number tokens."""
-    model = _tiny()
-    rows = [([0, 3, 5, 7, 2], 2), ([0, 4, 9, 1], 1), ([0, 6, 6, 8, 11, 2, 3], 4)]
-    nums = [2, 5, 7, 10]
-    out = read_prompts(model, rows, nums, pad_id=12, batch_size=2)
-    for r, (ids, at) in enumerate(rows):
-        with torch.no_grad():
-            res = model(torch.tensor([ids]), output_hidden_states=True)
-        H = torch.stack(res["hidden_states"])[:, 0]
-        assert np.allclose(out["last"][:, r], H[:, -1].numpy(), atol=1e-5)
-        assert np.allclose(out["at_t"][:, r], H[:, at].numpy(), atol=1e-5)
-        assert np.allclose(out["logq"][r], torch.log_softmax(res["logits"][0, -1, nums], -1).numpy(), atol=1e-5)
 
 
 @pytest.mark.slow

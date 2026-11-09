@@ -51,7 +51,8 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.everyday import DOMAINS, encode, number_tokens, prompts, read_prompts, remaining_logcond
+    from src.code.everyday import DOMAINS, encode, number_tokens, prompts, remaining_logcond
+    from src.code.llm import read_prompts
     from src.code.geometry import predicted_geometry
     from src.code.analysis_utils import rsa
     from src.code.plot_utils import save_figure
