@@ -14,7 +14,7 @@ from .models import init_model, load_model, MODEL_CLASSES
 from .config import Config, clean_dirname, run_key
 from .data import init_dataset, kernel_hash
 from .eval import Evaluator
-from .geometry import predicted_rank_constrained_geometry, modes
+from .geometry import modes, profiled_fit
 from .train_utils import (
     CustomSaveCallback,
     StepMetricsCallback,
@@ -69,15 +69,15 @@ def _size_model(config, dataset):
 
 
 def solve(config, dataset):
-    """The theory as a run: the task's rank-constrained geometry
-    (`geometry.predicted_rank_constrained_geometry` on the coordinates `modes` gives it), its
-    representation H and readout D stored as they come in a linear model, with the checkpoint,
-    history and evaluation files `train` writes. Returns the same artifacts as `train`."""
+    """The rank-d optimum as a run: exponential-family PCA of the task's target (the dataset's
+    kernel rows, `geometry.profiled_fit` in the coordinates `modes` gives), its representation
+    H and readout D stored as they come in a linear model, with the checkpoint, history and
+    evaluation files `train` writes. Returns the same artifacts as `train`."""
     _size_model(config, dataset)
     model = init_model(config)
-    W, X = modes(dataset.info["alpha"], dataset.features, config.cfg.structure_kwargs.get("rho", 0.0))
-    H, D = predicted_rank_constrained_geometry(W, X, config.cfg.model_kwargs.model_config.embed_dim,
-                                               n_top=config.cfg.solver.n_top)
+    _, X = modes(dataset.info["alpha"], dataset.features, config.cfg.structure_kwargs.get("rho", 0.0))
+    H, D = profiled_fit(X, dataset.P.cpu().numpy().astype(float), config.cfg.model_kwargs.model_config.embed_dim,
+                        gtol=config.cfg.solver.gtol, max_iter=config.cfg.solver.max_iter)
     weight = model.embedding.weight
     with torch.no_grad():
         weight[dataset.item_tokens.to(weight.device)] = torch.as_tensor(H, dtype=weight.dtype, device=weight.device)
@@ -94,7 +94,7 @@ def solve(config, dataset):
 
 
 def fit(config, dataset):
-    """Fill a run dir: `solve` when the config carries a ``solver`` block (the theory runner),
+    """Fill a run dir: `solve` when the config carries a ``solver`` block (the optimum runner),
     else `train`."""
     return (solve if "solver" in config.cfg else train)(config, dataset)
 

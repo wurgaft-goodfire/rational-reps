@@ -41,9 +41,13 @@ uv run python -m src.code.train runner=hmm_transformer
 uv run python -m src.code.train runner=transformer model_kwargs.model_config.hidden_size=16,64,256
 
 # A setting can declare its sweep under hydra.sweeper.params; one multirun per model class.
-# The theory is a model class too: runner=theory solves each cell instead of training it.
+# The rank-d optimum is a model class too: runner=optimum solves each cell instead of training it.
 uv run python -m src.code.train -m runner=linear setting=superposition
-uv run python -m src.code.train -m runner=theory setting=superposition
+uv run python -m src.code.train -m runner=optimum setting=superposition
+
+# The canonical cases of notes/superposition_new.tex (signed feature cube, src/code/cases.py): one
+# run per line of `all_runs`, linear and optimum runners
+uv run python -c "from src.code.cases import all_runs, case_overrides; print(*(' '.join(case_overrides(*r)) for r in all_runs()), sep='\n')" | xargs -P 8 -I{} sh -c 'uv run python -m src.code.train {}'
 
 # Evaluate every checkpoint of a trained run (same runner + overrides as training)
 uv run python -m src.code.eval runner=hmm_transformer
@@ -172,7 +176,7 @@ Hydra composes config from `conf/` and runs one runner (train or eval).
 - `conf/config.yaml` — base defaults (setting + model + train + runner), wandb toggle, run-dir layout.
 - `src/code/config.py` — `Config` wraps the resolved `DictConfig`; seeds all RNGs; turns `save_steps_method` into a concrete checkpoint schedule.
 - `src/code/data.py` — `init_dataset` + three dataset classes (co-occurrence, relational, HMM), plus the structure gallery (graphs and co-occurrence kernels). Datasets return a full batch from `__getitem__` (`input_ids`, `labels`, eval-only `eval_labels`) and expose `compute_metrics`, `vocab_size`, `seq_len`.
-- `src/code/geometry.py` — the rational-code oracles: the spectral factorization `factor_logcond` (row-centred, balanced split, exposed as `predicted_geometry`), floored logs, `class_means`, and the superposition theory (`allocate_d`, `fantope_geometry`, `tight_frame`, `repair`, composed in `predicted_rank_constrained_geometry`, from `notes/superposition.tex`).
+- `src/code/geometry.py` — the rational-code oracles: the spectral factorization `factor_logcond` (row-centred, balanced split, exposed as `predicted_geometry`), floored logs, `class_means`, and the rank-d optimum of a softmax readout, exponential-family PCA (`moment_match`, `profiled_fit`, composed in `rank_constrained_geometry`; the closed forms it is checked against are in `notes/superposition_new.tex`).
 - `src/code/models.py` — `init_model` (train from scratch) and `load_model` (checkpoint / pretrained LLM); all return logits via `.output_key`.
 - `src/code/train.py` — Hydra entry point + `train_inline` for tests. `train` sizes the model from the dataset and runs the HF `Trainer` with custom callbacks; `solve` fills a run dir from the theory instead (`runner=theory`). Both write the same checkpoint, history and evaluation files.
 - `src/code/train_utils.py` — `PreBatchedDataCollator`, `StepMetricsCallback` (online eval), `CustomSaveCallback`.

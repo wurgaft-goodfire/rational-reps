@@ -1,6 +1,7 @@
 """Word -> feature family: N words with i.i.d. Bernoulli(p) features in {0, 1},
 outcomes the m feature tokens, softmax logits alpha_i Z_xi with alpha_i = scale * decay^i."""
 import numpy as np
+import pytest
 from omegaconf import OmegaConf
 
 from src.code.config import Config
@@ -159,3 +160,103 @@ def test_blocks_give_within_block_correlation_only():
     iu = np.triu_indices(16, 1)
     assert C[iu][same[iu]].mean() > 0.3
     assert abs(C[iu][~same[iu]].mean()) < 0.06
+
+
+# ── signed features: {-1, 0, 1} with one yes/no token pair per feature (notes/superposition_new.tex) ──
+
+def test_signed_kernel_is_plus_minus_alpha_z_and_ties_absent_pairs():
+    # Lc(z, i+) = alpha_i z_i, Lc(z, i-) = -alpha_i z_i, one softmax over the 2m outputs; a feature
+    # at 0 leaves its pair tied; all_bundles enumerates {-1, 0, 1}^m once
+    m = 3
+    L, info = feature_cube(m=m, decay=0.8, scale=1.5, signed=True, all_bundles=True)
+    Z, alpha = info["Z"], info["alpha"]
+    assert L.shape == (3 ** m, 2 * m) and Z.shape == (3 ** m, m)
+    assert set(np.unique(Z)) == {-1.0, 0.0, 1.0} and len(np.unique(Z, axis=0)) == 3 ** m
+    Lc = np.c_[Z * alpha, -Z * alpha]
+    assert np.allclose(L - Lc, (L - Lc)[:, :1])                     # equal up to each row's normalizer
+    assert np.allclose(L[:, :m] - L[:, m:], 2 * alpha * Z)          # within-pair log-odds
+    absent = Z == 0
+    assert np.allclose(L[:, :m][absent], L[:, m:][absent])
+
+
+def test_signed_k_supports_have_exactly_k_active_features_with_fair_signs():
+    N, m, k = 6000, 8, 2
+    _, info = feature_cube(N=N, m=m, k=k, signed=True, seed=1)
+    Z = info["Z"]
+    assert Z.shape == (N, m) and np.all((Z != 0).sum(1) == k)
+    assert np.abs((Z != 0).mean(0) - k / m).max() < 0.03           # uniform supports
+    assert np.abs(Z.mean(0)).max() < 0.03                           # fair, independent signs
+    assert np.abs(np.corrcoef(Z.T)[np.triu_indices(m, 1)]).max() < 0.05
+
+
+def test_signed_all_bundles_with_k_enumerates_every_signed_support():
+    # k = 1 gives the 2m signed singletons; k = 2 the C(m, 2) 2^2 signed pairs
+    m = 4
+    for k, n in ((1, 2 * m), (2, 6 * 4)):
+        _, info = feature_cube(m=m, k=k, signed=True, all_bundles=True)
+        Z = info["Z"]
+        assert Z.shape == (n, m) and len(np.unique(Z, axis=0)) == n and np.all((Z != 0).sum(1) == k)
+
+
+def test_signed_mixing_hands_the_model_mixed_coordinates_of_singleton_patterns():
+    # z = A z' with z' the signed singletons and A the symmetric root of the AR(1) correlation
+    # matrix mix^|i-j|; the logits are defined on the patterns z', the model sees z
+    m, rho = 4, 0.5
+    L, info = feature_cube(m=m, k=1, signed=True, all_bundles=True, mix=rho, scale=2.0, decay=1.0)
+    Z, Zp, A, alpha = info["Z"], info["patterns"], info["A"], info["alpha"]
+    Sigma = rho ** np.abs(np.arange(m)[:, None] - np.arange(m)[None])
+    assert np.allclose(A @ A, Sigma) and np.allclose(Z, Zp @ A.T)
+    assert np.allclose(L[:, :m] - L[:, m:], 2 * alpha * Zp)
+    assert np.allclose(np.corrcoef(Z.T), Sigma)                      # the features the model sees are correlated
+
+
+def test_frequency_ladder_weights_each_signed_singleton_by_half_its_feature_frequency():
+    # p(z = +-e_i) = pi_i / 2 with pi_i proportional to (i + 1)^-freq_beta
+    m, beta = 5, 1.0
+    _, info = feature_cube(m=m, k=1, signed=True, all_bundles=True, freq_beta=beta)
+    Z, w = info["Z"], info["weights"]
+    pi = (1.0 + np.arange(m)) ** -beta
+    pi /= pi.sum()
+    feature = np.abs(Z).argmax(1)
+    assert np.isclose(w.sum(), 1.0) and np.allclose(w, pi[feature] / 2)
+
+
+def test_weighted_batch_cross_entropy_is_the_frequency_weighted_mean():
+    # the batch scales each target row by n w_z, so cross-entropy (linear in the target) over the
+    # tiled batch equals sum_z w_z CE_z exactly
+    import torch
+    import torch.nn.functional as F
+    from src.code.train import graph_overrides, resolve_config
+    m = 4
+    config = resolve_config(graph_overrides({"structure": "feature_cube", "m": m, "k": 1, "signed": True,
+                                             "all_bundles": True, "scale": 1.0, "decay": 1.0, "freq_beta": 1.0}))
+    ds = KernelDataset(config)
+    b = ds[0]
+    logits = torch.randn(len(b["input_ids"]), ds.n_outcomes, generator=torch.Generator().manual_seed(0)).to(b["distribution_labels"])
+    rows = b["input_ids"][:, 0].cpu().numpy()
+    per_row = -(ds.P[rows] * torch.log_softmax(logits, -1)).sum(-1).cpu().numpy()
+    w = ds.info["weights"][rows]
+    expected = (w * per_row).sum() / w.sum()
+    assert np.isclose(F.cross_entropy(logits, b["distribution_labels"]).item(), expected, rtol=1e-5)
+
+
+@pytest.mark.slow
+def test_weak_logits_keep_the_most_frequent_features_and_follow_reversed_frequencies(tmp_path):
+    # equal weak strengths, rank 3 of 6: the weighted SVD keeps the modes with the largest pi_i, so a
+    # trained linear network dedicates its dimensions to features 1-3; reversing the ladder
+    # (freq_beta = -1) moves them to features 4-6, which rules out an effect of feature order
+    from src.code.analysis_utils import leverage, representation
+    from src.code.train import graph_overrides, train_inline
+    for beta, kept in ((1.0, [0, 1, 2]), (-1.0, [3, 4, 5])):
+        spec = {"structure": "feature_cube", "m": 6, "k": 1, "signed": True, "all_bundles": True,
+                "scale": 0.5, "decay": 1.0, "freq_beta": beta}
+        model, ds, evaluator, *_ = train_inline(
+            graph_overrides(spec) + ["runner=linear", "model_kwargs.model_config.embed_dim=3", "random_seed=0",
+                                     "training_kwargs.train_steps=8000", "training_kwargs.optimizer=sgd",
+                                     "training_kwargs.learning_rate=0.5"],
+            name=f"freq_{beta}", cache_dir=str(tmp_path))
+        E = np.asarray(representation(evaluator.evaluate(model)["hidden_states"], static=True))
+        plus = [int(np.flatnonzero(ds.features[:, i] == 1)[0]) for i in range(6)]   # the +e_i states
+        lev = leverage(E[plus])[0]
+        assert np.allclose(np.sort(np.argsort(lev)[-3:]), kept), lev
+        assert lev[kept].min() > 0.9 and np.delete(lev, kept).max() < 0.1, lev
