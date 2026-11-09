@@ -253,21 +253,55 @@ def _(mo):
     mo.md(r"""
     ## Behavior
 
-    Mean of Llama's answer distribution against t: remaining-time question (solid) and the total question
-    minus t (dashed), against the Bayes mean from the world prior (black) and from Llama's prior (gray). Priors: G&T's fits (life span, grosses,
-    pharaohs) or refits from their sources (run time, House; `fit_everyday_priors.py`).
+    Mean of Llama's answer to the remaining-time question (solid) against t, and the Bayes mean from the world
+    prior (black), on the domains where Llama behaves like world-prior Bayes (life span and pregnancy in both
+    models; run time and grosses in 70B). The total question minus t (faint dashed) only checks that the two
+    questions agree: a model that ignores t and always answers the prior mean gives a Bayes-like total − t in
+    a Gaussian domain, so it is weak evidence of updating on t. Priors: G&T's fits (life span, grosses) or refits
+    from their sources (run time, pregnancy; `fit_everyday_priors.py`).
     """)
     return
 
 
 @app.cell
-def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, KERNELS_LLAMA, READS, np, plt, save_figure):
+def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, READS, np, plt, save_figure):
     def mean(P, grid):
         """Mean of each row's distribution: Llama's answers heap on round numbers, so its median jumps between
         them from one t to the next while its mean moves smoothly."""
         return (P / P.sum(1, keepdims=True)) @ grid
 
 
+    GOOD = ("lifespan", "pregnancy", "runtime", "grosses")                  # behave like world-prior Bayes (70B)
+    _fig, _axes = plt.subplots(1, len(GOOD), figsize=(3 * len(GOOD), 2.8))
+    _grid = np.arange(1000)
+    for _ax, _d in zip(_axes, GOOD):
+        _t, _R, _L = KERNELS[_d]; _c = FAMILY_COLOR[DOMAINS[_d]["family"]]
+        _ax.plot(_t, mean(np.exp(_L), _R), color="k", lw=1, label="Bayes, world prior")
+        _ax.plot(_t, mean(READS[_d]["remaining"]["q"], _grid), color=_c, label="Llama: remaining")
+        _ax.plot(_t, mean(READS[_d]["total"]["q"], _grid) - _t, "--", color=_c, lw=0.8, alpha=0.5,
+                 label="Llama: total − t (coherence)")
+        _ax.set_title(_d, fontsize=10); _ax.set_xlabel("t")
+    _axes[0].set_ylabel("mean remaining R"); _axes[0].legend(frameon=False, fontsize=7)
+    _fig.tight_layout()
+    save_figure(_fig, FIGURES / "everyday_behavior.png")
+    return (mean,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Appendix: every domain, with Bayes from Llama's elicited prior
+
+    Gray: Bayes with the prior elicited by asking a t-free question directly. That measures Llama's guess at
+    one typical total, not its prior (it heaps on a typical value, with junk tails that inflate the parametric
+    fit), which is why Zhu & Griffiths (2024) elicit priors by iterated in-context learning instead. Shown for
+    completeness only.
+    """)
+    return
+
+
+@app.cell
+def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, KERNELS_LLAMA, READS, mean, np, plt, save_figure):
     _fig, _axes = plt.subplots(1, len(DOMAINS), figsize=(3 * len(DOMAINS), 2.8))
     _grid = np.arange(1000)
     for _ax, _d in zip(_axes, DOMAINS):
@@ -276,13 +310,14 @@ def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, KERNELS_LLAMA, READS, np, plt, sa
             _t, _R, _L = KERNELS[_d]
             _ax.plot(_t, mean(np.exp(_L), _R), color="k", lw=1, label="Bayes, world prior")
         _t, _R, _L = KERNELS_LLAMA[_d]
-        _ax.plot(_t, mean(np.exp(_L), _R), color="0.5", lw=1.5, ls="-.", label="Bayes, Llama's prior")
+        _ax.plot(_t, mean(np.exp(_L), _R), color="0.5", lw=1.5, ls="-.", label="Bayes, Llama's elicited prior")
         _ax.plot(_t, mean(READS[_d]["remaining"]["q"], _grid), color=_c, label="Llama: remaining")
-        _ax.plot(_t, mean(READS[_d]["total"]["q"], _grid) - _t, "--", color=_c, label="Llama: total − t")
+        _ax.plot(_t, mean(READS[_d]["total"]["q"], _grid) - _t, "--", color=_c, lw=0.8, alpha=0.5,
+                 label="Llama: total − t")
         _ax.set_title(_d, fontsize=10); _ax.set_xlabel("t")
     _axes[0].set_ylabel("mean remaining R"); _axes[0].legend(frameon=False, fontsize=7)
     _fig.tight_layout()
-    save_figure(_fig, FIGURES / "everyday_behavior.png")
+    save_figure(_fig, FIGURES / "everyday_behavior_all.png")
     return
 
 
