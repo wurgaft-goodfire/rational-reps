@@ -70,8 +70,11 @@ def _(graph_overrides, load_run):
     # the hidden worlds of the inference notebook (13 temperatures read through 5 adjectives, 28 times of week through
     # 7 days); trained by src/scripts/train_next_token.sh. The Dirichlet-categorical is left out: with 3 tokens and 2
     # evidence modes any value vectors fit its evidence, so the token-level test below cannot fail there
+    # The reliability world breaks their symmetries (section 4): 21 positions read through 7 cues of unequal precision
     WORLDS = {"line": graph_overrides({"structure": "chain", "cooccurrence": "gaussian", "n": 13, "m": 5, "gamma": 0.02}),
-              "week": graph_overrides({"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 0.8})}
+              "week": graph_overrides({"structure": "ring", "cooccurrence": "gaussian", "n": 28, "m": 7, "gamma": 0.8}),
+              "reliability": graph_overrides({"structure": "chain", "cooccurrence": "gaussian", "n": 21, "m": 7,
+                                              "gamma": 0.2, "precision": [0.25, 0.25, 4, 2, 0.5, 4, 0.5]})}
     T = 12
     COMMON = ["runner=transformer", "sample_mode=sequence", "++infer_latent=false",
               f"training_kwargs.context_length={T}", "training_kwargs.batch_size=256",
@@ -92,7 +95,7 @@ def _(T, np, runs):
         obs = run["inputs"][:, 1:]
         n = np.concatenate([np.zeros((len(obs), 1, ds.n_outcomes)),
                             np.eye(ds.n_outcomes)[obs].cumsum(1)[:, :-1]], 1)
-        ll = np.log(ds.P.double().cpu().numpy())                        # (n_z, K): log p(x | z)
+        ll = ds.conditional                                              # (n_z, K): log p(x | z), float64
         lp = n @ ll.T + np.log(ds.prior.cpu().numpy())
         pred = run["targets"].astype(float)
         return {"counts": n, "log-posterior over z": lp - lp.mean(-1, keepdims=True),
@@ -205,7 +208,7 @@ def _(T, data, factor_logcond, heldout_decode_r2, np, readout_basis, runs):
     def evidence(ds, tol=1e-3):
         """Token evidence vectors: the log-likelihood centred over z and over tokens, factored; (K, r) rows D(x)
         for the r modes above ``tol`` of the leading one."""
-        ll = np.log(ds.P.double().cpu().numpy()).T                       # (K, n_z): rows tokens
+        ll = ds.conditional.T                                            # (K, n_z): rows tokens
         Lcc = ll - ll.mean(1, keepdims=True) - ll.mean(0, keepdims=True) + ll.mean()
         U, S, _ = np.linalg.svd(Lcc, full_matrices=False)
         r = int((S > tol * S[0]).sum())
@@ -318,9 +321,8 @@ def _(T, affine_r2, data, evidence, heldout_decode_r2, np, predicted_after_atten
 
     def token_vectors(ds):
         """Per token, over z: the log-likelihood (z-centred) and the probability displacement p(z | x) - pi."""
-        P, prior = ds.P.double().cpu().numpy(), ds.prior.double().cpu().numpy()   # (n_z, K), (n_z,)
-        ll = np.log(P).T
-        post = P.T * prior
+        ll, prior = ds.conditional.T, ds.prior.double().cpu().numpy()   # (K, n_z), (n_z,)
+        post = np.exp(ll) * prior
         return {"log-likelihood D(x)": ll - ll.mean(1, keepdims=True),
                 "probability p(z|x) - pi": post / post.sum(1, keepdims=True) - prior}
 

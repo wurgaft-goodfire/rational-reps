@@ -948,12 +948,14 @@ def _graph_conditional(spec, gamma=0.8, cooccurrence="diffusion"):
         # log p(x|i) = -gamma/2 ||p_i - q_x||^2 + const_i — rank <= dim(p) + 1 before centering,
         # exact von Mises (kappa = gamma) on the ring, the quadratic log-kernel on the chain.
         # ``m`` puts the outcomes on a coarse grid over the same manifold (continuous latent,
-        # few outcomes), making the kernel bipartite.
+        # few outcomes), making the kernel bipartite. ``precision`` scales each outcome's gamma (cues of
+        # unequal reliability: on the chain the centred log-kernel is then rank 2, spanned by w_x and w_x q_x).
         from scipy.special import logsumexp
         m = spec.pop("m", None)
+        w = np.asarray(spec.pop("precision", 1.0), float)
         pos = structure_positions(name, spec)
         out = pos if m is None else structure_positions(name, spec, count=m)
-        lo = -gamma / 2 * ((pos[:, None] - out[None]) ** 2).sum(-1)
+        lo = -gamma * w / 2 * ((pos[:, None] - out[None]) ** 2).sum(-1)
         return lo - logsumexp(lo, axis=1, keepdims=True), {"bipartite": m is not None}
     return adjacency_conditional(_build_adjacency(name, spec), gamma, cooccurrence), {"bipartite": False}
 

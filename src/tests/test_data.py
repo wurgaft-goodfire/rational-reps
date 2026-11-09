@@ -131,6 +131,25 @@ def test_pointwise_tiles_to_batch_size():
 
 
 
+def test_gaussian_precision_gives_each_outcome_its_reliability():
+    """``precision`` scales each outcome's tuning: log p(x|z) = -gamma w_x / 2 (z - q_x)^2 + const_z. The
+    log-likelihood centred over z and outcomes is then rank 2 on the line, spanned by w_x and w_x q_x (Bayesian
+    cue combination: each cue adds its precision and its precision-weighted position)."""
+    from src.code.data import graph_conditional
+    w = np.array([0.25, 0.25, 4, 2, 0.5, 4, 0.5])
+    L = graph_conditional({"structure": "chain", "n": 21, "m": 7, "cooccurrence": "gaussian", "gamma": 0.2,
+                           "precision": w.tolist()})
+    q = np.linspace(0, 20, 7)
+    z = np.arange(21.0)
+    expected = -0.2 * w[None] / 2 * (z[:, None] - q[None]) ** 2
+    centre = lambda M: M - M.mean(0) - M.mean(1, keepdims=True) + M.mean()
+    assert np.allclose(centre(L), centre(expected), atol=1e-9)
+    U = np.linalg.svd(centre(L).T, full_matrices=False)[0][:, :2]                # outcome modes
+    span = np.c_[w, w * q]
+    span = span - span.mean(0)
+    assert np.allclose(U @ U.T @ span, span, atol=1e-9)
+
+
 def test_gaussian_cooccurrence_is_exactly_rank_two():
     """Gaussian tuning in canonical coordinates: quadratic log-kernel on the chain, exact von
     Mises (kappa = gamma) on the ring — rank 2 after row-centering, so a 2-D code is exact.
