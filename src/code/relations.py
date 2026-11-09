@@ -2,8 +2,89 @@
 intro, every adjacent fact once in random order and random direction, then 'Who are ...?' listing the
 entities in a fixed order. An entity's representation is the residual at its token in that list. The
 predictions are the answer tables the structure fixes, rows and columns indexed by position along it."""
+import re
+
 import numpy as np
 import torch
+
+# Diego-Simon et al. (COLM 2026), Table 1: entity names (in-distribution), and the domain header with its
+# vocabulary slot ``[]``; ``fact(i, j, k)`` states that j sits one positive step along axis k from i, in a
+# random direction (either phrasing).
+KING = {
+    "ordinality": {
+        "names": list("dfcyuzogrejln"), "dims": 1,
+        "header": "**Mathematical Variables** You will receive a description of set of mathematical constants, each "
+                  "associated with an unknown real number. **Vocabulary** The constants are named according to []. "
+                  "**Relations** The following relations are used to describe the relative position of a constant with "
+                  "respect to another one on the real axis: (greater than, less than) **Goal** Infer the position of each "
+                  "constant on the real axis so that **all** constraints are satisfied. **Scene description:**",
+        "fact": [lambda i, j: f"{j} is greater than {i}.", lambda i, j: f"{i} is less than {j}."]},
+    "spatial": {
+        "names": "bag ball clock lamp ring key train plane boat bus bike shirt coin".split(), "dims": 2,
+        "header": "**Geometrical Layout** You will receive a description of an abstract scene laid out on a regular square "
+                  "grid. **Vocabulary** The scene contains objects, named: [] **Relations** The following spatial "
+                  "relations are used to describe the relative position of the objects on the grid: (above, below, left "
+                  "of, right of) **Goal** Infer the grid coordinates of every object so that **all** spatial constraints "
+                  "are satisfied. **Scene description:**",
+        "fact": [lambda i, j: f"The {j} is to the right of the {i}.", lambda i, j: f"The {i} is to the left of the {j}.",
+                 lambda i, j: f"The {j} is on top of the {i}.", lambda i, j: f"The {i} is below the {j}."]},
+}
+
+
+def grid_graph(n, d, rng):
+    """Algorithm 1: ``n`` distinct points of Z^d grown from the origin by random signed unit steps, and the
+    edges ``(i, j, k)`` whenever point j is one positive unit step along axis k from point i.
+    Returns ``(pos (n, d) int, edges)``."""
+    pos = [np.zeros(d, dtype=int)]
+    while len(pos) < n:
+        p = pos[rng.integers(len(pos))] + rng.choice([-1, 1]) * np.eye(d, dtype=int)[rng.integers(d)]
+        if not any(np.array_equal(p, q) for q in pos):
+            pos.append(p)
+    pos = np.array(pos)
+    edges = [(i, j, k) for i in range(n) for j in range(n) for k in range(d)
+             if np.array_equal(pos[j] - pos[i], np.eye(d, dtype=int)[k])]
+    return pos, edges
+
+
+def graph_distances(n, edges):
+    """Shortest-path distances of the undirected graph (Floyd-Warshall)."""
+    D = np.full((n, n), np.inf); np.fill_diagonal(D, 0)
+    for i, j, _ in edges:
+        D[i, j] = D[j, i] = 1
+    for k in range(n):
+        D = np.minimum(D, D[:, [k]] + D[[k], :])
+    return D.astype(int)
+
+
+def incidence(n, edges, n_types):
+    """``M[i, j, k]`` = +1 for an edge (i, j, k), -1 for its reverse (j, i, k), 0 otherwise."""
+    M = np.zeros((n, n, n_types))
+    for i, j, k in edges:
+        M[i, j, k], M[j, i, k] = 1, -1
+    return M
+
+
+def king_graph(domain, n, rng):
+    """A graph of their domain: ``n`` names from the pool (kept in pool order), placed on the lattice at random.
+    Returns ``(names, pos, edges)`` with node i the i-th name."""
+    pool = KING[domain]["names"]
+    names = [pool[i] for i in sorted(rng.permutation(len(pool))[:n])]
+    pos, _ = grid_graph(n, KING[domain]["dims"], rng)
+    pos = pos[rng.permutation(n)]                                     # the bijection f: positions -> names
+    d = KING[domain]["dims"]
+    edges = [(i, j, k) for i in range(n) for j in range(n) for k in range(d)
+             if np.array_equal(pos[j] - pos[i], np.eye(d, dtype=int)[k])]
+    return names, pos, edges
+
+
+def king_description(domain, names, edges, rng):
+    """``(text, listing)``: the header with the vocabulary, every edge once in random order and phrasing, then
+    'Who are a, b, and c?' in vocabulary order (the listing their reads are taken at)."""
+    fact = KING[domain]["fact"]
+    facts = [fact[2 * k + rng.integers(2)](names[i], names[j]) for i, j, k in (edges[e] for e in rng.permutation(len(edges)))]
+    ask = "Who are " + ", ".join(names[:-1]) + ", and " + names[-1] + "?"
+    return "\n".join([KING[domain]["header"].replace("[]", ", ".join(names)), " ".join(facts), ask]), list(names)
+
 
 DOMAINS = {
     "chain": {"intro": "I am going to describe how some variables compare.",
@@ -42,38 +123,44 @@ def encode(tok, text, listing):
     start = text.rindex("\n") + len("Who are ")
     at = []
     for e in listing:
-        s = text.index(e, start)                                       # the entity's characters in the list
+        s = start + re.search(rf"\b{re.escape(e)}\b", text[start:]).start()   # the entity's word in the list
         at.append(next(i for i, (a, b) in enumerate(spans) if a <= s < b))
         start = s + len(e)
     return ids, at
 
 
 @torch.no_grad()
+def read_listed(model, tok, prompts, batch_size=32):
+    """The residual at every listed entity of every prompt, at every layer. ``prompts``: [(text, listing)]
+    with listings of equal length -> (layers, n_prompts, n, d) float16, entities in listing order."""
+    device = next(model.parameters()).device
+    enc = [encode(tok, text, listing) for text, listing in prompts]
+    out = None
+    for b in range(0, len(enc), batch_size):
+        chunk = enc[b:b + batch_size]
+        L = max(len(ids) for ids, _ in chunk)
+        x = torch.full((len(chunk), L), tok.eos_token_id, device=device); mask = torch.zeros_like(x)
+        for r, (ids, _) in enumerate(chunk):
+            x[r, :len(ids)] = torch.tensor(ids); mask[r, :len(ids)] = 1
+        H = torch.stack(model(x, attention_mask=mask, output_hidden_states=True)["hidden_states"])       # (layers, b, T, d)
+        at = torch.tensor([a for _, a in chunk], device=device)                                          # (b, n)
+        picked = H[:, torch.arange(len(chunk), device=device)[:, None], at].half().cpu().numpy()       # (layers, b, n, d)
+        if out is None:
+            out = np.zeros((len(H), len(enc), at.shape[1], H.shape[-1]), dtype=np.float16)
+        out[:, b:b + len(chunk)] = picked
+    return out
+
+
 def read_entities(model, tok, graphs, batch_size=32):
     """Mean residual per entity, by position along its structure, over each graph's descriptions.
     ``graphs``: [(order, [(text, listing), ...])] -> (layers, n_graphs, n, d) float32."""
-    device = next(model.parameters()).device
-    rows = [(g, order.index(e), ids, i) for g, (order, descs) in enumerate(graphs) for text, listing in descs
-            for ids, at in [encode(tok, text, listing)] for e, i in zip(listing, at)]
-    prompts = {}
-    for g, p, ids, i in rows:
-        prompts.setdefault(tuple(ids), []).append((g, p, i))
-    n, G = len(graphs[0][0]), len(graphs)
-    sums, counts = None, np.zeros((G, n))
-    keys = list(prompts)
-    for b in range(0, len(keys), batch_size):
-        chunk = keys[b:b + batch_size]
-        L = max(map(len, chunk))
-        x = torch.full((len(chunk), L), tok.eos_token_id, device=device); mask = torch.zeros_like(x)
-        for r, ids in enumerate(chunk):
-            x[r, :len(ids)] = torch.tensor(ids); mask[r, :len(ids)] = 1
-        H = torch.stack(model(x, attention_mask=mask, output_hidden_states=True)["hidden_states"]).float()  # (layers, b, T, d)
-        if sums is None:
-            sums = torch.zeros(H.shape[0], G, n, H.shape[-1], device=device)
-        for r, ids in enumerate(chunk):
-            for g, p, i in prompts[ids]:
-                sums[:, g, p] += H[:, r, i]; counts[g, p] += 1
-    return (sums / torch.tensor(counts, device=device, dtype=torch.float32)[None, :, :, None]).cpu().numpy()
+    H = read_listed(model, tok, [d for _, descs in graphs for d in descs], batch_size).astype(np.float32)
+    out, r = [], 0
+    for order, descs in graphs:
+        k = len(descs)
+        perm = [[listing.index(e) for e in order] for _, listing in descs]                              # listing -> position
+        out.append(np.mean([H[:, r + i, p] for i, p in enumerate(perm)], 0)); r += k
+    return np.stack(out, 1)
 
 
 def comparison_table(n):
