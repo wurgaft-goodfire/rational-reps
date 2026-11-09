@@ -28,6 +28,20 @@ def decoder_weights(model, dataset):
     return W.detach().float().cpu().numpy()
 
 
+def value_vectors(model):
+    """What the first attention block reads out of each vocabulary token, ``W_O W_V LN(e(x))``: (vocab, width).
+    Position plays no part (rotary touches queries and keys only), so a block's output is the attention-weighted
+    mean of these rows. None for a model without attention blocks."""
+    neox = getattr(model, "gpt_neox", None)
+    if neox is None:
+        return None
+    layer = neox.layers[0]
+    with torch.no_grad():
+        qkv = layer.attention.query_key_value(layer.input_layernorm(neox.embed_in.weight))
+        v = qkv.view(len(qkv), neox.config.num_attention_heads, -1).chunk(3, dim=-1)[2]   # per head: q, k, v
+        return layer.attention.dense(v.reshape(len(qkv), -1)).float().cpu().numpy()
+
+
 #########################
 # Evaluator: the only forward pass analysis ever depends on.
 #########################
@@ -65,13 +79,20 @@ class Evaluator:
         positions, ``inputs`` (B, T) tokens, the rest of the sampled batch dict (``labels``, ...),
         ``targets`` (B, T-1, C) exact distributions with target t
         paired to output t (static: (n, C)), ``logits`` (B, T, C) over the outcome tokens,
-        ``hidden_states`` (layers, B, T, width) every layer at every position, and ``readout``
-        (C, width) the rows that read the last layer; the last two None for a readout that reads
-        no vector."""
+        ``hidden_states`` (layers, B, T, width) every layer at every position, ``attention_states``
+        (layers, B, T, width) each transformer block's residual after attention, before its MLP,
+        ``value_vectors`` (vocab, width) what the first block reads out of each token (`value_vectors`; both None
+        for a model without attention blocks), and ``readout`` (C, width) the rows that read
+        the last layer; ``hidden_states`` and ``readout`` None for a readout that reads no vector."""
         if hasattr(model, "eval"):
             model.eval()
+        mids = []                                                   # the MLP's norm reads the post-attention residual
+        hooks = [layer.post_attention_layernorm.register_forward_pre_hook(lambda _m, a: mids.append(a[0]))
+                 for layer in getattr(getattr(model, "gpt_neox", None), "layers", ())]
         with torch.no_grad():
             out = model(self.inputs.to(self.device), output_hidden_states=True)
+        for h in hooks:
+            h.remove()
         logits = out[model.output_key].float().cpu()
         if logits.shape[-1] == self.dataset.vocab_size:            # vocab-wide head -> outcome tokens
             logits = logits[..., self.dataset.label_tokens]
@@ -85,6 +106,8 @@ class Evaluator:
         return {"loss": float(loss), "inputs": self.inputs.numpy(), "targets": self.targets.numpy(),
                 **{k: v.numpy() for k, v in self.batch.items() if k != "input_ids"},
                 "logits": logits.numpy(), "hidden_states": hidden,
+                "attention_states": np.stack([m.float().cpu().numpy() for m in mids]) if mids else None,
+                "value_vectors": value_vectors(model),
                 "readout": None if readout is None else decoder_weights(model, self.dataset)}
 
     def save(self, result, checkpoint_dir, step):

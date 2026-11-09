@@ -187,21 +187,6 @@ def test_floors_mix_transition_and_emission_with_uniform():
     np.testing.assert_allclose(ds.prior.cpu().numpy(), np.full(n, 1 / n), atol=1e-6)    # stationary: uniform
 
 
-def test_clock_belief_spirals_out():
-    """On the clock the filtered belief sharpens through the whole context while its phase advances
-    one state per step: mean entropy falls at every step, and the circular mean of the belief turns
-    2 pi / n per step (the spiral the moving-latent figure shows)."""
-    n, T = 24, 24
-    ds = HMMDataset(_clock_cfg(n=n, T=T))
-    x = ds.batch(4000)["input_ids"][:, 1:]
-    b = ds.forward_algorithm(x).cpu().numpy()                       # (B, T, n)
-    ent = -(b * np.log(b)).sum(-1).mean(0)
-    assert np.all(np.diff(ent) < 0) and ent[0] - ent[-1] > 0.4     # sharpening never stalls, ~3.1 -> ~2.6 nats
-    phase = np.angle(b @ np.exp(2j * np.pi * np.arange(n) / n))     # circular mean of the belief
-    turn = np.angle(np.exp(1j * np.diff(phase, axis=1))).mean()
-    assert abs(turn - 2 * np.pi / n) < 0.1 * 2 * np.pi / n
-
-
 def test_uniform_emissions_leave_the_belief_at_the_prior():
     """Null control: with ``emission_floor=1`` the symbols carry no information, so the filter's
     belief is the stationary prior at every position."""

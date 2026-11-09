@@ -31,6 +31,8 @@ def load_evaluation(path):
         saved = {k: z[k] for k in z.files}
     saved["step"], saved["loss"] = int(saved["step"]), float(saved["loss"])
     saved.setdefault("hidden_states", None)
+    saved.setdefault("attention_states", None)
+    saved.setdefault("value_vectors", None)
     saved.setdefault("readout", None)
     saved["representation"] = representation(saved["hidden_states"], static=saved["targets"].ndim == 2)
     return saved

@@ -58,6 +58,8 @@ def init_dataset(config, overwrite_data: bool = False):
         return RelationalDataset(config)
     if config.setting == "hmm":
         return HMMDataset(config)
+    if config.setting == "dirichlet":
+        return DirichletDataset(config)
     if config.setting == "scopes":
         from .scopes import ScopeDataset
         return ScopeDataset(config)
@@ -454,6 +456,39 @@ class HMMDataset(KernelDataset):
     def latent_conditional(self):
         """Log-conditional of the latent transition — factor for the predicted latent geometry."""
         return self._cond
+
+
+##### Dirichlet-categorical dataset (an exchangeable stream with a continuous latent) #####
+
+class DirichletDataset(KernelDataset):
+    """z ~ Dir(1, ..., 1) over ``n_outcomes`` symbols, drawn once per stream, then x_1:L i.i.d.
+    Cat(z). Bayes is exact: the next-token predictive is (1 + n_x) / (K + t), the posterior
+    Dir(1 + n). The kernel ``P`` is that likelihood on the interior simplex lattice of resolution
+    ``lattice`` (z = a / lattice, every a_x >= 1) under a flat prior, so the posterior over z reads
+    as log p(z | x_1:t) = sum_x n_x log z_x + const on the lattice, as for a finite hypothesis set;
+    the streams themselves draw z off the lattice. Next-token target only: z has no token."""
+
+    def _build(self, config):
+        if config.get("infer_latent", False):
+            raise ValueError("the Dirichlet latent is continuous: it has no token to predict")
+        K, r = int(config.n_outcomes), int(config.lattice)
+        G = np.array([a for a in itertools.product(range(1, r), repeat=K) if sum(a) == r]) / r
+        self.n_items, self.bipartite, self.features = len(G), True, None
+        return np.log(G), torch.tensor(G, dtype=torch.float32, device=self.device)
+
+    def batch(self, size=None):
+        B, L, K = size or self._batch_size(), self.context_length, self.n_outcomes
+        e = -torch.rand(B, K, generator=self.rng, device=self.device).neg().log1p()   # flat Dirichlet:
+        z = e / e.sum(-1, keepdim=True)                                         # normalized exponentials (u < 1: finite)
+        x = torch.multinomial(z, L, replacement=True, generator=self.rng)
+        seq = torch.cat([self._start_column(B), x], dim=1)
+        return {"input_ids": seq, "labels": seq.clone(), "latents": z}
+
+    def _posterior_predictive(self, obs):
+        """Add-one smoothing on the counts before each position. obs (B, L) -> (B, L, K)."""
+        onehot = nn.functional.one_hot(obs, self.n_outcomes).double()
+        n = torch.cat([torch.zeros_like(onehot[:, :1]), onehot.cumsum(1)[:, :-1]], 1)
+        return ((1 + n) / (self.n_outcomes + n.sum(-1, keepdim=True))).float()
 
 
 # =====================================================================================

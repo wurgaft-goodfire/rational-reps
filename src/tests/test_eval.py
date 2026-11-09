@@ -57,8 +57,10 @@ def test_evaluate_returns_the_forward_pass_on_every_input_as_arrays():
                                     embed_dim=3, arity=1))
     ev = Evaluator(config, dataset).evaluate(model.to("cuda" if torch.cuda.is_available() else "cpu"))
     n, C = len(dataset.input_tuples()), dataset.num_dims
-    assert set(ev) == {"loss", "inputs", "targets", "logits", "hidden_states", "readout"}
-    assert all(isinstance(ev[k], np.ndarray) for k in set(ev) - {"loss"})
+    assert set(ev) == {"loss", "inputs", "targets", "logits", "hidden_states", "attention_states",
+                       "value_vectors", "readout"}
+    assert ev["attention_states"] is None and ev["value_vectors"] is None   # no attention layers to read
+    assert all(isinstance(ev[k], np.ndarray) for k in set(ev) - {"loss", "attention_states", "value_vectors"})
     assert ev["inputs"].shape == (n, 1) and ev["targets"].shape == (n, C) and ev["logits"].shape == (n, C)
     assert ev["hidden_states"].shape == (1, n, 1, 3) and ev["readout"].shape == (C, 3)
     assert np.allclose(ev["hidden_states"][-1][:, 0] @ ev["readout"].T, ev["logits"], atol=1e-5)
@@ -91,6 +93,51 @@ def test_sequence_tasks_are_scored_on_one_fixed_batch_of_streams_without_moving_
     assert out["logits"].shape == (4, 7, dataset.num_dims)             # every position, outcome tokens only
     assert out["hidden_states"].shape[1:] == (4, 7, 6) and out["readout"].shape == (dataset.num_dims, 6)
     assert np.isfinite(out["loss"])
+
+
+def test_transformer_saves_the_residual_after_each_attention_block():
+    # attention_states[l] is layer l's residual after attention, before the MLP: with the MLP's
+    # output zeroed it is the layer's output, which the final norm turns into the readout's input
+    from src.code.data import DirichletDataset
+    from src.code.models import init_model
+    cfg = OmegaConf.create({
+        "setting": "dirichlet", "n_outcomes": 3, "lattice": 6, "sample_mode": "sequence", "random_seed": 0,
+        "model_kwargs": {"model_type": "transformer", "model_config": {
+            "hidden_size": 8, "num_hidden_layers": 2, "num_attention_heads": 2, "intermediate_size": 16,
+            "use_parallel_residual": False, "vocab_size": 4, "max_position_embeddings": 6}},
+        "training_kwargs": {"batch_size": 5, "context_length": 5},
+    })
+    config = Config(cfg)
+    model = init_model(config)
+    with torch.no_grad():
+        model.gpt_neox.layers[-1].mlp.dense_4h_to_h.weight.zero_()
+        model.gpt_neox.layers[-1].mlp.dense_4h_to_h.bias.zero_()
+    ev = Evaluator(config, DirichletDataset(config)).evaluate(model)
+    A = ev["attention_states"]
+    assert A.shape == (2, 5, 6, 8)
+    final = model.gpt_neox.final_layer_norm(torch.as_tensor(A[-1], device=model.device)).detach().cpu().numpy()
+    assert np.allclose(final, ev["hidden_states"][-1], atol=1e-5)
+
+
+def test_value_vectors_are_what_the_first_attention_block_reads_out_of_each_token():
+    # value_vectors[x] = W_O W_V LN(e(x)) for every vocabulary token; position 0 attends to itself alone, so the
+    # first block's attention output there (residual after attention minus the embedding) is the start token's
+    from src.code.data import DirichletDataset
+    from src.code.models import init_model
+    cfg = OmegaConf.create({
+        "setting": "dirichlet", "n_outcomes": 3, "lattice": 6, "sample_mode": "sequence", "random_seed": 0,
+        "model_kwargs": {"model_type": "transformer", "model_config": {
+            "hidden_size": 8, "num_hidden_layers": 1, "num_attention_heads": 2, "intermediate_size": 16,
+            "use_parallel_residual": False, "attention_bias": True, "vocab_size": 4, "max_position_embeddings": 6}},
+        "training_kwargs": {"batch_size": 5, "context_length": 5},
+    })
+    config = Config(cfg)
+    dataset = DirichletDataset(config)
+    ev = Evaluator(config, dataset).evaluate(init_model(config))
+    V = ev["value_vectors"]
+    assert V.shape == (4, 8)
+    out0 = ev["attention_states"][0][:, 0] - ev["hidden_states"][0][:, 0]
+    assert np.allclose(out0, V[dataset.start_token], atol=1e-5)
 
 
 def test_save_writes_one_npz_that_load_evaluation_reads_back(tmp_path):

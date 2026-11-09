@@ -1,0 +1,11 @@
+# @package _global_
+# Dirichlet-categorical streams: z ~ Dir(1, ..., 1) once per stream, x_1:t i.i.d. Cat(z). Exchangeable,
+# so the Bayes state is the count vector n: the next-token predictive is (1 + n_x) / (K + t), the
+# posterior over z is Dir(1 + n), log-linear in n with log z as its readout. A causal attention head
+# averages, so it can write the predictive's frequencies directly; the posterior over z needs t as well.
+setting: dirichlet
+structure: flat          # names the run directory's task
+n_outcomes: 3
+lattice: 30              # resolution of the interior simplex lattice the posterior over z is read on
+sample_mode: sequence    # streams only
+infer_latent: false      # the latent is continuous: next-token target only
