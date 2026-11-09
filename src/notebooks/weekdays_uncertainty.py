@@ -220,16 +220,19 @@ def _(DAYS, FIGURES, L_MAIN, PERCENTS, Q, SETS, canonical, df, fit_predict, harm
         for r in (.25, .5, .75):
             ax.plot(r * np.cos(t), r * np.sin(t), color="0.93", lw=.7, zorder=0)
         pos = _xy(np.exp(2j * np.pi * m * np.arange(7) / 7))
-        ax.scatter(*pos.T, c=HUE, s=70, edgecolor="0.35", lw=.6, zorder=3)
+        ax.scatter(*_xy(HZ[_ref, m - 1]).T, c=HUE[df.start.values[_ref]], s=14, alpha=.35, lw=0, zorder=2)   # certain prompts
+        ax.scatter(*pos.T, c=HUE, s=55, edgecolor="0.35", lw=.6, zorder=3)                                    # their centroids
         for d in range(7):
             ax.annotate(_short[d], 1.3 * pos[d], ha="center", va="center", fontsize=14 if d in (0, sep) else 11,
                         color=INK3 if d in (0, sep) else "0.6")
         sel = _pct & (df.sep.values == sep)
+        _lv = df.level.values[sel]
+        _mix = (1 - _wB)[:, None] * HUE[0] + _wB[:, None] * HUE[sep]                       # colour by stated split
+        ax.scatter(*_xy(_rot[sel, m - 1]).T, c=_mix[_lv], s=6, alpha=.2, lw=0, zorder=1)  # every two-day prompt
         obs, pre = ([z[sel & (df.level.values == l), m - 1].mean() for l in range(7)] for z in (_rot, _rot_log))
         ax.plot(*_xy(np.array(pre)).T, ls=(0, (4, 3)), color=PRED, lw=1.6, zorder=4)
-        ax.plot(*_xy(np.array(obs)).T, color=INK3, lw=1.8, zorder=5)
-        ax.scatter(*_xy(np.array(obs)).T, c=(1 - _wB)[:, None] * HUE[0] + _wB[:, None] * HUE[sep],
-                   s=[90 if l == 3 else 42 for l in range(7)], edgecolor=INK3, lw=1, zorder=6)
+        ax.plot(*_xy(np.array(obs)).T, color=INK3, lw=1.6, zorder=5)
+        ax.scatter(*_xy(np.array(obs)).T, c=_mix, s=30, edgecolor=INK3, lw=.8, zorder=6)
         ax.set_xlim(-R, R); ax.set_ylim(-R, R); ax.set_aspect("equal"); plot_utils.FIG.clean(ax)
 
 
@@ -259,7 +262,7 @@ def _(DAYS, FIGURES, L_MAIN, PERCENTS, Q, SETS, canonical, df, fit_predict, harm
     _fig.text(.5, .982, f"Where a two-day belief sits in each harmonic of the day ring (Llama-3.1-8B, layer {L_MAIN}, answer slot)",
               ha="center", fontsize=17, color=INK3)
     _fig.legend([Line2D([], [], color=INK3, lw=1.8, marker="o", mfc="white", mec=INK3), Line2D([], [], color=PRED, lw=1.6, ls=(0, (4, 3)))],
-                ["observed, mean over pairs (100/0 to 0/100; large: 50/50)", "predicted from the model's distribution (log map, fitted on sets)"],
+                ["observed: mean per stated split, 100/0 to 0/100 (faint: every prompt)", "predicted from the model's distribution (log map, fitted on sets)"],
                 loc="upper center", bbox_to_anchor=(.53, .972), ncol=2, frameon=False, fontsize=12)
     save_figure(_fig, str(FIGURES / "two_day_harmonics.png"))
     return HZ, HZ_LOG, Line2D
