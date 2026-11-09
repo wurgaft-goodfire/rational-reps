@@ -127,3 +127,47 @@ def test_pair_position_is_zero_on_As_spoke_one_on_Bs_and_follows_the_short_way_r
     A, B, sep = np.array([0, 2, 6]), np.array([2, 0, 1]), np.array([2, 2, 2])
     assert np.allclose(pair_position(np.array([1.0, 1.0, 0.5]), A, B, sep), [.5, .5, .75])
     assert np.allclose(pair_position(np.array([0.0, 0.0, 1.0]), A, B, sep), [0, 1, 1])
+
+
+def test_arithmetic_prompts_follow_the_manifold_steering_template_and_name_their_answers():
+    """"Q: What day is {k} days after {day}?\\nA:" with one of: a single offset (49 certain
+    prompts), two offsets ("four or two days after Tuesday"), two start days ("four days after
+    Tuesday or Wednesday"), or three consecutive offsets. Each prompt's weights are uniform over its
+    answers; A and B are the answers of the first and second option, ``sep`` their circular distance."""
+    from src.code.weekdays import arithmetic_prompts
+    P = arithmetic_prompts()
+    fam = lambda f: [p for p in P if p["family"] == f]
+    assert len(fam("certain")) == 49 and len(fam("two_k")) == 294 and len(fam("two_day")) == 294
+    assert len(fam("three_k")) == 35
+    p = next(p for p in fam("certain") if p["day"] == 1 and p["k"] == 4)
+    assert p["pre"] + p["post"] == "Q: What day is four days after Tuesday?\nA:"
+    assert np.allclose(p["weights"], np.eye(7)[5])
+    p = next(p for p in fam("two_k") if p["day"] == 1 and p["k"] == 4 and p["k2"] == 2)
+    assert p["pre"] + p["post"] == "Q: What day is four or two days after Tuesday?\nA:"
+    assert (p["A"], p["B"], p["sep"]) == (5, 3, 2) and np.isclose(p["weights"][[5, 3]].sum(), 1)
+    p = next(p for p in fam("two_day") if p["day"] == 1 and p["day2"] == 2 and p["k"] == 4)
+    assert p["pre"] + p["post"] == "Q: What day is four days after Tuesday or Wednesday?\nA:"
+    assert (p["A"], p["B"], p["sep"]) == (5, 6, 1)
+    p = next(p for p in fam("three_k") if p["day"] == 0 and p["k"] == 2)
+    assert p["pre"] + p["post"] == "Q: What day is two, three, or four days after Monday?\nA:"
+    assert np.allclose(p["weights"], np.array([0, 0, 1, 1, 1, 0, 0]) / 3)
+    assert {p["sep"] for p in fam("two_k")} == {1, 2, 3} == {p["sep"] for p in fam("two_day")}
+
+
+def test_nearest_centroid_accuracy_scores_held_out_points_against_the_other_groups_centroids():
+    from src.code.weekdays import nearest_centroid_accuracy
+    X_fit = np.array([[0., 0], [0, 0.2], [5, 5], [5, 5.2]]); g_fit = np.array([0, 0, 1, 1])
+    X = np.array([[0.1, 0], [4.9, 5], [0, 0.1]]); g = np.array([0, 1, 1])
+    assert np.isclose(nearest_centroid_accuracy(X_fit, g_fit, X, g), 2 / 3)
+
+
+@pytest.mark.slow
+def test_llama_answers_the_certain_arithmetic_prompts(tok):
+    """Integration: on the manifold-steering paper's prompts Llama-3.1-8B puts most of its mass on
+    the right day at the answer slot."""
+    from transformers import AutoModelForCausalLM
+    from src.code.weekdays import arithmetic_prompts
+    model = AutoModelForCausalLM.from_pretrained(LLAMA, dtype=torch.bfloat16, device_map="cuda").eval()
+    P = [p for p in arithmetic_prompts() if p["family"] == "certain"]
+    q = read_prompts(model, tok, P, batch_size=16)["q_answer"]
+    assert (q[np.arange(len(P)), [p["A"] for p in P]]).mean() > 0.5

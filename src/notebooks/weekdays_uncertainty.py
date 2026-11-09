@@ -326,5 +326,112 @@ def _(FIGURES, INK, MUTED, Q, SEP_COLORS, TWO, at, df, np, plt, save_figure):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # The manifold-steering task with an either/or
+
+    The paper's prompt, "Q: What day is four days after Tuesday?\nA:", made uncertain inside the
+    arithmetic: two offsets ("four or two days after Tuesday"), two start days ("four days after
+    Tuesday or Wednesday"), three consecutive offsets ("two, three, or four days after Monday"). The
+    ring comes from the 49 certain prompts, read at the answer as in the paper. The model mostly
+    computes the first option and spreads the rest over other days, so we again predict from its
+    measured distribution (maps fitted on the certain and three-offset prompts, tested on the two-option ones).
+    """)
+    return
+
+
+@app.cell
+def _(CACHE, np, pd, read_prompts, torch):
+    from src.code.weekdays import arithmetic_prompts, nearest_centroid_accuracy
+    AP = arithmetic_prompts()
+    _dir = CACHE / "weekdays" / "llama-3.1-8b"
+    if not all((_dir / f"arith_{k}.npy").exists() for k in ("answer", "q_answer")):
+        from transformers import AutoModelForCausalLM as _LM, AutoTokenizer as _Tok
+        _tok = _Tok.from_pretrained("meta-llama/Llama-3.1-8B")
+        _model = _LM.from_pretrained("meta-llama/Llama-3.1-8B", dtype=torch.bfloat16, device_map="cuda").eval()
+        _out = read_prompts(_model, _tok, AP, batch_size=32)
+        for _k in ("answer", "q_answer"): np.save(_dir / f"arith_{_k}.npy", _out[_k])
+        del _model; torch.cuda.empty_cache()
+    AH = np.load(_dir / "arith_answer.npy", mmap_mode="r"); AQ = np.load(_dir / "arith_q_answer.npy")
+    adf = pd.DataFrame([{k: v for k, v in p.items() if k not in ("weights",)} for p in AP])
+    adf["day2"] = adf.day2.fillna(-1).astype(int)
+    AW = np.stack([p["weights"] for p in AP])
+    _i = np.arange(len(adf))
+    adf["P(first)"], adf["P(second)"] = AQ[_i, adf.A], AQ[_i, adf.B]
+    adf["P(answers)"], adf["P(any day)"] = (AQ[:, :7] * (AW > 0)).sum(1), AQ[:, :7].sum(1)
+    adf.groupby(["family", "sep"])[["P(first)", "P(second)", "P(answers)", "P(any day)"]].mean().round(2)
+    return AH, AQ, adf, nearest_centroid_accuracy
+
+
+@app.cell
+def _(AH, AQ, adf, day_span, fit_predict, harmonic_basis, nearest_centroid_accuracy, np, r2, ring_coords,
+      spoke_predict):
+    A_CERT = (adf.family == "certain").values
+    A_FIT = A_CERT | (adf.family == "three_k").values
+    A_TWO = adf.family.isin(["two_k", "two_day"]).values
+    _tk, _td = (adf.family == "two_k").values, (adf.family == "two_day").values
+    _pair = lambda a, b: np.array([f"{min(x, y)}-{max(x, y)}" for x, y in zip(a, b)])
+    _answers, _inputs = _pair(adf.A, adf.B), _pair(adf.day, adf.day2)
+
+
+    def arith(L):
+        """Ring from the certain prompts; predictions and the answer-versus-input test at layer L."""
+        H = np.asarray(AH[L], np.float32)
+        C = np.stack([H[A_CERT & (adf.A.values == k)].mean(0) for k in range(7)])
+        mu, B = harmonic_basis(C); Z = day_span(H, mu, B); bq = np.linalg.qr(B)[0]
+        o = {"radius": ring_coords(H, mu, B)[1]}
+        s = {}
+        for k in ("log", "prob"):
+            pred = fit_predict(AQ[A_FIT], Z[A_FIT], AQ, k)
+            s[k] = r2(Z[A_TWO], pred[A_TWO]); o["radius_" + k] = ring_coords(mu + pred @ bq.T, mu, B)[1]
+        s["spoke"] = r2(Z[A_TWO], spoke_predict(Z[A_TWO], AQ[A_TWO], day_span(C, mu, B), np.zeros(6)))
+        # same answers from other inputs: start-day prompts against the offset prompts' answer-pair centroids
+        s["answer pair"] = nearest_centroid_accuracy(Z[_tk], _answers[_tk], Z[_td], _answers[_td])
+        # the inputs instead: start-day pair, each offset held out
+        s["input pair"] = np.mean([nearest_centroid_accuracy(Z[_td & (adf.k.values != k)], _inputs[_td & (adf.k.values != k)],
+                                                             Z[_td & (adf.k.values == k)], _inputs[_td & (adf.k.values == k)])
+                                   for k in range(1, 8)])
+        return o, s
+
+
+    A_LAYERS = list(range(2, 33, 2))
+    a_scores = {L: arith(L)[1] for L in A_LAYERS}
+    a28 = arith(28)[0]
+    return A_LAYERS, A_TWO, a28, a_scores
+
+
+@app.cell
+def _(A_LAYERS, A_TWO, FIGURES, INK, MUTED, a28, a_scores, adf, np, plt, save_figure):
+    _fig, _axes = plt.subplots(1, 2, figsize=(9.6, 3.6))
+    _ax = _axes[0]
+    for _fam, _ls, _name in (("two_day", "-", "two start days"), ("two_k", "-.", "two offsets")):
+        _m = (adf.family == _fam).values
+        _ax.plot((1, 2, 3), [np.median(a28["radius"][_m & (adf.sep.values == s)]) for s in (1, 2, 3)], "o" + _ls,
+                 color=INK, lw=2, ms=7, label=f"observed, {_name}")
+    for _k, _c, _mk, _lab in (("radius_log", "#2a78d6", "s--", "predicted, log map"), ("radius_prob", "#eb6834", "^:", "predicted, probability map")):
+        _ax.plot((1, 2, 3), [np.median(a28[_k][A_TWO & (adf.sep.values == s)]) for s in (1, 2, 3)], _mk, color=_c, lw=2, ms=7, label=_lab)
+    _ax.axhline(1, color=MUTED, lw=.8, ls=":"); _ax.set_ylim(0, 1.3); _ax.set_xticks((1, 2, 3))
+    _ax.set_xlabel("days between the two answers", color=INK); _ax.set_ylabel("radius (1 = certain ring)", color=INK)
+    _ax.legend(frameon=False, fontsize=7.5, loc="lower left")
+    _ax = _axes[1]
+    for _k, _c, _lab in (("answer pair", "#2a78d6", "grouped by answer pair"), ("input pair", "#eb6834", "grouped by start-day pair")):
+        _ax.plot(A_LAYERS, [a_scores[L][_k] for L in A_LAYERS], "o-", color=_c, lw=2, ms=5, label=_lab)
+    _ax.axhline(1 / 21, color=MUTED, lw=.8, ls=":"); _ax.annotate("chance", (3, 1 / 21 + .01), color=MUTED, fontsize=8)
+    _ax.set_xlabel("layer", color=INK); _ax.set_ylabel("nearest-centroid accuracy", color=INK)
+    _ax.legend(frameon=False, fontsize=8, loc="upper left")
+    for _a in _axes:
+        for _sp in ("top", "right"): _a.spines[_sp].set_visible(False)
+    _fig.tight_layout()
+    save_figure(_fig, str(FIGURES / "arithmetic_either_or.png"))
+    return
+
+
+@app.cell
+def _(a_scores, pd):
+    pd.DataFrame(a_scores).T.round(2).rename_axis("layer")
+    return
+
+
 if __name__ == "__main__":
     app.run()

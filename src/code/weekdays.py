@@ -152,3 +152,47 @@ def pair_position(angle, A, B, sep):
     along the short arc toward B, in units of their separation ``sep``."""
     toward = np.where((B - A) % 7 == sep, 1, -1)
     return toward * (np.mod(angle - A + 3.5, 7) - 3.5) / sep
+
+
+NUMBERS = ["one", "two", "three", "four", "five", "six", "seven"]
+
+
+def _circ(a, b):
+    return min((a - b) % 7, (b - a) % 7)
+
+
+def arithmetic_prompts():
+    """The manifold-steering paper's "Q: What day is {k} days after {day}?\\nA:", certain or with
+    an either/or in the offset ("four or two days after Tuesday"), the start day ("four days after
+    Tuesday or Wednesday"), or three consecutive offsets. [dict] with ``pre`` the whole prompt
+    (``post`` empty, so it tokenizes as one text), uniform ``weights`` over the answers, A and B the
+    first and second option's answers and ``sep`` their circular distance."""
+    out, q = [], "Q: What day is {} days after {}?\nA:"
+    def add(family, weights, text, **kw):
+        out.append(dict(family=family, weights=weights, pre=text, post="", **kw))
+    for d, k in itertools.product(range(7), range(1, 8)):
+        A = (d + k) % 7
+        add("certain", np.eye(7)[A], q.format(NUMBERS[k - 1], DAYS[d]), day=d, k=k, A=A, B=A, sep=0)
+    for d, k, k2 in itertools.product(range(7), range(1, 8), range(1, 8)):
+        if k != k2:
+            A, B = (d + k) % 7, (d + k2) % 7
+            add("two_k", _two(A, B, .5), q.format(f"{NUMBERS[k - 1]} or {NUMBERS[k2 - 1]}", DAYS[d]),
+                day=d, k=k, k2=k2, A=A, B=B, sep=_circ(A, B))
+    for d, d2, k in itertools.product(range(7), range(7), range(1, 8)):
+        if d != d2:
+            A, B = (d + k) % 7, (d2 + k) % 7
+            add("two_day", _two(A, B, .5), q.format(NUMBERS[k - 1], f"{DAYS[d]} or {DAYS[d2]}"),
+                day=d, day2=d2, k=k, A=A, B=B, sep=_circ(A, B))
+    for d, k in itertools.product(range(7), range(1, 6)):
+        w = np.zeros(7); w[[(d + k + i) % 7 for i in range(3)]] = 1 / 3
+        add("three_k", w, q.format(f"{NUMBERS[k - 1]}, {NUMBERS[k]}, or {NUMBERS[k + 1]}", DAYS[d]),
+            day=d, k=k, A=(d + k + 1) % 7, B=(d + k + 1) % 7, sep=0)
+    return out
+
+
+def nearest_centroid_accuracy(X_fit, g_fit, X, g):
+    """Share of the points ``X`` whose nearest centroid of the ``X_fit`` groups is their group ``g``."""
+    labels = np.unique(g_fit)
+    C = np.stack([X_fit[g_fit == l].mean(0) for l in labels])
+    nearest = labels[((X[:, None] - C[None]) ** 2).sum(-1).argmin(1)]
+    return (nearest == g).mean()
