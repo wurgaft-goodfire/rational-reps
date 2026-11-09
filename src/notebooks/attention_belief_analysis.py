@@ -450,8 +450,9 @@ def _(COMMON, T, data, graph_overrides, heldout_decode_r2, load_run, np, runs, s
     # the frequencies are already minimal and the worlds differ from the Dirichlet only past attention)
     controls = {"Dirichlet K=3": load_run(["setting=dirichlet"] + COMMON, project=False),
                 "Dirichlet K=7": load_run(["setting=dirichlet", "n_outcomes=7", "lattice=14"] + COMMON, project=False),
-                **{_s: load_run(graph_overrides({"structure": _s}) + COMMON, project=False)
-                   for _s in ("intervals", "subtrees", "keys", "rectangles")}}
+                **{_s: load_run(graph_overrides({"structure": _s}) + [_o.replace("train_steps=30000", "train_steps=150000")
+                                                                      for _o in COMMON], project=False)
+                   for _s in ("intervals", "subtrees", "keys", "rectangles")}}       # these need 5x the steps
     for _name, _run in controls.items():
         print(f"{_name}: KL(Bayes || model) {_run['loss']:.5f} at step {_run['step']}")
 
