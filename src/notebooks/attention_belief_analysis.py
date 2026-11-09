@@ -510,8 +510,10 @@ def _(mo):
 
 
 @app.cell
-def _(FIG, FIGURES, T, controls, data, evidence, factor_logcond, np, plt, runs, save_figure, sites, targets):
+def _(COMMON, FIG, FIGURES, T, controls, data, evidence, factor_logcond, graph_overrides, load_run, np, plt, runs,
+      save_figure, sites, targets):
     import io
+    from matplotlib.colors import to_rgb
     import matplotlib.patheffects as pe
     from matplotlib.patches import FancyBboxPatch
     from src.code.analysis_utils import cka, rigid_map
@@ -609,6 +611,8 @@ def _(FIG, FIGURES, T, controls, data, evidence, factor_logcond, np, plt, runs, 
                     + (1 - (0.55 + 0.45 * (y / (s - 1))))[:, None])
         if name.startswith("Dirichlet"):
             return plt.cm.tab10(np.arange(K))[:, :3]
+        if name == "binary":                                              # tokens [1+, 2+, 1-, 2-]: the inference notebook's pairs
+            return np.array([to_rgb(FIG.colors[_k]) for _k in ("blue", "purple", "orange", "green")])
         return FIG.item_cmap(np.linspace(0, 1, K))[:, :3]
 
     def belief_rgb(p, colors, gamma=3.0):
@@ -631,8 +635,13 @@ def _(FIG, FIGURES, T, controls, data, evidence, factor_logcond, np, plt, runs, 
         B, K = len(z), ds.n_outcomes
         tok_rgb = token_rgb(name, K)
         P = np.exp(ds.conditional)                                       # (n_z, K)
-        lat_rgb = plt.cm.twilight(np.arange(ds.n_items) / ds.n_items)[:, :3] if name in CYCLIC \
-            else belief_rgb(P, tok_rgb)                                  # a latent's colour: the tokens it emits
+        if name in CYCLIC:
+            lat_rgb = plt.cm.twilight(np.arange(ds.n_items) / ds.n_items)[:, :3]
+        elif name == "binary":                                           # [man, king, woman, queen]: royal hue, female lightness
+            _no, _yes = (np.array(to_rgb(FIG.colors[_k])) for _k in ("orange", "blue"))
+            lat_rgb = np.array([0.8 * _no, 0.8 * _yes, 1 - 0.55 * (1 - _no), 1 - 0.55 * (1 - _yes)])
+        else:
+            lat_rgb = belief_rgb(P, tok_rgb)                             # a latent's colour: the tokens it emits
         flat = lambda X: X.reshape(B * T, -1)
         cyc = name in CYCLIC
         dot_a = 320 if K <= 12 else 90
@@ -659,10 +668,7 @@ def _(FIG, FIGURES, T, controls, data, evidence, factor_logcond, np, plt, runs, 
         _far = np.flatnonzero((_r > np.quantile(_r, 0.85)) & (_r < np.quantile(_r, 0.95)))
         _angle = lambda idx, a: idx[np.argmin(np.abs(np.angle(np.exp(1j * (np.angle(_end[idx] @ [1, 1j]) - a)))))]
         b_far = int(_angle(_far, 3 * np.pi / 4))                          # an agreeing stream, out to the rim, heading up-left
-        # a typical stream: ends at the median radius (its tokens partly disagree), heading down-right
-        _mid = np.flatnonzero(np.abs(_r - np.median(_r)) < 0.02 * np.ptp(_r))
-        b_mid = int(_angle(_mid, -np.pi / 4))
-        paths = [np.arange(_b * T, (_b + 1) * T) for _b in (b_far, b_mid)]
+        paths = [np.arange(b_far * T, (b_far + 1) * T)]
         blk_b = block((1, 2),r"$\bar D_t = \frac{1}{1+t}\sum_{i \leq t} D(x_i)$:  $\log p(z \mid x_{1:t})$ up to $t$",
                       Pb, Tb, flat(post) @ lat_rgb if cyc else belief_rgb(flat(post), lat_rgb, gamma=1.0),
                       (latent_means(Eb, z), latent_means(Hb, z)), cka(flat(Hb), flat(Eb)), paths, rank=r)
@@ -685,6 +691,10 @@ def _(FIG, FIGURES, T, controls, data, evidence, factor_logcond, np, plt, runs, 
 
     for _name in runs:
         _figure(_name, runs[_name], *data[_name])
+    # the inference notebook's binary world: royal and female, each read through a token pair
+    _binary = load_run(graph_overrides({"structure": "feature_cube", "m": 2, "decay": 1.0, "scale": 1.25,
+                                        "paired": True, "all_bundles": True}) + COMMON, project=False)
+    _figure("binary", _binary, targets(_binary), sites(_binary))
     for _name, _run in controls.items():
         if _name != "Dirichlet K=3":                                     # trained before value vectors were recorded; K=7 stands in
             _figure(_name, _run, targets(_run), sites(_run))
