@@ -10,6 +10,7 @@ current equivalents of G&T's sources. Poem lengths are left out: G&T's source no
 import re
 
 import numpy as np
+from scipy.optimize import minimize
 from scipy.special import logsumexp
 
 _INTRO = ("Each question below gives one piece of information and asks you to predict "
@@ -34,7 +35,8 @@ SHOTS = [("A soccer match has been going for 30 minutes.", "How many more minute
 PREFIX = {"remaining": _INTRO + "".join(f"{s} {q} Answer: {a}\n" for s, q, a, _, _ in SHOTS),
           "total": _INTRO + "".join(f"{s} {q} Answer: {a}\n" for s, _, _, q, a in SHOTS)}
 
-# Templates hold no digits besides {t}, and end on the space before the answer.
+# Templates hold no digits besides {t}, and end on the space before the answer. "prior" asks for a total
+# with no t, to elicit the model's own prior.
 DOMAINS = {
     "lifespan": {
         "family": "gaussian", "prior": {"mu": 75, "sigma": 16},                       # G&T
@@ -47,7 +49,10 @@ DOMAINS = {
             "total": ["Insurance actuaries estimate how long people will live. A man is {t} years old. "
                       "At what age will he die? Answer in years: ",
                       "You meet a man who is {t} years old. How old do you expect him to be when he dies? "
-                      "Age at death: "]}},
+                      "Age at death: "],
+            "prior": ["Insurance actuaries look at the records of men who have died. At what age did one of "
+                      "these men die? Answer in years: ",
+                      "Think of a man who has died. How old was he when he died? Age at death: "]}},
     "runtime": {
         "family": "gaussian", "prior": {"mu": 116.8, "sigma": 23.2},                  # refit, fit_everyday_priors.py
         "t": range(10, 152, 2), "R_max": 200,
@@ -59,6 +64,10 @@ DOMAINS = {
             "total": ["You drop in on a friend who has been watching a movie for {t} minutes. "
                       "How long is the whole movie? Answer in minutes: ",
                       "A movie has been playing for {t} minutes. How long is the movie in total? "
+                      "Total minutes: "],
+            "prior": ["Think of a movie that was shown in theaters. How long is the whole movie? "
+                      "Answer in minutes: ",
+                      "A friend picks a movie to watch. How many minutes long is the movie in total? "
                       "Total minutes: "]}},
     "grosses": {
         "family": "power", "prior": {"gamma": 1.71},                                   # G&T (the 1.5x rule)
@@ -71,7 +80,10 @@ DOMAINS = {
             "total": ["A movie has made {t} million dollars at the box office so far. How many million "
                       "dollars will it make in total? Answer in millions of dollars: ",
                       "So far a film has grossed {t} million dollars. What will its total gross be when it "
-                      "leaves theaters? Total millions: "]}},
+                      "leaves theaters? Total millions: "],
+            "prior": ["Think of a movie that was released in theaters. How many million dollars did it make at "
+                      "the box office in total? Answer in millions of dollars: ",
+                      "A film has finished its run in theaters. What was its total gross? Total millions: "]}},
     "pharaohs": {
         "family": "erlang", "prior": {"beta": 9.34},                                   # G&T
         "t": range(1, 41), "R_max": 150,
@@ -83,7 +95,11 @@ DOMAINS = {
             "total": ["A history of ancient Egypt notes that at one point a pharaoh had already ruled for "
                       "{t} years. How long did his reign last in total? Answer in years: ",
                       "A pharaoh has been on the throne for {t} years. How many years will his reign last "
-                      "in total? Total years: "]}},
+                      "in total? Total years: "],
+            "prior": ["A history of ancient Egypt lists the pharaohs and their reigns. How many years did one "
+                      "pharaoh's reign last in total? Answer in years: ",
+                      "Think of a pharaoh of ancient Egypt. How many years did his reign last in total? "
+                      "Total years: "]}},
     "house": {
         "family": "erlang", "prior": {"beta": 5.46},                                   # refit, fit_everyday_priors.py
         "t": range(1, 36), "R_max": 100,
@@ -95,7 +111,11 @@ DOMAINS = {
             "total": ["A member of the House of Representatives has served for {t} years so far. How many "
                       "years will they serve in total? Answer in years: ",
                       "A congressman has been in the House for {t} years. How many years will he spend in "
-                      "the House in total? Total years: "]}},
+                      "the House in total? Total years: "],
+            "prior": ["Think of a member of the House of Representatives who has left office. How many years "
+                      "did they serve in the House in total? Answer in years: ",
+                      "A congressman has retired from the House. How many years did he spend in the House in "
+                      "total? Total years: "]}},
 }
 
 
@@ -122,6 +142,29 @@ def prompts(domain, question):
     """One list per template of ``(t, text)`` over the domain's t grid; ``question`` is 'remaining' or 'total'."""
     return [[(t, PREFIX[question] + tpl.format(t=t)) for t in DOMAINS[domain]["t"]]
             for tpl in DOMAINS[domain]["templates"][question]]
+
+
+def prior_prompts(domain):
+    """The t-free questions eliciting the model's prior over totals, after the total-question examples."""
+    return [PREFIX["total"] + tpl for tpl in DOMAINS[domain]["templates"]["prior"]]
+
+
+def fit_prior(q):
+    """Weighted maximum likelihood of each family on ``q``, a distribution over the totals 1..len(q).
+    Returns ``(best family, {family: {"family", "prior", "loglik"}})``; a fit swapped into a domain spec
+    gives that family's kernel."""
+    T = np.arange(1, len(q) + 1); q = q / q.sum()
+    m = (q * T).sum(); sd = np.sqrt((q * (T - m) ** 2).sum())
+    init = {"gaussian": {"mu": m, "sigma": sd}, "power": {"gamma": 1.5}, "erlang": {"beta": m / 2}}
+    fits = {}
+    for f, p0 in init.items():
+        def loglik(x):
+            lp = log_prior({"family": f, "prior": dict(zip(p0, np.exp(x)))}, T)
+            return (q * (lp - logsumexp(lp))).sum()
+        x = minimize(lambda x: -loglik(x), np.log(list(p0.values())), method="Nelder-Mead",
+                     options={"xatol": 1e-8, "fatol": 1e-12, "maxiter": 4000}).x
+        fits[f] = {"family": f, "prior": dict(zip(p0, np.exp(x))), "loglik": loglik(x)}
+    return max(fits, key=lambda f: fits[f]["loglik"]), fits
 
 
 def number_tokens(tok):

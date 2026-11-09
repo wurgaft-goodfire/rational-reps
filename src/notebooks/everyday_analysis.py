@@ -56,7 +56,8 @@ def _(mo):
 
     ROOT = mo.notebook_dir().parent.parent    # src/notebooks -> <repo>
     os.chdir(ROOT); sys.path.insert(0, str(ROOT))
-    from src.code.everyday import DOMAINS, PREFIX, encode, number_tokens, prompts, remaining_logcond
+    from src.code.everyday import (DOMAINS, PREFIX, encode, fit_prior, log_prior, number_tokens, prior_prompts,
+                                   prompts, remaining_logcond)
     from src.code.llm import read_prompts
     from src.code.geometry import predicted_geometry
     from src.code.analysis_utils import rsa
@@ -72,10 +73,13 @@ def _(mo):
         PREFIX,
         FIGURES,
         encode,
+        fit_prior,
+        log_prior,
         np,
         number_tokens,
         plt,
         predicted_geometry,
+        prior_prompts,
         prompts,
         read_prompts,
         remaining_logcond,
@@ -128,7 +132,7 @@ def _(
 
 
 @app.cell
-def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prompts, read_prompts, torch):
+def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prior_prompts, prompts, read_prompts, torch):
     LLM_PATH, LLM_NAME = "meta-llama/Llama-3.1-8B", "llama-3.1-8b"
     QUESTIONS = ("remaining", "total")
     NUMBER = PREFIX["remaining"] + "Here is a number: {t}. Write the number again: "   # control: the same numbers, no domain
@@ -136,14 +140,25 @@ def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prompts, read_prompts, 
 
 
     def jobs():
-        """{file stem: [(t, text)]} for every domain x question x paraphrase, plus the number control per domain."""
+        """{file stem: [(t, text)]} for every domain x question x paraphrase, the number control per domain, and
+        the t-free prior questions (t = -1)."""
         out = {}
         for d in DOMAINS:
             for q in QUESTIONS:
                 for k, rows in enumerate(prompts(d, q)):
                     out[f"{d}_{q}_{k}"] = rows
             out[f"{d}_number"] = [(t, NUMBER.format(t=t)) for t in DOMAINS[d]["t"]]
+            for k, text in enumerate(prior_prompts(d)):
+                out[f"{d}_prior_{k}"] = [(-1, text)]
         return out
+
+
+    def row(tok, t, text):
+        """``(ids, at)``; a t-free prompt is read at its last token."""
+        if t >= 0:
+            return encode(tok, text)
+        ids = [tok.bos_token_id] + tok.encode(text, add_special_tokens=False)
+        return ids, len(ids) - 1
 
 
     _jobs = jobs()
@@ -154,7 +169,7 @@ def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prompts, read_prompts, 
         _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, dtype=torch.bfloat16, device_map="cuda").eval()
         _nums = number_tokens(_tok)
         for _s in _missing:
-            _out = read_prompts(_model, [encode(_tok, text) for _, text in _jobs[_s]], _nums, pad_id=_tok.eos_token_id)
+            _out = read_prompts(_model, [row(_tok, t, text) for t, text in _jobs[_s]], _nums, pad_id=_tok.eos_token_id)
             np.savez(READ_DIR / f"{_s}.npz", t=np.array([t for t, _ in _jobs[_s]]), **_out)
         del _model; torch.cuda.empty_cache()
 
@@ -169,8 +184,47 @@ def _(CACHE, DOMAINS, PREFIX, encode, np, number_tokens, prompts, read_prompts, 
 
 
     READS = {d: {q: load(d, q) for q in (*QUESTIONS, "number")} for d in DOMAINS}
+    PRIOR_Q = {d: np.mean([np.exp(np.load(f)["logq"][0]) for f in sorted(READ_DIR.glob(f"{d}_prior_*.npz"))], 0)
+               for d in DOMAINS}                                                       # (1000,) over totals 0..999
     print({d: READS[d]["remaining"]["last"].shape for d in DOMAINS})
-    return (READS,)
+    return PRIOR_Q, READS
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Llama's own prior
+
+    The t-free questions ("Think of a pharaoh of ancient Egypt. How many years did his reign last in total?")
+    give Llama's distribution over totals, averaged over two paraphrases. Its raw answers heap on round numbers,
+    which a log prior would carry straight into the kernel, so each family is fit to it by weighted maximum
+    likelihood (as G&T did with people's subjective priors) and the best fit is the second prediction: Bayes with
+    Llama's prior. Gray: the elicited distribution; color: the best fit; black: the world prior.
+    """)
+    return
+
+
+@app.cell
+def _(DOMAINS, FAMILY_COLOR, FIGURES, PRIOR_Q, fit_prior, log_prior, np, plt, predicted_geometry,
+      remaining_logcond, save_figure):
+    LLAMA_SPEC = {}
+    _fig, _axes = plt.subplots(1, len(DOMAINS), figsize=(3 * len(DOMAINS), 2.6))
+    _T = np.arange(1, 1000)
+    for _ax, _d in zip(_axes, DOMAINS):
+        _best, _fits = fit_prior(PRIOR_Q[_d][1:])
+        LLAMA_SPEC[_d] = {**DOMAINS[_d], "family": _best, "prior": _fits[_best]["prior"]}
+        print(f"{_d:9s} best {_best:8s} {_fits[_best]['prior']}  "
+              + "  ".join(f"loglik {f} {v['loglik']:.3f}" for f, v in _fits.items()))
+        _hi = int(np.searchsorted(np.cumsum(PRIOR_Q[_d][1:]) / PRIOR_Q[_d][1:].sum(), 0.99)) + 10
+        _ax.bar(_T[:_hi], PRIOR_Q[_d][1:_hi + 1] / PRIOR_Q[_d][1:].sum(), color="0.8", width=1)
+        for _spec, _style in ((LLAMA_SPEC[_d], dict(color=FAMILY_COLOR[_best])), (DOMAINS[_d], dict(color="k", lw=1))):
+            _lp = log_prior(_spec, _T); _p = np.exp(_lp - _lp.max()); _ax.plot(_T[:_hi], (_p / _p.sum())[:_hi], **_style)
+        _ax.set_title(f"{_d}: Llama {_best}", fontsize=10); _ax.set_xlabel("total T")
+    _fig.tight_layout()
+    KERNELS_LLAMA = {d: remaining_logcond(s) for d, s in LLAMA_SPEC.items()}
+    PRED_LLAMA = {d: predicted_geometry(L) for d, (t, R, L) in KERNELS_LLAMA.items()}
+    save_figure(_fig, FIGURES / "everyday_llama_prior.png")
+    return KERNELS_LLAMA, LLAMA_SPEC, PRED_LLAMA
 
 
 @app.cell(hide_code=True)
@@ -186,7 +240,7 @@ def _(mo):
 
 
 @app.cell
-def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, READS, np, plt, save_figure):
+def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, KERNELS_LLAMA, READS, np, plt, save_figure):
     def median(P, grid):
         P = P / P.sum(1, keepdims=True)
         return grid[(np.cumsum(P, 1) < 0.5).sum(1)]
@@ -198,6 +252,7 @@ def _(DOMAINS, FAMILY_COLOR, FIGURES, KERNELS, READS, np, plt, save_figure):
         _t, _R, _L = KERNELS[_d]
         _c = FAMILY_COLOR[DOMAINS[_d]["family"]]
         _ax.plot(_t, median(np.exp(_L), _R), color="k", lw=1, label="Bayes, world prior")
+        _ax.plot(_t, median(np.exp(KERNELS_LLAMA[_d][2]), _R), color="0.5", lw=1.5, ls="-.", label="Bayes, Llama's prior")
         _ax.plot(_t, median(READS[_d]["remaining"]["q"], _grid), color=_c, label="Llama: remaining")
         _ax.plot(_t, median(READS[_d]["total"]["q"], _grid) - _t, "--", color=_c, label="Llama: total − t")
         _ax.set_title(_d, fontsize=10); _ax.set_xlabel("t")
@@ -221,7 +276,7 @@ def _(mo):
 
 
 @app.cell
-def _(DOMAINS, FIGURES, PRED, READS, np, plt, rsa, save_figure):
+def _(DOMAINS, FIGURES, LLAMA_SPEC, PRED, PRED_LLAMA, READS, np, plt, rsa, save_figure):
     def layer_rsa(X, Y):
         """RSA of each layer of ``X`` (layers, n, d) with ``Y`` (n, k) or a matching (layers, n, d)."""
         return np.array([rsa(Xl, Y if Y.ndim == 2 else Y[l]) for l, Xl in enumerate(X)])
@@ -231,12 +286,14 @@ def _(DOMAINS, FIGURES, PRED, READS, np, plt, rsa, save_figure):
     for _d in DOMAINS:
         _r = READS[_d]; _t = _r["remaining"]["t"].astype(float)[:, None]
         SCORES[_d] = {"predicted": layer_rsa(_r["remaining"]["last"], PRED[_d]) if DOMAINS[_d]["family"] != "erlang" else None,
+                      "predicted, Llama's prior": (layer_rsa(_r["remaining"]["last"], PRED_LLAMA[_d])
+                                                   if LLAMA_SPEC[_d]["family"] != "erlang" else None),
                       "t": layer_rsa(_r["remaining"]["last"], _t), "log t": layer_rsa(_r["remaining"]["last"], np.log(_t)),
                       "number control": layer_rsa(_r["remaining"]["last"], _r["number"]["last"]),
                       "log t (t's token)": layer_rsa(_r["remaining"]["at_t"], np.log(_t))}
 
     _fig, _axes = plt.subplots(1, len(DOMAINS), figsize=(3 * len(DOMAINS), 2.8), sharey=True)
-    _style = {"predicted": ("k", "-"), "t": ("tab:blue", "-"), "log t": ("tab:orange", "-"),
+    _style = {"predicted": ("k", "-"), "predicted, Llama's prior": ("0.5", "-."), "t": ("tab:blue", "-"), "log t": ("tab:orange", "-"),
               "number control": ("0.6", "-"), "log t (t's token)": ("tab:orange", ":")}
     for _ax, _d in zip(_axes, DOMAINS):
         for _k, _s in SCORES[_d].items():

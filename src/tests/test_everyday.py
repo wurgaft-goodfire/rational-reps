@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 import torch
 
-from src.code.everyday import DOMAINS, encode, number_tokens, prompts, remaining_logcond
+from src.code.everyday import (DOMAINS, PREFIX, encode, fit_prior, log_prior, number_tokens, prior_prompts, prompts,
+                               remaining_logcond)
 from src.code.llm import read_prompts
 from src.code.geometry import predicted_geometry
 
@@ -98,3 +99,26 @@ def test_llama_expects_fewer_remaining_years_for_an_older_man():
     assert out["last"].shape == (33, 2, 4096) and out["at_t"].shape == (33, 2, 4096)
     med = _median(out["logq"], np.arange(1000))
     assert med[0] > med[1] + 20
+
+
+def test_fit_prior_recovers_the_family_and_parameters_of_a_distribution_over_totals():
+    """Weighted maximum likelihood of each family on a distribution over the totals 1..999; the best
+    family and its parameters come back from a world prior's own distribution."""
+    T = np.arange(1, 1000)
+    for d, family, params in (("pharaohs", "erlang", {"beta": 9.34}), ("lifespan", "gaussian", {"mu": 75, "sigma": 16}),
+                              ("grosses", "power", {"gamma": 1.71})):
+        lp = log_prior(DOMAINS[d], T); q = np.exp(lp - lp.max()); q /= q.sum()
+        best, fits = fit_prior(q)
+        assert best == family and set(fits) == {"gaussian", "power", "erlang"}
+        for k, v in params.items():
+            assert fits[family]["prior"][k] == pytest.approx(v, rel=0.02)
+
+
+def test_prior_prompts_ask_for_a_total_with_no_t():
+    """The t-free question is the last line, after the total-question worked examples, with no digits, and
+    ends on the space before the answer."""
+    for d in DOMAINS:
+        texts = prior_prompts(d)
+        assert len(texts) == len(DOMAINS[d]["templates"]["prior"]) >= 2
+        for text, tpl in zip(texts, DOMAINS[d]["templates"]["prior"]):
+            assert text == PREFIX["total"] + tpl and not re.search(r"\d", tpl) and text.endswith(": ")
