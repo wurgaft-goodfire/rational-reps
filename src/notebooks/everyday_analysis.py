@@ -135,9 +135,12 @@ def _(
 
 @app.cell
 def _(CACHE, DOMAINS, LLM_NAME, PREFIX, encode, np, number_tokens, prior_prompts, prompts, read_prompts, torch):
-    # (path, load kwargs, batch size). 70B in bf16 (141 GB) does not fit on two A40s (92 GB); 8-bit does.
+    # (path, load kwargs, batch size). 70B in bf16 (141 GB) does not fit on two A40s (92 GB); 8-bit (~72 GB) only
+    # with both GPUs free. NF4 4-bit (~37 GiB, bf16 compute) fits on one A40: "freest" puts it on the GPU with the
+    # most free memory when it loads (other jobs share these GPUs).
     LLMS = {"llama-3.1-8b": ("meta-llama/Llama-3.1-8B", {"dtype": torch.bfloat16, "device_map": "cuda"}, 32),
-            "llama-3.1-70b": ("meta-llama/Llama-3.1-70B", {"device_map": "auto", "quantization_config": "8bit"}, 8)}
+            "llama-3.1-70b": ("meta-llama/Llama-3.1-70B", {"device_map": "auto", "quantization_config": "8bit"}, 8),
+            "llama-3.1-70b-nf4": ("meta-llama/Llama-3.1-70B", {"device_map": "freest", "quantization_config": "nf4"}, 2)}
     LLM_PATH, _load, _batch = LLMS[LLM_NAME]
     QUESTIONS = ("remaining", "total")
     NUMBER = PREFIX["remaining"] + "Here is a number: {t}. Write the number again: "   # control: the same numbers, no domain
@@ -171,8 +174,12 @@ def _(CACHE, DOMAINS, LLM_NAME, PREFIX, encode, np, number_tokens, prior_prompts
     if _missing:                                                     # the expensive step, cached per prompt set
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         _tok = AutoTokenizer.from_pretrained(LLM_PATH)
-        if _load.get("quantization_config") == "8bit":
-            _load = {**_load, "quantization_config": BitsAndBytesConfig(load_in_8bit=True)}
+        _quant = {"8bit": BitsAndBytesConfig(load_in_8bit=True),
+                  "nf4": BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)}
+        if _load["device_map"] == "freest":
+            _load = {**_load, "device_map": {"": max(range(torch.cuda.device_count()), key=lambda i: torch.cuda.mem_get_info(i)[0])}}
+        if "quantization_config" in _load:
+            _load = {**_load, "quantization_config": _quant[_load["quantization_config"]]}
         _model = AutoModelForCausalLM.from_pretrained(LLM_PATH, **_load).eval()
         _nums = number_tokens(_tok)
         for _s in _missing:
