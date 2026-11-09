@@ -278,6 +278,145 @@ def _(T, data, factor_logcond, heldout_decode_r2, np, readout_basis, runs):
     for _row in _rows:
         print(f"{_row:50s}" + "".join(f"{_s[_row]:>11.4f}" if isinstance(_s[_row], float) else f"{_s[_row]:>11d}"
                                       for _s in stages.values()))
+    return affine_r2, evidence, predicted_after_attention, stages
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 4. Log or probability coordinates, and what attention keeps
+
+    **Which per-token vector.** Here Bayes is a sum of log-likelihoods, so each token should write $D(x)$. The
+    constrained-belief account (Piotrowski et al. 2025, for HMMs) has each token write a probability displacement,
+    $p(z \mid x) - \pi$; with no transitions, its Eq. 5 becomes exactly that. Both are vectors over $z$, both centred
+    over tokens and cut to their top $k$ modes, then fitted affinely to the value vectors. An affine map fits any
+    $k + 1$ points, so the contest is decided only by tokens beyond that: line and week have them, Mess3 (3 tokens, 2
+    modes) does not. The same contest is repeated on the post-attention state, with the probability displacement in
+    place of $D$ inside the mean. It turns out undecidable here too: the two accounts' top-$r$ token subspaces
+    coincide (cosines printed below). The week's is forced: a map commuting with the ring's rotations keeps its
+    Fourier modes, so both lead with the first harmonic at any sharpness. The line's differs only at sharp
+    likelihoods (a scratch sweep over $\gamma$: the probability modes from the log modes $R^2$ 0.9999 at
+    $\gamma = 0.02$, 0.97 at $\gamma = 1$, the sharpest float32 holds). Deciding it needs a world without the symmetry.
+
+    **What attention keeps.** The frequency vector splits into its part in $\mathrm{span}(1, D)$ (the evidence) and the
+    rest, $n\,Q$, which says which tokens were seen without bearing on $z$. If attention compresses to the belief, the
+    state after it holds no more of $n\,Q$ than the predicted state does. The predicted state is not zero on it:
+    tokens covary through $z$. Per position, held-out $R^2$ of $n\,Q$ from the predicted state, from the trained
+    state, and from both; trained adding nothing over predicted means the rest is discarded.
+    """)
+    return
+
+
+@app.cell
+def _(T, affine_r2, data, evidence, heldout_decode_r2, np, predicted_after_attention, runs):
+    from itertools import permutations
+
+    def top_modes(M, k):
+        """Rows of M (tokens) centred over tokens, cut to their top k modes: (K, k)."""
+        U, S, _ = np.linalg.svd(M - M.mean(0), full_matrices=False)
+        return U[:, :k] * np.sqrt(S[:k])
+
+    def token_vectors(ds):
+        """Per token, over z: the log-likelihood (z-centred) and the probability displacement p(z | x) - pi."""
+        P, prior = ds.P.double().cpu().numpy(), ds.prior.double().cpu().numpy()   # (n_z, K), (n_z,)
+        ll = np.log(P).T
+        post = P.T * prior
+        return {"log-likelihood D(x)": ll - ll.mean(1, keepdims=True),
+                "probability p(z|x) - pi": post / post.sum(1, keepdims=True) - prior}
+
+    def contest(run, k):
+        """Per account: value-vector R^2 at k modes and its permutation p."""
+        V = run["value_vectors"][:run["dataset"].n_outcomes]
+        out = {}
+        for _name, M in token_vectors(run["dataset"]).items():
+            X = top_modes(M, k)
+            r2 = affine_r2(X, V)
+            null = np.array([affine_r2(X[list(_p)], V) for _p in permutations(range(len(X)))])
+            out[_name] = (r2, float((null >= r2 - 1e-9).mean()))
+        return out
+
+    def kept(run, targets, sites):
+        """Per position t >= 1: held-out R^2 of n Q from the predicted state, the trained state, and both."""
+        n, Ha = targets["counts"], sites["after attention"]
+        D = evidence(run["dataset"])
+        K, r = n.shape[-1], D.shape[1]
+        Q = np.linalg.svd(np.c_[np.ones(K), D])[0][:, r + 1:]          # token directions outside span(1, D)
+        Y, X0 = n @ Q, predicted_after_attention(run, n, D)
+        g = np.arange(len(n))
+        dec = lambda X, t: heldout_decode_r2(X[:, t], Y[:, t], g)
+        out = {_k: np.array([dec(_X, t) for t in range(1, T)])
+               for _k, _X in {"predicted": X0, "trained": Ha, "both": np.concatenate([X0, Ha], -1)}.items()}
+        # how much of the state it is: the share of the state's variance n Q adds over the predicted state
+        var = lambda X, t: heldout_decode_r2(X[:, t], Ha[:, t], g)
+        out["state variance added"] = np.array([var(np.concatenate([X0, Y], -1), t) - var(X0, t) for t in range(1, T)])
+        return out
+
+    def overlap(ds, k):
+        """Cosines of the principal angles between the two accounts' top-k token subspaces."""
+        A, B = (np.linalg.qr(top_modes(_M, k))[0] for _M in token_vectors(ds).values())
+        return np.linalg.svd(A.T @ B, compute_uv=False)
+
+    coords, keeps = {}, {}
+    for _name, _run in runs.items():
+        _targets, _sites = data[_name]
+        K, r = _run["dataset"].n_outcomes, evidence(_run["dataset"]).shape[1]
+        coords[_name] = {k: contest(_run, k) for k in range(1, K - 1)}
+        _n = _targets["counts"]
+        _B = len(_n)
+        _g = np.repeat(np.arange(_B), T)
+        _fit = lambda X: heldout_decode_r2(X.reshape(_B * T, -1), _sites["after attention"].reshape(_B * T, -1), _g)
+        coords[_name]["state"] = {_acc: _fit(predicted_after_attention(_run, _n, top_modes(_M, r)))
+                                  for _acc, _M in token_vectors(_run["dataset"]).items()}
+        keeps[_name] = kept(_run, _targets, _sites)
+        print(f"{_name} (evidence rank r = {r})")
+        for k in range(1, K - 1):
+            print(f"   value vectors, k = {k}" + "".join(f"   {_acc}: {_v[0]:.4f} (p {_v[1]:.3f})"
+                                                      for _acc, _v in coords[_name][k].items()))
+        print("   after attention, k = r" + "".join(f"   {_acc}: {_v:.4f}" for _acc, _v in coords[_name]["state"].items()))
+        print("   subspace cosines, k = 1..K-2: " + "  ".join(str(np.round(overlap(_run["dataset"], k), 4))
+                                                       for k in range(1, K - 1)))
+        for _k, _v in keeps[_name].items():
+            print(f"   n Q {_k:22s} {np.round(_v, 4)}  mean {_v.mean():.4f}")
+    return coords, keeps, overlap
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 5. Line and week together
+
+    Every test above, one row each. $n\,Q$ rows are means over positions $t \geq 1$.
+    """)
+    return
+
+
+@app.cell
+def _(coords, keeps, overlap, runs, stages):
+    def summary(name):
+        run, s, c, kp = runs[name], stages[name], coords[name], keeps[name]
+        r = s["evidence rank r"]
+        ll, pr = "log-likelihood D(x)", "probability p(z|x) - pi"
+        return {"KL(Bayes || model)": run["loss"],
+                "evidence rank r / predictive rank": f"{r} / {s['predictive rank']}",
+                "value vectors <- D(x)  [perm p]": f"{c[r][ll][0]:.4f} [{c[r][ll][1]:.3f}]",
+                "value vectors <- p(z|x) - pi  [perm p]": f"{c[r][pr][0]:.4f} [{c[r][pr][1]:.3f}]",
+                "  the two accounts' top-r subspaces, min cosine": overlap(run["dataset"], r).min(),
+                "after attention <- mean of D": s["after attention: mean of D (rank r)"],
+                "after attention <- mean of p(z|x) - pi": c["state"][pr],
+                "  control: rank r - 1": s["  control: rank r - 1"],
+                "  control: sum of D and t": s["  control: sum of D and t (log-posterior coords)"],
+                "  control: every token's frequency": s["  control: every token's frequency"],
+                "n Q decoded from predicted state": kp["predicted"].mean(),
+                "n Q decoded from trained state": kp["trained"].mean(),
+                "n Q share of trained-state variance": kp["state variance added"].mean(),
+                "before readout <- Phi": s["before readout: Phi"],
+                "readout (state metric)": s["readout (state metric)"]}
+
+    table = {_name: summary(_name) for _name in runs}
+    print(f"{'':50s}" + "".join(f"{_name:>18s}" for _name in table))
+    for _row in next(iter(table.values())):
+        print(f"{_row:50s}" + "".join(f"{_v:>18.4f}" if isinstance(_v, float) else f"{_v:>18s}"
+                                      for _v in (table[_n][_row] for _n in table)))
     return
 
 
