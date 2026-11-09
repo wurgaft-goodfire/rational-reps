@@ -4,7 +4,7 @@ import pytest
 import torch
 from transformers import GPTNeoXConfig
 
-from src.code.llm import node_means, node_tokens, pair_means, row_entropy, triple_stream, word_means
+from src.code.llm import node_means, node_tokens, pair_means, read_prompts, row_entropy, triple_stream, word_means
 from src.code.models import TransformerModel
 
 
@@ -144,3 +144,19 @@ def test_node_tokens_are_distinct_single_tokens():
     assert len(set(ids)) == 25 and len(words) == 25
     assert all(tok.encode(" " + w, add_special_tokens=False) == [i] for i, w in zip(ids, words))
     assert len(tok.encode(",", add_special_tokens=False)) == 1
+
+
+def test_read_prompts_matches_a_brute_force_pass():
+    """Per prompt and layer: the residual at the last token and at t's token, and the log-softmax of
+    the last token's logits over the number tokens."""
+    model = _tiny()
+    rows = [([0, 3, 5, 7, 2], 2), ([0, 4, 9, 1], 1), ([0, 6, 6, 8, 11, 2, 3], 4)]
+    nums = [2, 5, 7, 10]
+    out = read_prompts(model, rows, nums, pad_id=12, batch_size=2)
+    for r, (ids, at) in enumerate(rows):
+        with torch.no_grad():
+            res = model(torch.tensor([ids]), output_hidden_states=True)
+        H = torch.stack(res["hidden_states"])[:, 0]
+        assert np.allclose(out["last"][:, r], H[:, -1].numpy(), atol=1e-5)
+        assert np.allclose(out["at_t"][:, r], H[:, at].numpy(), atol=1e-5)
+        assert np.allclose(out["logq"][r], torch.log_softmax(res["logits"][0, -1, nums], -1).numpy(), atol=1e-5)

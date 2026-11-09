@@ -1,0 +1,152 @@
+"""Everyday predictions (Griffiths & Tenenbaum 2006) asked as remaining time: the world-prior kernel
+log p(R | t), the prompts, and the reader that pulls Llama's states and answer distribution."""
+import re
+
+import numpy as np
+import pytest
+import torch
+
+from src.code.everyday import (DOMAINS, PREFIX, SHOTS, encode, fit_prior, log_prior, number_tokens, prior_prompts, prompts,
+                               remaining_logcond)
+from src.code.llm import read_prompts
+from src.code.geometry import predicted_geometry
+
+LLAMA = "meta-llama/Llama-3.1-8B"
+
+
+def _median(L, R):
+    """Median of each row's distribution ``exp(L)`` over the grid ``R``."""
+    cdf = np.cumsum(np.exp(L), 1)
+    return R[(cdf < 0.5).sum(1)]
+
+
+def test_erlang_kernel_is_the_same_for_every_t_so_the_code_collapses():
+    """The Erlang prior's factor T cancels the 1/T likelihood: p(R | t) is one exponential for every t. Dice
+    (rolls until a six, after t rolls without one) and company lifetimes (a constant yearly hazard) are memoryless
+    too, and written the same way."""
+    assert {d for d in DOMAINS if DOMAINS[d]["family"] == "erlang"} == {"pharaohs", "house", "dice", "company"}
+    for d in ("pharaohs", "house", "dice", "company"):
+        t, R, L = remaining_logcond(DOMAINS[d])
+        assert np.allclose(L, L[0], atol=1e-9)
+        E = predicted_geometry(L)
+        assert np.allclose(E, E[0], atol=1e-6)                             # every t at one point
+
+
+def test_gaussian_and_power_law_codes_are_one_dimensional_in_t_and_log_t():
+    """Gaussian: the t*R term of the log prior is bilinear, so the code is a line uniform in t.
+    Power law: the posterior depends on R / t, so equal ratios of t sit equal distances apart."""
+    t, R, L = remaining_logcond(DOMAINS["lifespan"])
+    E = predicted_geometry(L)
+    S = np.linalg.svd(E - E.mean(0), compute_uv=False)
+    assert S[0] ** 2 / (S ** 2).sum() > 0.95
+    step = np.linalg.norm(np.diff(E, axis=0), axis=1)
+    assert step.max() / step.min() < 2.0
+
+    t, R, L = remaining_logcond(DOMAINS["pregnancy"])
+    E = predicted_geometry(L)
+    S = np.linalg.svd(E - E.mean(0), compute_uv=False)
+    assert S[0] ** 2 / (S ** 2).sum() > 0.95
+
+    t, R, L = remaining_logcond(DOMAINS["grosses"])
+    E = predicted_geometry(L); at = {v: E[i] for i, v in enumerate(t)}
+    assert np.linalg.norm(at[10] - at[20]) == pytest.approx(np.linalg.norm(at[20] - at[40]), rel=0.25)
+
+
+def test_medians_follow_the_three_prediction_rules():
+    """Erlang: R = beta ln 2 for every t. Power law: T = 2^(1/gamma) t. Gaussian: T about the same for a man
+    of 18, 39 or 51, a little under the mean (the 1/T likelihood pulls it down by about sigma^2 / mu)."""
+    t, R, L = remaining_logcond(DOMAINS["pharaohs"])
+    assert np.all(np.abs(_median(L, R) - DOMAINS["pharaohs"]["prior"]["beta"] * np.log(2)) <= 1)
+    t, R, L = remaining_logcond(DOMAINS["grosses"])
+    big = t >= 20
+    assert np.allclose((t + _median(L, R))[big] / t[big], 2 ** (1 / 1.71), rtol=0.05)
+    t, R, L = remaining_logcond(DOMAINS["lifespan"])
+    T = t + _median(L, R)
+    young = T[np.isin(t, [18, 39, 51])]
+    assert young.max() - young.min() <= 3 and np.all((70 <= young) & (young <= 75))
+
+
+def test_prompts_end_before_the_answer_and_point_at_t():
+    """Worked examples come first, one per line ('... Answer: 60'): everyday predictions from held-out domains,
+    asked the same way as the question (how much more, or how much in total) and answered accordingly, so the
+    remaining-time and total prompts share the examples' situations but not their answers. The question is the
+    last line. With Llama's tokenizer: ``at`` is the token of t's digits (not a digit in the examples), the
+    prompt ends on the space token that precedes a number, and 0..999 are single tokens."""
+    shots = {q: [l for l in prompts("lifespan", q)[0][0][1].split("\n") if re.fullmatch(r".+\? Answer: \d+", l)]
+             for q in ("remaining", "total")}
+    assert len(shots["remaining"]) == len(shots["total"]) >= 3
+    for r, t in zip(shots["remaining"], shots["total"]):
+        assert "more" in r and "total" in t and r.split(" Answer: ")[1] != t.split(" Answer: ")[1]
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(LLAMA)
+    nums = number_tokens(tok)
+    assert len(nums) == 1000 and len(set(nums)) == 1000
+    for d in DOMAINS:
+        for q in ("remaining", "total"):
+            assert len(DOMAINS[d]["templates"][q]) >= 5                    # answers averaged over paraphrases
+            for tpl, template in zip(DOMAINS[d]["templates"][q], prompts(d, q)):
+                for t, text in list(template)[:: 10]:
+                    lines = text.split("\n")
+                    assert lines[-1] == tpl.format(t=t)
+                    assert sum(re.fullmatch(r".+\? Answer: \d+", l) is not None for l in lines[:-1]) >= 3
+                    ids, at = encode(tok, text)
+                    assert ids[0] == tok.bos_token_id
+                    assert tok.decode([ids[at]]) == str(t)
+                    assert tok.decode([ids[-1]]) == " "
+
+
+@pytest.mark.slow
+def test_llama_expects_fewer_remaining_years_for_an_older_man():
+    """Outer loop: real prompts through Llama-3.1-8B. Read shapes are (layers, prompts, d), and the
+    median remaining years drops from age 20 to age 80."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(LLAMA)
+    model = AutoModelForCausalLM.from_pretrained(LLAMA, dtype=torch.bfloat16, device_map="cuda").eval()
+    texts = dict(prompts("lifespan", "remaining")[0])
+    rows = [encode(tok, texts[a]) for a in (20, 80)]
+    out = read_prompts(model, rows, number_tokens(tok), pad_id=tok.eos_token_id)
+    assert out["last"].shape == (33, 2, 4096) and out["at_t"].shape == (33, 2, 4096)
+    med = _median(out["logq"], np.arange(1000))
+    assert med[0] > med[1] + 20
+
+
+def test_fit_prior_recovers_the_family_and_parameters_of_a_distribution_over_totals():
+    """Weighted maximum likelihood of each family on a distribution over the totals 1..999; the best
+    family and its parameters come back from a world prior's own distribution."""
+    T = np.arange(1, 1000)
+    for d, family, params in (("pharaohs", "erlang", {"beta": 9.34}), ("lifespan", "gaussian", {"mu": 75, "sigma": 16}),
+                              ("grosses", "power", {"gamma": 1.71})):
+        lp = log_prior(DOMAINS[d], T); q = np.exp(lp - lp.max()); q /= q.sum()
+        best, fits = fit_prior(q)
+        assert best == family and set(fits) == {"gaussian", "power", "erlang"}
+        for k, v in params.items():
+            assert fits[family]["prior"][k] == pytest.approx(v, rel=0.02)
+
+
+def test_prior_prompts_ask_for_a_total_with_no_t():
+    """The t-free question is the last line, after the total-question worked examples, with no digits, and
+    ends on the space before the answer."""
+    for d in DOMAINS:
+        texts = prior_prompts(d)
+        assert len(texts) == len(DOMAINS[d]["templates"]["prior"]) >= 5
+        for text, tpl in zip(texts, DOMAINS[d]["templates"]["prior"]):
+            assert text == PREFIX["total"] + tpl and not re.search(r"\d", tpl) and text.endswith(": ")
+
+
+def test_dice_counts_the_rolls_left_including_the_six():
+    """After t rolls with no six, the rolls left (counting the six) are geometric with p = 1/6: none is zero and the
+    mean is 6, whatever t is."""
+    t, R, L = remaining_logcond(DOMAINS["dice"])
+    assert R[0] == 1
+    assert np.allclose(np.exp(L) @ R, 6, atol=0.01)
+
+
+def test_no_worked_example_comes_from_a_question_domain():
+    """The examples teach the format; one from a question's own domain would hand Llama that domain's answer."""
+    assert not any(w in s.lower() for s, *_ in SHOTS for w in ("pregnan", "die ", "book", "company"))
+
+
+def test_a_domain_without_a_world_prior_has_no_world_kernel():
+    """Books in print have no public source for the distribution of print runs: only Llama's own conditional
+    predicts their code."""
+    assert DOMAINS["books"]["family"] is None
