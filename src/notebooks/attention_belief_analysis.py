@@ -494,5 +494,147 @@ def _(COMMON, T, data, graph_overrides, heldout_decode_r2, load_run, np, runs, s
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 7. Figure: the decomposition, stage by stage (week)
+
+    In the inference notebook's style: per stage, the Bayes prediction beside the transformer's states, rotated (no
+    stretch) onto it, with the Grams of the mean path per true latent and the CKA over every state. A strip on top
+    marks the stage. (a) what each token writes: $D(x)$ against the value vectors; (b) after attention: the mean of
+    $D$ over the start and $x_{1:t}$ — the log-posterior, up to the count — each state coloured by the Bayes posterior
+    over $z$ (on the trained side, the same: colour is the target, position the test); (c) after the MLP: the
+    log-predictive's top modes, coloured by the predictive over tokens.
+    """)
+    return
+
+
+@app.cell
+def _(FIG, FIGURES, T, data, evidence, factor_logcond, np, plt, runs, save_figure):
+    import io
+    import matplotlib.patheffects as pe
+    from matplotlib.patches import FancyBboxPatch
+    from src.code.analysis_utils import cka, rigid_map
+    from src.code.plot_utils import gram_heatmap, merge_panels
+
+    FONT = 18
+    NODES = [r"$x_{1:t}$", "attention", "MLP", "readout"]
+
+    def stage_strip(ax, active, equation):
+        """The computation graph, the active stage filled: a node index, or (i, i + 1) for the edge between."""
+        xs = np.linspace(0.11, 0.89, len(NODES))
+        for _i, (_x, _label) in enumerate(zip(xs, NODES)):
+            on = active == _i
+            ax.add_patch(FancyBboxPatch((_x - 0.085, 0.52), 0.17, 0.3, boxstyle="round,pad=0.01,rounding_size=0.04",
+                                        fc=FIG.colors["blue"] if on else "white", ec="0.25", lw=1.2, clip_on=False))
+            ax.text(_x, 0.67, _label, ha="center", va="center", fontsize=FONT - 4, color="white" if on else "0.15")
+            if _i:
+                edge = active == (_i - 1, _i)
+                ax.annotate("", (_x - 0.09, 0.67), (xs[_i - 1] + 0.09, 0.67),
+                            arrowprops=dict(arrowstyle="-|>", lw=3.2 if edge else 1.2,
+                                            color=FIG.colors["blue"] if edge else "0.35"))
+        ax.text(0.5, 0.2, equation, ha="center", va="center", fontsize=FONT - 3)
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
+
+    def gauge(dirs):
+        """Rotation/reflection putting the first token's direction up and the rest clockwise. dirs (K, 2)."""
+        a = np.pi / 2 - np.arctan2(dirs[0, 1], dirs[0, 0])
+        R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+        d = dirs @ R.T
+        return (np.diag([-1.0, 1.0]) @ R) if d[0, 0] * d[1, 1] - d[0, 1] * d[1, 0] > 0 else R
+
+    def sides(pred, trained, dirs):
+        """Both codes (N, r) and (N, k): the trained one rotated onto the prediction in the full space, then
+        both shown in the prediction's top-2 modes, in the gauge of ``dirs`` (K, 2) (token directions there)."""
+        X = trained @ rigid_map(trained, pred)
+        G = gauge(dirs)
+        return pred[:, :2] @ G.T, X[:, :2] @ G.T
+
+    def panel(ax, title, pts, rgb, path=None, dot=34):
+        ax.scatter(*pts.T, s=dot, color=rgb, alpha=0.6, lw=0, zorder=2)
+        if path is not None:
+            ax.plot(*path.T, color="0.1", lw=1.8, zorder=4,
+                    path_effects=[pe.Stroke(linewidth=4.0, foreground="white"), pe.Normal()])
+            ax.scatter(*path.T, c=np.linspace(0.25, 1.0, len(path)), cmap="Greys", vmin=0, vmax=1,
+                       s=70, zorder=5, edgecolor="0.1", lw=0.9)
+        lo, hi = pts.min(0), pts.max(0); pad = 0.08 * (hi - lo).max()
+        ax.set_xlim(lo[0] - pad, hi[0] + pad); ax.set_ylim(lo[1] - pad, hi[1] + pad)
+        ax.set_aspect("equal"); FIG.clean(ax); ax.set_title(title, fontsize=FONT, pad=8)
+
+    def block(active, equation, pred, trained, rgb, reps, score, path=None, dot=34):
+        """One stage: strip, the two planes, the two Grams. ``pred``/``trained`` (N, 2) shown; ``reps``
+        (pred, trained) the Gram rows; ``path`` (index array into the rows) the highlighted stream."""
+        fig = plt.figure(figsize=(7.6, 10.4))
+        gs = fig.add_gridspec(3, 2, height_ratios=[0.32, 1.15, 1], hspace=0.22, wspace=0.25)
+        stage_strip(fig.add_subplot(gs[0, :]), active, equation)
+        for _j, (_label, _pts) in enumerate([("predicted", pred), ("transformer", trained)]):
+            panel(fig.add_subplot(gs[1, _j]), _label, _pts, rgb, None if path is None else _pts[path], dot)
+            _ax = fig.add_subplot(gs[2, _j])
+            gram_heatmap(_ax, reps[_j], title=r"$E^{*}E^{*\top}$" if _j == 0 else r"$EE^{\top}$" + f"   CKA {score:.3f}")
+            _ax.title.set_fontsize(FONT)
+        buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=300, bbox_inches="tight"); plt.close(fig)
+        buf.seek(0); return buf
+
+    def ring_rgb(p):
+        """Colour of a belief over points evenly spaced on a ring (N, K): hue its circular mean on the cyclic
+        map, saturation its concentration (resultant length over its 99th percentile), white when flat."""
+        c = p @ np.exp(2j * np.pi * np.arange(p.shape[1]) / p.shape[1])
+        hue = plt.cm.twilight((np.angle(c) / (2 * np.pi)) % 1)[:, :3]
+        sat = np.clip(np.abs(c) / np.quantile(np.abs(c), 0.99), 0, 1)[:, None]
+        return 1 - sat * (1 - hue)
+
+    def latent_means(code, z):
+        """Mean code per true latent at every position, (n_z T, d): the Gram's rows."""
+        return np.stack([code[z == _k].mean(0) for _k in range(int(z.max()) + 1)]).reshape(-1, code.shape[-1])
+
+    def _figure(name):
+        run = runs[name]
+        targets_w, sites_w = data[name]
+        ds = run["dataset"]
+        z = run["latents"][:, 0]
+        B, K = len(z), ds.n_outcomes
+        tok_rgb = plt.cm.twilight(np.arange(K) / K)[:, :3]
+        lat_rgb = plt.cm.twilight(np.arange(ds.n_items) / ds.n_items)[:, :3]
+        flat = lambda X: X.reshape(B * T, -1)
+
+        # (a) what each token writes
+        D = evidence(ds)                                                     # (K, 2)
+        V = run["value_vectors"][:K]
+        Da, Va = sides(D - D.mean(0), V - V.mean(0), D)
+        blk_a = block((0, 1), r"$v(x) \;\propto\; D(x)$, the token's log-likelihood over $z$",
+                      Da, Va, tok_rgb, (D - D.mean(0), V - V.mean(0)), cka(V, D), dot=320)
+
+        # (b) after attention: the mean of D over the start and x_1:t, coloured by the Bayes posterior over z
+        n = targets_w["counts"]
+        share = 1.0 / (1 + n.sum(-1, keepdims=True))
+        # what attention writes, centred per position: the start's share is the same for every stream at a
+        # position, so this drops its offset (whose size the theory leaves free) and keeps the evidence
+        centre_t = lambda X: X - X.mean(0, keepdims=True)
+        Eb = centre_t(n @ D * share)                                         # (B, T, 2)
+        Hb = centre_t(sites_w["after attention"] - sites_w["embedding"])
+        post = np.exp(targets_w["log-posterior over z"]); post /= post.sum(-1, keepdims=True)
+        Pb, Tb = sides(flat(Eb), flat(Hb), D)
+        _end = Pb.reshape(B, T, 2)[:, -1]; _r = np.linalg.norm(_end, axis=1)
+        _far = np.flatnonzero((_r > np.quantile(_r, 0.85)) & (_r < np.quantile(_r, 0.95)))
+        b = int(_far[np.argmin(np.abs(np.angle(_end[_far] @ [1, 1j]) - 3 * np.pi / 4))])   # a far stream heading up-left
+        path = np.arange(b * T, (b + 1) * T)
+        blk_b = block(1, r"$\bar D_t = \frac{1}{1+t}\sum_{i \leq t} D(x_i)$:  $\log p(z \mid x_{1:t})$ up to $t$",
+                      Pb, Tb, flat(post) @ lat_rgb, (latent_means(Eb, z), latent_means(Hb, z)), cka(flat(Hb), flat(Eb)), path)
+
+        # (c) after the MLP: the log-predictive's top modes, coloured by the predictive over tokens
+        _, Ec, Dx, _ = factor_logcond(flat(targets_w["log-predictive"]))
+        Ec, Dx = Ec[:, :K - 1], Dx[:K - 1]
+        Hc = flat(sites_w["after MLP"])
+        Pc, Tc = sides(Ec, Hc, Dx[:2].T)
+        blk_c = block(2, r"$\log p(x \mid x_{1:t}) = \log \sum_z p(x \mid z)\, p(z \mid x_{1:t})$",
+                      Pc, Tc, ring_rgb(flat(targets_w["predictive"])),
+                      (latent_means(Ec.reshape(B, T, -1), z), latent_means(Hc.reshape(B, T, -1), z)), cka(Hc, Ec), path)
+
+        fig_stages = merge_panels([blk_a, blk_b, blk_c], ncols=3, label_size=30)
+        save_figure(fig_stages, FIGURES / f"decomposition_{name}.png", dpi=200)
+
+    _figure("week")
+
+
 if __name__ == "__main__":
     app.run()
