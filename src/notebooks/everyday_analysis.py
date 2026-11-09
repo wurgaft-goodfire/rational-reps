@@ -451,40 +451,44 @@ def _(mo):
     mo.md(r"""
     ## Predicted against learned codes
 
-    Per domain: the code predicted from Llama's own answers, the one predicted from the world prior (where there
-    is a world prior and it does not collapse to a point), and Llama's residual at the last token a quarter and
-    three quarters of the way through the network (before and after the switch to the own-answer code; the
-    final layers are left out, since the readout fixes them). Top: top-2 PCA, colored by t. Bottom: Gram
-    matrices, with each residual's linear CKA against the own-answer code.
+    Per domain with a world prior whose predicted code is not a single point (the Erlang domains predict a
+    collapse, which has no geometry to fit; books have no world prior): the code predicted from the world prior,
+    beside Llama's residual at the last token in the layer whose linear CKA with it is highest, searched up to
+    three layers before the end (the last layers feed the readout). Top: top-2 PCA, colored by t. Bottom: Gram
+    matrices, with the residual's CKA against the prediction.
     """)
     return
 
 
 @app.cell
-def _(DOMAINS, FIGURES, PRED, READS, cka, own_code, plot_utils, save_figure):
+def _(DOMAINS, FIGURES, LLM_NAME, PRED, READS, cka, plot_utils, save_figure):
     import io
 
+    MODEL_LABEL = {"llama-3.1-8b": "Llama-3.1-8B", "llama-3.1-70b": "Llama-3.1-70B (8-bit)",
+                   "llama-3.1-70b-nf4": "Llama-3.1-70B (4-bit)"}[LLM_NAME]
+    CODE_DOMAINS = [d for d in PRED if DOMAINS[d]["family"] != "erlang"]
+
+
     def code_panel(d):
-        X = READS[d]["remaining"]["last"]; n_layers = len(X) - 1
-        E = own_code(d)
-        codes = {}
-        if d in PRED and DOMAINS[d]["family"] != "erlang":
-            codes["predicted\n(world prior)"] = PRED[d]
-        for frac in (0.25, 0.75):
-            l = round(frac * n_layers); codes[f"Llama L{l}"] = X[l]
-        fig = plot_utils.plot_embedding_panels(E, codes, None, cmap="magma", colors=READS[d]["remaining"]["t"],
-                                               scores={k: cka(v, E) for k, v in codes.items()},
-                                               first_name="predicted\n(own answers)")
-        return fig
+        """The world-prior code beside Llama's residual at its best-fitting layer; returns (figure, layer, CKA)."""
+        X = READS[d]["remaining"]["last"]; E = PRED[d]
+        s = [cka(X[l], E) for l in range(1, len(X) - 3)]                     # layer l is after block l; 0 is the embedding
+        l = 1 + int(max(range(len(s)), key=s.__getitem__))
+        fig = plot_utils.plot_embedding_panels(E, {f"{MODEL_LABEL}\nlayer {l}": X[l]}, None, cmap="magma",
+                                               colors=READS[d]["remaining"]["t"], scores={f"{MODEL_LABEL}\nlayer {l}": s[l - 1]},
+                                               first_name="predicted\n(world prior)")
+        return fig, l, s[l - 1]
 
 
-    _pngs = []
-    for _d in DOMAINS:
-        _fig = save_figure(code_panel(_d), FIGURES / f"everyday_codes_{_d}.png")
+    _pngs, _labels = [], []
+    for _d in CODE_DOMAINS:
+        _fig, _l, _s = code_panel(_d)
+        save_figure(_fig, FIGURES / f"everyday_codes_{_d}.png")
+        print(f"{MODEL_LABEL}  {_d:9s} best layer {_l}  CKA {_s:.2f}")
         _buf = io.BytesIO(); _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight"); _pngs.append(_buf)
-    save_figure(plot_utils.merge_panels(_pngs, labels=[f"{d} ({DOMAINS[d]['family'] or 'no world prior'})" for d in DOMAINS]), FIGURES / "everyday_codes.png")
+        _labels.append(f"{_d} ({DOMAINS[_d]['family']}), {MODEL_LABEL}")
+    save_figure(plot_utils.merge_panels(_pngs, labels=_labels), FIGURES / "everyday_codes.png")
     return
-
 
 if __name__ == "__main__":
     app.run()
